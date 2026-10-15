@@ -1,0 +1,17 @@
+# 构建产物
+/target
+/target-build
+/dist
+
+# Rust
+Cargo.lock.bak
+*.pdb
+
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+
+.tmp/
+.workbuddy/

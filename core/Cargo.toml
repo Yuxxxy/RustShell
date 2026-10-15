@@ -1,0 +1,28 @@
+[package]
+name = "rustshell-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+ureq.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+flume.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+log.workspace = true
+encoding_rs.workspace = true
+tokio.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
+sha2.workspace = true
+portable-pty.workspace = true
+# SMTP 投递（预警邮件）：TLS 握手 + 系统根证书集
+rustls.workspace = true
+rustls-native-certs.workspace = true
+# russh 默认加密后端 aws-lc-sys 在 Windows 需要 NASM；启用预编译对象绕过
+aws-lc-sys = { version = "0.45", features = ["prebuilt-nasm"] }

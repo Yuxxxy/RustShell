@@ -1,0 +1,29 @@
+[package]
+name = "rustshell-terminal"
+version.workspace = true
+edition = "2024"
+# 本 crate 派生自 zortax/gpui-terminal（上游为 MIT OR Apache-2.0 双许可，原文见
+# 同目录 LICENSE-MIT / LICENSE-APACHE）。本仓选择 Apache-2.0 分支分发，故与工作区
+# 其余 crate 一致，直接继承 workspace.package.license —— 许可口径只此一处。
+license.workspace = true
+description = "RustShell 自有终端引擎：alacritty_terminal 解析 + GPUI 渲染"
+publish = false
+
+[dependencies]
+# gpui-pre 0.3.x 快照线，以 gpui 别名引入，源码 `use gpui::..` 路径不变
+gpui = { workspace = true }
+alacritty_terminal = { workspace = true }
+# VTE `Handler` 转发层要用到 `CursorIcon`（vte 只私有再导出它，见工作区 Cargo.toml 注释）
+cursor-icon = { workspace = true }
+ropey = { workspace = true }
+# 字符显示宽度（东亚宽字符 / emoji 占 2 列，组合记号占 0 列）。
+# 批量文本绘制要靠它决定每段字形的 `force_width`，见 render.rs::char_advance
+unicode-width = { workspace = true }
+portable-pty = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+flume = { workspace = true }
+# 网格尺寸 clamp 的异常告警（safe_grid_dim），与工作区统一 log 门面
+log = { workspace = true }
+# PTY 输出字节转码（gbk/big5/shift_jis 转 utf-8）
+encoding_rs = { workspace = true }

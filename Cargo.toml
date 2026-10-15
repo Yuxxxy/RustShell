@@ -1,0 +1,110 @@
+[workspace]
+resolver = "2"
+members = ["app", "shell", "ui", "core", "platform", "terminal"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["于新宇"]
+
+[workspace.dependencies]
+# --- GPUI 生态（统一版本线：gpui-pre 0.3.1 新快照线，见 docs 技术选型说明） ---
+# gpui-pre 为 Zed pre-release gpui 引擎本体，经 package 重命名以 gpui 别名引入，
+# 全工作区源码继续 `use gpui::...` 无需改动 import 路径
+gpui = { package = "gpui-pre", version = "0.3.1" }
+# 平台后端门面（gpui_platform：Windows Win32/DirectWrite，经 gpui-pre-windows 链条引入）
+gpui-platform = { package = "gpui-pre-platform", version = "0.3.4" }
+# gpui-component 0.6.1（= gpui-kit v0.6.1 发布线）：
+# 新增 setting（Settings/SettingPage/SettingGroup/SettingItem/SettingField）、
+# message_scroller（MessageScroller/MessageScrollerState）等组件，
+# 并带 Editor 多光标 / 自动括号配对 / gpui_kit::test 无头 UI 测试。
+gpui-component = "0.6.1"
+# 图标全量目录（Lucide）：
+# `gpui_component::IconName` 只是**组件默认子集**（约 90 个，清单见
+# gpui-kit-assets/default-icons.txt），`Trash` / `Brain` / `MessageSquare` 之类
+# 根本不在枚举里（写出来直接编译不过，不是「图标空白」这种软失败）。
+# 全量枚举 + `IconNamed` 实现由 gpui-kit-assets 提供，且与 gpui-component 同版本线
+# ——它本来就在依赖图里（gpui-component 的传递依赖），加为直接依赖不引入新下载。
+gpui-kit-assets = "0.6.1"
+# 窗口级「纯文本可拖选」元素（`gpui_base::SelectableText`）：
+# AI 面板里 agent 工具的**展开明细**（`run_command` 之类工具的原样输出）与思考正文
+# 要能用鼠标拖选、并能被 Ctrl+C / 右键复制取走。
+# 为什么不复用 `TextView::markdown`（AI 消息正文那条路）：明细是**原样输出**，
+# 走 Markdown 解析会把 `-rw-r--r--` 这样的行首当成列表、`__x__` 当成斜体 ——
+# 对着终端输出来说那是**渲染出错**，不是「格式更漂亮」。
+# 与 gpui-kit-assets 同一个理由与前提：它本来就在依赖图里（gpui-component 的
+# 传递依赖），加为直接依赖不引入新下载；版本线必须与 gpui-component 一致 ——
+# 选区的全局状态由 **gpui-component 的 `Root`** 持有（`TextSelectionLayer` + `Copy`），
+# 版本线走岔时表现是「拖了没高亮、Ctrl+C 没反应」且**编译不报错**，
+# 故 `ui/src/ai_panel.rs` 里配了一条编译期护栏把两条版本线钉在一起。
+gpui-base = "0.6.1"
+# 终端引擎（本仓自有 crate）
+rustshell-terminal = { path = "terminal" }
+
+# --- 终端 / PTY ---
+portable-pty = "0.9"
+alacritty_terminal = "0.25"
+# vte 的 `Handler::set_mouse_cursor_icon` 签名里用的是它**私有再导出**的
+# `cursor_icon::CursorIcon`（不是 `vte::ansi::CursorIcon`，那个路径是私有项、会报 E0603）。
+# 我们的 `Handler` 转发层要写全 71 个方法签名 ⇒ 必须显式依赖它。
+# 版本与 vte 0.15 所用的保持一致（见 Cargo.lock 的 cursor-icon 1.2.0）。
+cursor-icon = "1.2"
+# 终端文本缓冲（行/块索引），rustshell-terminal 的搜索与滚回使用
+ropey = "1"
+# 字符显示宽度（East Asian Width）：终端网格里宽字符占 2 列、组合记号占 0 列，
+# 批量文本绘制必须按它决定每段的 `force_width`（terminal/src/render.rs）
+unicode-width = "0.2"
+
+# --- SSH ---
+russh = "0.63"
+# SFTP 子系统客户端（SFTP v3 协议；不强依赖 russh 版本，channel 流接入）
+russh-sftp = "2"
+# 下载校验（F-13）：0.11 本来就在 Windows 依赖图里（russh → ssh-key 的
+# bcrypt-pbkdf / ed25519-dalek / p256 都用它），提为直接依赖**不新增编译**；
+# 0.10.x 反而不在图内（只有 Linux 的 keyring 线在拉），别降版本。
+sha2 = "0.11"
+
+# --- 系统 / 异步 ---
+sysinfo = "0.39"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
+
+# --- 通用 ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# AI Provider：轻量 HTTP 客户端（rustls，无原生依赖）
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+thiserror = "2"
+parking_lot = "0.12"
+flume = "0.12"
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+log = { version = "0.4", features = ["std"] }
+# 终端字符编码转码（Firefox 同源实现，纯 Rust 无 C 依赖）
+encoding_rs = "0.8"
+# SMTP 投递（F-20 预警邮件）：STARTTLS 与隐式 TLS（465）都要握手。
+# 复用依赖树里已有的 rustls（russh / ureq 都引了它），不引入第二套 TLS 栈 ——
+# 两套栈并存会让「证书链校验行为」出现两个不一致的口径。
+# `ring` 而非默认的 aws-lc：后者在 Windows 需要 NASM（见 core/Cargo.toml 的说明）。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+# 窗口原生句柄（F-8）：隐藏/显示主窗口要拿到 HWND。gpui 的 `Window::window_handle()`
+# 返回的就是这个 crate 的 `WindowHandle`，全仓只有这一条取句柄的路，不会引入第二个版本线。
+raw-window-handle = "0.6"
+# 系统托盘（F-8）：内部走 Shell_NotifyIcon + muda 菜单。
+# 只在 Windows 目标启用（见 platform/Cargo.toml），default-features = false 是为了
+# 不把 Linux 的 gtk3 / libappindicator 拉进来 —— 那需要系统 dev 包，会把非 Windows 构建拖垮。
+tray-icon = { version = "0.25", default-features = false }
+
+# --- 内部 crate ---
+rustshell-core = { path = "core" }
+rustshell-platform = { path = "platform" }
+rustshell-ui = { path = "ui" }
+rustshell-shell = { path = "shell" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 2

@@ -1,0 +1,131 @@
+# RustShell 发布打包（Windows + macOS）
+#
+# 为什么需要 CI：gpui-pre 的 macOS 后端（gpui_macos）依赖 Cocoa/AppKit 等
+# 系统框架，只能在 macOS 上链接——Windows 机器无法交叉编译出 macOS 应用。
+# 本 workflow 在官方 macos-latest / windows-latest runner 上分别构建并上传产物。
+#
+# 触发方式：
+#   · 手动：Actions 页 -> Release Build -> Run workflow（选择平台）
+#   · 打 tag：git tag v1.0.0 && git push origin v1.0.0
+# 产物：Actions 页对应 run 的 Artifacts 中下载。
+#
+# Windows 侧产物有两份：
+#   · dist/rustshell-<version>-windows-x64.zip —— 绿色包（解压即用）
+#   · dist/packager/rustshell_<version>_x64-setup.exe —— NSIS 安装包（cargo-packager，
+#     配置在 app/Cargo.toml；本地等价命令是 ./scripts/package-windows.sh）
+#     注意：packager 以 crate 目录 app/ 为工作目录，产物落在仓库根的 dist/packager/
+
+name: Release Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: '目标平台 (windows / macos / all)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows
+            bin_name: rustshell.exe
+            artifact: windows-x64
+          - os: macos-latest
+            target: macos
+            bin_name: rustshell
+            artifact: macos-x64-arm64
+    # workflow_dispatch 平台过滤：all / 本 job 平台
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.platform == 'all' ||
+      github.event.inputs.platform == matrix.target
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release -p rustshell
+
+      - name: Verify binary exists
+        shell: bash
+        run: |
+          ls -lh target/release/${{ matrix.bin_name }}
+
+      - name: Stage portable package
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          echo "Version: $VERSION"
+          STAGE="dist/rustshell-$VERSION-${{ matrix.artifact }}"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp "target/release/${{ matrix.bin_name }}" "$STAGE/"
+
+      - name: Archive (windows)
+        if: matrix.target == 'windows'
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          cd dist
+          /c/Windows/System32/tar.exe -a -c -f "rustshell-$VERSION-windows-x64.zip" "rustshell-$VERSION-windows-x64"
+          ls -lh "rustshell-$VERSION-windows-x64.zip"
+
+      - name: Archive (macos)
+        if: matrix.target == 'macos'
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          cd dist
+          /usr/bin/zip -r -y "rustshell-$VERSION-macos-x64-arm64.zip" "rustshell-$VERSION-macos-x64-arm64"
+          ls -lh "rustshell-$VERSION-macos-x64-arm64.zip"
+
+      - name: Install cargo-packager (windows)
+        if: matrix.target == 'windows'
+        run: cargo install cargo-packager --locked --version ^0.11
+
+      # 安装包（NSIS）走 app/Cargo.toml 的 [package.metadata.packager]，
+      # 见 scripts/package-windows.sh。路径口径：`icons` / `installer-icon` 相对 **app/**
+      # 解析（packager 会切到 crate 目录），所以从仓库根执行是对的；
+      # `out-dir = "../dist/packager"` 同样相对 app/ 解析，产物落在仓库根的 dist/packager/。
+      # packager 只打包不构建，构建交给配置里的 before-packaging-command。
+      # 不写 --formats：默认取配置里的 formats（nsis），口径只有一处。
+      - name: Package installer (windows)
+        if: matrix.target == 'windows'
+        run: cargo packager --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustshell-${{ matrix.artifact }}
+          path: |
+            dist/rustshell-*.zip
+            dist/packager/*
+          if-no-files-found: error

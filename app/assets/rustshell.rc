@@ -1,0 +1,47 @@
+// RustShell Windows 资源脚本
+//
+// 图标：ID = 1（资源管理器/任务栏取「ID 最小的 ICON」作为程序图标）。
+// 路径相对于 crate 根（rc.exe 的工作目录），不是本文件所在目录。
+//
+// 本文件存为 UTF-8（无 BOM），故必须在最前面用 #pragma code_page 声明代码页。
+//
+// 原因（2026-10-13 实测）：rc.exe 不会因为「文件里有 UTF-8 字节」就按 UTF-8 解析，
+// 它只认 BOM / #pragma code_page / `/c` 参数，三者都没有时按**本地 ANSI 代码页**
+// 逐字节读（简体中文环境 = GBK / 936）。UTF-8 的「于」是 E4 BA 8E，GBK 下 0x8E
+// 是双字节前导字节，会把紧跟其后的 `"`(0x22) 当成自己的尾字节吃掉 —— 字符串在
+// 这里提前断裂，下一行 `VALUE "FileDescription"` 的键名就裸露成了标识符，报：
+//     rustshell.rc(22) : error RC2104 : undefined keyword or key name: FileDescription
+// 这正是「嵌入 Windows 图标失败」的真身：图标没错，是 RC 编译不过。
+//
+// 声明 65001 之后 rc.exe 按 UTF-8 读源文件，中文才能正确落进 VERSIONINFO
+// （属性 → 详细信息里的「公司」/「版权」才会是「于新宇」而不是乱码）。
+// ⚠️ 后续若往本文件加中文，保持 UTF-8 编码、勿加 BOM，此 pragma 无需再动。
+#pragma code_page(65001)
+
+1 ICON "assets/rustshell.ico"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404B0"
+    BEGIN
+      VALUE "CompanyName", "于新宇"
+      VALUE "FileDescription", "RustShell - SSH / Terminal / SFTP"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "InternalName", "rustshell"
+      VALUE "LegalCopyright", "Copyright 2026 于新宇"
+      VALUE "OriginalFilename", "rustshell.exe"
+      VALUE "ProductName", "RustShell"
+      VALUE "ProductVersion", "1.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x804, 1200
+  END
+END

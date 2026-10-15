@@ -1,0 +1,81 @@
+[package]
+name = "rustshell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustshell"
+path = "src/main.rs"
+
+[dependencies]
+rustshell-shell.workspace = true
+
+[build-dependencies]
+# Windows exe 图标 / 版本信息嵌入（rc.exe 由 embed-resource 经 vswhom/cc 自动定位）。
+# 与 gpui-pre 自身用的同一套，避免再引入第二套工具链探测。
+embed-resource = "3"
+
+# ── 安装包（cargo-packager 0.11）───────────────────────────────────────────────
+#
+# 用法：
+#     cargo install cargo-packager --locked     # 只需一次
+#     ./package-windows.sh                      # 或直接 cargo packager --release
+# 产物：dist/packager/rustshell_<version>_x64-setup.exe
+#   文件名由 packager 固定拼成「**二进制名** + 版本 + 架构 + `-setup.exe`」，
+#   `product-name` 只影响安装界面/开始菜单/安装目录里显示的名字，改不动文件名。
+#
+# 为什么配置写在 `app/` 而不是仓库根：packager 从 cargo metadata 的**每个包**里
+# 读 `[package.metadata.packager]`，而根 Cargo.toml 是 virtual workspace（没有
+# [package] 段），写在那里不会被读到。
+#
+# ⚠️ 路径口径（实测得出，别照直觉猜）：`out-dir` / `icons` / `installer-icon`
+# 都按 **`app/`（本 crate 目录）** 解析 —— 不是「你从哪个目录敲的命令」。
+# 依据：从仓库根执行 `cargo packager --release`，packager 创建的却是
+# `app/dist/packager/`，且 `app/assets/rustshell.ico` 这种「仓库根口径」的写法
+# 直接报 `I/O Error (app/assets/rustshell.ico): 系统找不到指定的路径`。
+# 所以下面写 `assets/...` 与 `../dist/packager`（产物仍落在仓库根的 dist/ 下，
+# 与 build-macos.sh / CI 的口径一致）。
+#
+# 未配置的项由 packager 从 cargo metadata 兜底（源码 `cli/config.rs`）：
+# name / version / description / authors / binaries 全部自动推导，别在这里重复写死
+# —— 写死会与 Cargo.toml 的版本漂移，安装包版本号就永远是旧的。
+[package.metadata.packager]
+# 展示名：安装目录、开始菜单、控制面板里显示的名字（crate 名是个纯小写的标识符）
+product-name = "RustShell"
+# 反域名标识：Windows 安装记录、将来的单实例/通知身份都用它，须全局唯一，
+# 且只允许 [A-Za-z0-9-.]
+identifier = "com.rustshell.desktop"
+description = "RustShell —— SSH / 终端 / SFTP 一体化桌面客户端"
+category = "DeveloperTool"
+publisher = "RustShell"
+# 版权声明：写进 exe 的 VERSIONINFO 与安装包属性。这里是**著作权人**，不是许可证名
+# —— 误填成 "Apache-2.0" 会让「右键属性 → 详细信息 → 版权」显示成许可证。
+# 许可证另由 Cargo.toml 的 `license.workspace`（= Apache-2.0）与仓库根 LICENSE 声明。
+copyright = "Copyright 2026 于新宇"
+# 图标与 exe 资源里嵌的是同一个文件（app/build.rs 也用它），
+# 避免出现「装好的程序」与「安装器/快捷方式」长得不一样。
+icons = ["assets/rustshell.ico"]
+out-dir = "../dist/packager"
+# 默认只出 NSIS 安装包（.exe）。`wix`（.msi）需要本机另装 WiX Toolset，
+# 属可选项：`cargo packager --release --formats wix`。NSIS 工具链不用手工装
+# ——packager 会从 GitHub 拉 nsis-3.09 到它自己的 tools 缓存里。
+formats = ["nsis"]
+# packager 只**打包**不构建：这里显式让它先把 release 产物编出来，
+# 免得「改了代码、装出来的还是上一版」（binaries 目录由 `--release` 推导为 target/release）。
+before-packaging-command = "cargo build --release -p rustshell"
+
+[package.metadata.packager.nsis]
+# 装到当前用户（%LOCALAPPDATA%），安装过程不弹 UAC：终端工具不需要管理员权限，
+# 且「免管理员的绿色安装」对个人开发者更友好。
+#
+# ⚠️ 键名只能写 `installMode`（或 alias `installer-mode` / `installer_mode`）：
+# 该结构体是 `deny_unknown_fields`，写成 `install-mode` 会**直接报错退出**
+# （实测：`unknown field install-mode, expected one of ... installMode,
+# installer-mode, installer_mode ...`）。cargo-packager 的键名不是统一的
+# kebab-case，加键前先照报错里给的候选列表抄。
+installMode = "currentUser"
+installer-icon = "assets/rustshell.ico"
+# 安装界面中英双语（与应用的 M4 国际化对齐）；不设 displayLanguageSelector，
+# 默认跟随系统语言。
+languages = ["SimpChinese", "English"]

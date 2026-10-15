@@ -1,0 +1,31 @@
+[package]
+name = "rustshell-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustshell-core.workspace = true
+rustshell-platform.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+# 纯文本可拖选元素（`SelectableText`）：AI 面板的工具展开明细 / 思考正文走它
+# （为什么不走 `TextView::markdown`、版本线为什么必须与 gpui-component 一致，
+# 见根 Cargo.toml 该条目下的说明）
+gpui-base.workspace = true
+# 全量 Lucide 图标枚举（`gpui_component::IconName` 只是组件默认子集，
+# Trash / Brain 等不在其中 —— 见根 Cargo.toml 该条目下的说明）
+gpui-kit-assets.workspace = true
+rustshell-terminal.workspace = true
+portable-pty.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+flume.workspace = true
+log.workspace = true
+# AI 会话落盘（ai_chats.json）：存储格式与线上格式解耦，见 `main_view/ai_persist.rs`
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# 主题装配回归测试需要 gpui 的 TestAppContext（见 ui/src/theme.rs::tests）
+gpui = { workspace = true, features = ["test-support"] }
