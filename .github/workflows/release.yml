@@ -37,24 +37,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # workflow_dispatch 的平台过滤必须在这里做完，不能写成 build 的 job 级 if：
+  #   · job 级 if 的可用上下文只有 github / needs / vars / inputs，**没有 matrix**
+  #     （matrix 在 runs-on 和 steps.if 里可用，唯独 job 级 if 不可用——它求值早于矩阵展开）；
+  #   · strategy.matrix 的取值本身又不支持表达式，所以也没法把「当前平台」塞进矩阵条件里绕开。
+  # 于是先由 plan 算出「本次要构建的矩阵」，build 再用 fromJSON 消费。
+  # 好处：build 的 10 个 step 完全不用改，也不必给每个 step 挂一遍平台判断。
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.pick.outputs.targets }}
+    steps:
+      - id: pick
+        name: Resolve build targets
+        shell: bash
+        env:
+          # 走 env 而不是直接内插 ${{ }}，避免输入值被当成 shell 代码执行
+          EVENT: ${{ github.event_name }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+        run: |
+          ALL='{"include":[{"os":"windows-latest","target":"windows","bin_name":"rustshell.exe","artifact":"windows-x64"},{"os":"macos-latest","target":"macos","bin_name":"rustshell","artifact":"macos-x64-arm64"}]}'
+          WIN='{"include":[{"os":"windows-latest","target":"windows","bin_name":"rustshell.exe","artifact":"windows-x64"}]}'
+          MAC='{"include":[{"os":"macos-latest","target":"macos","bin_name":"rustshell","artifact":"macos-x64-arm64"}]}'
+          if [ "$EVENT" != "workflow_dispatch" ] || [ -z "$PLATFORM" ] || [ "$PLATFORM" = "all" ]; then
+            TARGETS="$ALL"      # 打 tag 推送 / 选 all -> 全平台
+          elif [ "$PLATFORM" = "windows" ]; then
+            TARGETS="$WIN"
+          elif [ "$PLATFORM" = "macos" ]; then
+            TARGETS="$MAC"
+          else
+            echo "::error::未知的 platform 取值 '$PLATFORM'（可选 all / windows / macos）"
+            exit 1
+          fi
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+          echo "本次构建矩阵：$TARGETS"
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: windows
-            bin_name: rustshell.exe
-            artifact: windows-x64
-          - os: macos-latest
-            target: macos
-            bin_name: rustshell
-            artifact: macos-x64-arm64
-    # workflow_dispatch 平台过滤：all / 本 job 平台
-    if: >-
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.platform == 'all' ||
-      github.event.inputs.platform == matrix.target
+      matrix: ${{ fromJSON(needs.plan.outputs.targets) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

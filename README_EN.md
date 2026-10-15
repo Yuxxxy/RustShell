@@ -6,13 +6,37 @@
 
 English · [简体中文](./README.md) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Contributing](#contributing)
 
-[![CI](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml/badge.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml)
-[![Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml/badge.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/Yuxxxy/RustShell)
+[![CI](./.github/badges/ci.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml)
+[![Release Build](./.github/badges/release.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml)
+[![Rust](./.github/badges/rust.svg)](https://www.rust-lang.org/)
+[![License](./.github/badges/license.svg)](./LICENSE)
+[![Platform](./.github/badges/platform.svg)](https://github.com/Yuxxxy/RustShell)
 
 </div>
+
+---
+
+## Screenshots
+
+> Real screenshots captured on Windows 11. Connections, hostname and IPs shown are demo data.
+> Badges are self-hosted SVGs committed in this repo — no external image host involved.
+
+**Dark / Light themes** — Dark / Light / Follow-system, switched by a token-driven theme layer
+
+![Dark and light theme comparison](./docs/images/theme-compare-en.png)
+
+**System monitor overview** — 1 s sampling of CPU / memory / swap / network / disk with a hand-drawn AreaChart
+
+![System monitor overview](./docs/images/en-overview-dark.png)
+
+**Command palette and settings**
+
+<p align="center">
+  <img src="./docs/images/en-palette-dark.png" width="49%" alt="Command palette" />
+  <img src="./docs/images/en-settings-light.png" width="49%" alt="Settings · Appearance" />
+</p>
+
+<p align="center"><sub>Left: command palette (<code>Ctrl+Shift+P</code>) unifying quick-connect and commands · Right: Settings → Appearance (theme mode / background image / panel opacity)</sub></p>
 
 ---
 

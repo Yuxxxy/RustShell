@@ -6,15 +6,39 @@
 
 [English](./README_EN.md) · 简体中文 · [快速开始](#快速开始) · [架构](#架构) · [贡献](#贡献)
 
-[![CI](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml/badge.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml)
-[![Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml/badge.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/Yuxxxy/RustShell)
+[![CI](./.github/badges/ci.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml)
+[![Release Build](./.github/badges/release.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml)
+[![Rust](./.github/badges/rust.svg)](https://www.rust-lang.org/)
+[![License](./.github/badges/license.svg)](./LICENSE)
+[![Platform](./.github/badges/platform.svg)](https://github.com/Yuxxxy/RustShell)
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
+![Platform](./.github/badges/platform.svg)
 
 </div>
+
+---
+
+## 界面预览
+
+> 以下为真实运行截图（Windows 11）。截图中的连接、主机名与 IP 均为演示数据。
+> 徽章为仓库内自托管 SVG，不依赖任何外部图床。
+
+**深浅主题**：Dark / Light / 跟随系统三态，Token 驱动的全局换肤
+
+![深色与浅色主题对比](./docs/images/theme-compare-zh.png)
+
+**系统监控概览**：CPU / 内存 / 交换分区 / 网络 / 磁盘 1 s 采样，自绘 AreaChart 走势力
+
+![系统监控概览](./docs/images/overview-dark.png)
+
+**命令面板与设置**
+
+<p align="center">
+  <img src="./docs/images/palette-dark.png" width="49%" alt="命令面板" />
+  <img src="./docs/images/settings-light.png" width="49%" alt="设置 · 外观" />
+</p>
+
+<p align="center"><sub>左：命令面板（<code>Ctrl+Shift+P</code>），快速连接与命令一体检索 · 右：设置 → 外观（主题三态 / 背景图 / 面板不透明度）</sub></p>
 
 ---
 
