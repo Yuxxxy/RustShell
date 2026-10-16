@@ -13,8 +13,21 @@ authors = ["于新宇"]
 # gpui-pre 为 Zed pre-release gpui 引擎本体，经 package 重命名以 gpui 别名引入，
 # 全工作区源码继续 `use gpui::...` 无需改动 import 路径
 gpui = { package = "gpui-pre", version = "0.3.1" }
-# 平台后端门面（gpui_platform：Windows Win32/DirectWrite，经 gpui-pre-windows 链条引入）
-gpui-platform = { package = "gpui-pre-platform", version = "0.3.4" }
+# 平台后端门面（gpui_platform）：按目标平台转发到 gpui-pre-windows / -macos /
+# -linux（`gpui_platform::application()` 内部就是 `current_platform` 的一层 cfg 壳）。
+#
+# ⚠️ `x11` / `wayland` 这两个 feature **必须显式打开**，否则 Linux 构建编不过：
+# gpui-pre-platform 对 gpui_linux 声明的是 `default-features = false`，而
+# gpui-pre-linux 的 `default = ["wayland", "x11"]` 恰好被这一行关掉了 —— 不打开的话
+# `gpui_linux::text_system`（`#[cfg(any(feature = "wayland", feature = "x11"))]`）
+# 整块不参与编译，LinuxPlatform 缺 TextSystem 直接编译失败；即便侥幸编过，
+# `current_platform` 也会落进 `unreachable!("At least one of the \"wayland\" or
+# \"x11\" features must be enabled on gpui_linux or gpui_platform.")`。
+# 两个 feature 只对 linux/freebsd 目标生效（转发到 `gpui_linux/x11`、`gpui_linux/wayland`），
+# Windows / macOS 构建不受影响；但 Cargo 的 feature 解析与目标平台**无关**，
+# 所以在 Windows 上打开它们就会让 Cargo.lock 多出 xkbcommon / x11rb / wayland-* 等
+# Linux 侧依赖 —— 这是正常的（锁文件本来就是全平台口径）。
+gpui-platform = { package = "gpui-pre-platform", version = "0.3.4", features = ["x11", "wayland"] }
 # gpui-component 0.6.1（= gpui-kit v0.6.1 发布线）：
 # 新增 setting（Settings/SettingPage/SettingGroup/SettingItem/SettingField）、
 # message_scroller（MessageScroller/MessageScrollerState）等组件，

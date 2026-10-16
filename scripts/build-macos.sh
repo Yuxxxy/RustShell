@@ -25,7 +25,16 @@ if ! rustup target list --installed | grep -q "x86_64-apple-darwin"; then
 fi
 rustup target add aarch64-apple-darwin 2>/dev/null || true
 
-VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+# 版本号提取**不要**用 `sed -E 's/version\s*=\s*"([^"]+)"/\1/'`：`\s` 是 GNU sed
+# 扩展，BSD sed（macOS 自带 /usr/bin/sed）不认它 —— 会把 `\s` 当字面量 `s`，
+# 正则匹配不上、替换静默失败，`VERSION` 会变成整行 `version = "1.0.0"`，
+# 产物名里带上双引号（2026-10-16 CI 的 macOS 失败就是这个）。awk 按引号切分
+# 不涉及任何正则转义，GNU / BSD 行为一致。
+VERSION=$(awk -F'"' '/^version/ { print $2; exit }' Cargo.toml)
+if [ -z "$VERSION" ]; then
+  echo "无法从 Cargo.toml 解析版本号（^version 行缺失或格式变了）" >&2
+  exit 1
+fi
 echo "==> 2/4 构建 release（版本 $VERSION）"
 cargo build --release -p rustshell
 cargo build --release -p rustshell --target x86_64-apple-darwin
@@ -37,6 +46,21 @@ lipo -create \
   "target/x86_64-apple-darwin/release/rustshell" \
   -output "target/universal-apple-darwin/release/rustshell"
 file "target/universal-apple-darwin/release/rustshell"
+
+# 产物名里写了 x64 与 arm64 两个架构，就必须真的都在 —— 否则 Intel 机器解压后
+# 直接 `bad CPU type in executable`（CI 侧同一断言，见 release.yml 的 Verify binary）。
+# 以前 CI 只跑 host 单架构却命名成 macos-x64-arm64，这个断言就是为那件事加的。
+ARCHS=$(lipo -archs "target/universal-apple-darwin/release/rustshell")
+echo "    包含架构：$ARCHS"
+for want in x86_64 arm64; do
+  case "$ARCHS" in
+  *"$want"*) ;;
+  *)
+    echo "通用二进制缺少 $want 架构（名字里的 macos-x64-arm64 名不副实）" >&2
+    exit 1
+    ;;
+  esac
+done
 
 echo "==> 4/4 打包"
 STAGE="dist/rustshell-$VERSION-macos-x64-arm64"

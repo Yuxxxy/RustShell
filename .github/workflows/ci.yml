@@ -1,6 +1,7 @@
 # RustShell CI 门禁
 # 目标：编译期问题（含集成测试）在 5 分钟内暴露（评审遗留项 2026-09-09）。
-# 说明：gpui-pre-platform 当前为 Windows Win32/DirectWrite 后端，故跑 windows-latest；
+# 说明：门禁跑在 windows-latest 上 —— 它是当前日常实测平台，且集成测试 local_shell 依赖
+#       真实 ConPTY（Windows 专有）；macOS / Linux 的**构建**由 release.yml 覆盖。
 #       集成测试 local_shell（真实 ConPTY，50-100s）与 docker_ssh（需 Docker）不在此执行，
 #       但 --no-run 会完整编译它们——本轮 docker_ssh.rs 的编译失败即为此类，可被该门禁拦截。
 

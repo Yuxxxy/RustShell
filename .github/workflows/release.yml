@@ -1,19 +1,31 @@
-# RustShell 发布打包（Windows + macOS）
+# RustShell 发布打包（Windows + macOS 通用二进制 + Linux x64/arm64）
 #
-# 为什么需要 CI：gpui-pre 的 macOS 后端（gpui_macos）依赖 Cocoa/AppKit 等
-# 系统框架，只能在 macOS 上链接——Windows 机器无法交叉编译出 macOS 应用。
-# 本 workflow 在官方 macos-latest / windows-latest runner 上分别构建并上传产物。
+# 为什么需要 CI：gpui-pre 的平台后端是 **每个 OS 各一套**，只能在该 OS 上链接 ——
+#   · gpui-pre-macos 依赖 Cocoa/AppKit / Metal
+#   · gpui-pre-linux 依赖 X11 / Wayland / xkbcommon / fontconfig
+#   · gpui-pre-windows 依赖 Win32 / DirectWrite
+# 所以 Windows 机器交叉编译不出 macOS / Linux 产物，必须在官方 runner 上各编各的。
 #
 # 触发方式：
 #   · 手动：Actions 页 -> Release Build -> Run workflow（选择平台）
 #   · 打 tag：git tag v1.0.0 && git push origin v1.0.0
 # 产物：Actions 页对应 run 的 Artifacts 中下载。
 #
-# Windows 侧产物有两份：
-#   · dist/rustshell-<version>-windows-x64.zip —— 绿色包（解压即用）
-#   · dist/packager/rustshell_<version>_x64-setup.exe —— NSIS 安装包（cargo-packager，
-#     配置在 app/Cargo.toml；本地等价命令是 ./scripts/package-windows.sh）
-#     注意：packager 以 crate 目录 app/ 为工作目录，产物落在仓库根的 dist/packager/
+# 四个矩阵项（另见 plan 段的 target 表）：
+#   · windows-x64      windows-latest   -> rustshell-<version>-windows-x64.zip（绿色包）
+#                                          + dist/packager/rustshell_<version>_x64-setup.exe（NSIS 安装包）
+#   · macos-x64-arm64  macos-latest     -> rustshell-<version>-macos-x64-arm64.zip（**真·通用二进制**：
+#                                          两条架构各编一遍再 lipo 合并，并由 lipo -archs 断言）
+#   · linux-x64        ubuntu-22.04     -> rustshell-<version>-linux-x64.tar.gz
+#   · linux-arm64      ubuntu-22.04-arm -> rustshell-<version>-linux-arm64.tar.gz
+#
+# Linux 两条选 22.04 而不是 -latest（24.04）：产物要求的最低 glibc 由**构建机**决定，
+# 在 22.04（glibc 2.35）上构建才能在 22.04 及更新的发行版上跑；用 24.04 构建出来的
+# 二进制在 22.04 上会直接 `GLIBC_2.39 not found`。
+#
+# Windows 侧的 NSIS 安装包由 cargo-packager 生成（配置在 app/Cargo.toml；
+# 本地等价命令是 ./scripts/package-windows.sh）。注意：packager 以 crate 目录 app/
+# 为工作目录，产物落在仓库根的 dist/packager/。
 
 name: Release Build
 
@@ -21,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: '目标平台 (windows / macos / all)'
+        description: '目标平台 (windows / macos / linux / all)'
         required: true
         default: 'all'
         type: choice
@@ -29,6 +41,7 @@ on:
           - all
           - windows
           - macos
+          - linux
   push:
     tags:
       - 'v*'
@@ -42,7 +55,16 @@ jobs:
   #     （matrix 在 runs-on 和 steps.if 里可用，唯独 job 级 if 不可用——它求值早于矩阵展开）；
   #   · strategy.matrix 的取值本身又不支持表达式，所以也没法把「当前平台」塞进矩阵条件里绕开。
   # 于是先由 plan 算出「本次要构建的矩阵」，build 再用 fromJSON 消费。
-  # 好处：build 的 10 个 step 完全不用改，也不必给每个 step 挂一遍平台判断。
+  # 好处：build 侧的公共骨架（取版本、装工具链、暂存、上传）只写一份，平台差异用 steps.if 分流。
+  #
+  # 矩阵项字段（每加一个字段，build 里的引用点都要跟着改，所以字段名一次定准）：
+  #   os            runner 标签
+  #   target        平台分组，steps.if 用它做分支（windows / macos / linux）
+  #   artifact      产物名后缀：暂存目录名、压缩包名、upload-artifact 的 name 共用这一处
+  #   bin_name      构建产物在仓库根下的相对路径（Verify / Stage 都读它）
+  #   rust_targets  交给 dtolnay/rust-toolchain 的附加 rustup 目标（逗号分隔，空串=不加）
+  #   expect_arch   期望的 `uname -m`：守住「产物名字里的架构」与「runner 真实架构」一致。
+  #                 macOS 留空 —— 那两条架构都是我们主动编的，改由 lipo -archs 查产物本身。
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -56,17 +78,30 @@ jobs:
           EVENT: ${{ github.event_name }}
           PLATFORM: ${{ github.event.inputs.platform }}
         run: |
-          ALL='{"include":[{"os":"windows-latest","target":"windows","bin_name":"rustshell.exe","artifact":"windows-x64"},{"os":"macos-latest","target":"macos","bin_name":"rustshell","artifact":"macos-x64-arm64"}]}'
-          WIN='{"include":[{"os":"windows-latest","target":"windows","bin_name":"rustshell.exe","artifact":"windows-x64"}]}'
-          MAC='{"include":[{"os":"macos-latest","target":"macos","bin_name":"rustshell","artifact":"macos-x64-arm64"}]}'
+          # 先逐条声明，再拼组合 —— 免得像以前那样把同一条矩阵项抄三遍，
+          # 加个字段就漏抄一处（漏抄不会报错，只会让某个平台少一个产物）。
+          # macOS 的 bin_name 指向 lipo 合并后的文件，不是 cargo 的 target/release/
+          # （通用二进制的构建方式见下面 Build release (macos universal)）。
+          WIN_ITEM='{"os":"windows-latest","target":"windows","artifact":"windows-x64","bin_name":"target/release/rustshell.exe","rust_targets":"","expect_arch":"x86_64"}'
+          MAC_ITEM='{"os":"macos-latest","target":"macos","artifact":"macos-x64-arm64","bin_name":"target/universal-apple-darwin/release/rustshell","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","expect_arch":""}'
+          LIN_X64_ITEM='{"os":"ubuntu-22.04","target":"linux","artifact":"linux-x64","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"x86_64"}'
+          LIN_ARM_ITEM='{"os":"ubuntu-22.04-arm","target":"linux","artifact":"linux-arm64","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"aarch64"}'
+
+          WIN="{\"include\":[$WIN_ITEM]}"
+          MAC="{\"include\":[$MAC_ITEM]}"
+          LIN="{\"include\":[$LIN_X64_ITEM,$LIN_ARM_ITEM]}"
+          ALL="{\"include\":[$WIN_ITEM,$MAC_ITEM,$LIN_X64_ITEM,$LIN_ARM_ITEM]}"
+
           if [ "$EVENT" != "workflow_dispatch" ] || [ -z "$PLATFORM" ] || [ "$PLATFORM" = "all" ]; then
             TARGETS="$ALL"      # 打 tag 推送 / 选 all -> 全平台
           elif [ "$PLATFORM" = "windows" ]; then
             TARGETS="$WIN"
           elif [ "$PLATFORM" = "macos" ]; then
             TARGETS="$MAC"
+          elif [ "$PLATFORM" = "linux" ]; then
+            TARGETS="$LIN"
           else
-            echo "::error::未知的 platform 取值 '$PLATFORM'（可选 all / windows / macos）"
+            echo "::error::未知的 platform 取值 '$PLATFORM'（可选 all / windows / macos / linux）"
             exit 1
           fi
           echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
@@ -81,9 +116,82 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本号只在这里解析一次，后面每个打包步骤统一消费 —— 原先它们各自把同一行
+      # `sed -E 's/version\s*=\s*"([^"]+)"/\1/'` 抄了一遍。
+      #
+      # 2026-10-16 Release #2 的 macOS 失败就出在这行：`\s` 是 **GNU sed 扩展**，
+      # BSD sed（macOS runner 的 /usr/bin/sed）不认它，会把 `\s` 当成字面量 `s`，
+      # 正则因此匹配不到 `version = "1.0.0"` ⇒ 替换**静默失败**（sed 的 s 命令不匹配
+      # 时不报错，原样输出）⇒ `VERSION` 变成**整行** `version = "1.0.0"`，
+      # 产物目录/压缩包名里于是带上了双引号，upload-artifact@v4 以「文件名含非法字符」
+      # 直接拒绝：`/rustshell-version = "1.0.0"-macos-x64-arm64.zip`。
+      # Windows runner 走 Git Bash 的 **GNU** sed，`\s` 生效 —— 所以同一个 workflow
+      # 只有 macOS 这一路红。
+      #
+      # 现在改用 awk 按引号切分：完全不涉及正则转义，GNU / BSD 行为一致。
+      # 顺带把「解析结果不合法」变成**当场失败**，不再拖到 upload 阶段才炸。
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(awk -F'"' '/^version/ { print $2; exit }' Cargo.toml)
+          case "$VERSION" in
+            '')
+              echo "::error::Cargo.toml 里找不到 ^version 行，取不到版本号"
+              exit 1
+              ;;
+            *[!0-9A-Za-z.+-]*)
+              echo "::error::版本号 '$VERSION' 含文件名非法字符（只允许 0-9 A-Z a-z . + -）"
+              exit 1
+              ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "版本号：$VERSION"
+
+      # rust_targets 由矩阵给：macOS 通用二进制要 aarch64 + x86_64 两个目标，
+      # 其余平台为空串（只装 host 目标）。dtolnay 这个 action 的 targets 是逗号分隔。
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
 
+      # Linux 的**构建期**系统依赖只有下面这几个 —— 逐条是从 Linux 目标的真实依赖闭包里
+      # 查出来的（`cargo metadata --filter-platform x86_64-unknown-linux-gnu` 后沿 deps
+      # 走一遍闭包，再扫每个包的 build.rs 里有没有 pkg-config）：
+      #   · libdbus-1-dev —— keyring → dbus-secret-service → dbus → libdbus-sys，
+      #       其 build.rs 直接 `pkg_config::probe("dbus-1")`，找不到就 panic
+      #       （提示就是 "sudo apt install libdbus-1-dev pkg-config"）⇒ 硬需求。
+      #   · libx11-dev —— gpui-pre-linux（非可选依赖）→ zed-scap → xcb → x11 crate。
+      #       x11 crate 只开了 `xlib` 一个 feature，它的 build.rs 就只 probe 一次
+      #       `x11 >= 1.4.99.1`，而且用 `.unwrap()` ⇒ 找不到同样 panic。
+      #   · libxcb1-dev —— 同一条链上的 libxcb 链接（xcb crate 的 xlib_xcb）。
+      #   · libfontconfig1-dev / libfreetype-dev —— gpui-pre-wgpu → zed-font-kit 的
+      #       Linux 字体后端：yeslogic-fontconfig-sys 是 `find_library("fontconfig").unwrap()`；
+      #       freetype-sys 则 probe `freetype2 >= 24.3.18`（probe 失败会退回用 cc 现场编
+      #       vendored 源码，能过但慢、且要 g++，所以照装）。
+      #   · build-essential / pkg-config —— ring 的 C 与汇编、以及上面几次 probe 的工具。
+      #
+      # 以下是**故意不装**的（同样查过闭包，装了纯属浪费）：
+      #   · libwayland-dev：wayland-sys 的 `dlopen` feature 已开，build.rs 直接返回；
+      #   · libegl* / libvulkan-dev：khronos-egl 是 `dynamic` + `no-pkg-config`，
+      #     ash 是 `loaded`，两者都运行时 dlopen；GPU 驱动由用户机器提供；
+      #   · libxkbcommon-dev：xkbcommon 0.8 没有任何 -sys 依赖、也没有 build.rs（同样 dlopen）。
+      - name: Install Linux system dependencies
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libdbus-1-dev \
+            libx11-dev libxcb1-dev \
+            libfontconfig1-dev libfreetype-dev
+
+      # key 里必须带 matrix.artifact：x64 与 arm64 两个 Linux job 的 runner.os 都是
+      # "Linux"、Cargo.lock 哈希也一样，不带 artifact 的话两条 job 会抢同一份缓存
+      # （arm64 job 可能把 x64 编出来的 target/ 全量恢复进来，白占磁盘还拖慢）。
+      # restore-keys 是给「Cargo.lock 变了」这种情况兜底的：精确 key 未命中时退到
+      # 同平台的前一份缓存，增量编译仍能重用绝大多数依赖（否则每次锁文件一动就全量重编）。
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -91,43 +199,119 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-release-${{ matrix.artifact }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-${{ matrix.artifact }}-
 
       - name: Build release
+        if: matrix.target != 'macos'
         run: cargo build --release -p rustshell
 
-      - name: Verify binary exists
+      # macOS：真·通用二进制。两条架构各编一遍再 lipo 合并 —— 与 scripts/build-macos.sh
+      # 完全同一口径。（此前 CI 只跑 host 单架构，却把产物命名成 macos-x64-arm64，
+      # Intel 机器解压后会直接 `bad CPU type in executable`；名字必须与内容一致，
+      # 下面的 Verify 会拿 `lipo -archs` 把这件事钉死。）
+      # 代价：macos job 的编译量约翻倍 —— 交叉目标要从头编整棵依赖树，缓存帮不上忙。
+      - name: Build release (macos universal)
+        if: matrix.target == 'macos'
         shell: bash
         run: |
-          ls -lh target/release/${{ matrix.bin_name }}
+          set -euo pipefail
+          cargo build --release -p rustshell --target aarch64-apple-darwin
+          cargo build --release -p rustshell --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/rustshell \
+            target/x86_64-apple-darwin/release/rustshell \
+            -output target/universal-apple-darwin/release/rustshell
+          file target/universal-apple-darwin/release/rustshell
+
+      # 两件必须当场抓住的事：
+      #   ① 产物真的在矩阵声明的 bin_name 上（写错时以前要拖到 upload 阶段才炸）；
+      #   ② 产物名里的架构 == 真实架构。runner 标签换架构（例如某个 -latest 悄悄换掉
+      #      宿主架构）不会报任何错，只会让产物名变成一句假话，所以在这里断言。
+      #      macOS 不查 host 架构（两条架构都是我们主动编的），改用 lipo -archs 查产物本身。
+      - name: Verify binary
+        shell: bash
+        env:
+          BIN: ${{ matrix.bin_name }}
+          EXPECT_ARCH: ${{ matrix.expect_arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          ls -lh "$BIN"
+          # `file` 不是 Git Bash 的自带命令（Windows runner 上没有），所以有条件地调 ——
+          # 不能直接写，否则 set -e 会把「打印文件类型」这种尽力而为的步骤变成失败。
+          if command -v file >/dev/null 2>&1; then file "$BIN"; fi
+          if [ "$TARGET" = "macos" ]; then
+            ARCHS="$(lipo -archs "$BIN")"
+            echo "通用二进制包含架构：$ARCHS"
+            case "$ARCHS" in
+              *x86_64*) ;;
+              *) echo "::error::产物缺少 x86_64 架构，名字里的 macos-x64 名不副实"; exit 1 ;;
+            esac
+            case "$ARCHS" in
+              *arm64*) ;;
+              *) echo "::error::产物缺少 arm64 架构，名字里的 macos-arm64 名不副实"; exit 1 ;;
+            esac
+          else
+            HOST_ARCH="$(uname -m)"
+            echo "runner 架构：$HOST_ARCH（矩阵声明 $EXPECT_ARCH）"
+            if [ "$HOST_ARCH" != "$EXPECT_ARCH" ]; then
+              echo "::error::runner 架构 $HOST_ARCH 与矩阵声明的 $EXPECT_ARCH 不一致（runner 标签换架构了？）"
+              exit 1
+            fi
+          fi
+          echo "校验通过：$BIN"
 
       - name: Stage portable package
         shell: bash
+        env:
+          # 走 env 而不是内插 ${{ }}：与 plan 段同一口径，值不会变成 shell 代码
+          VERSION: ${{ steps.ver.outputs.version }}
+          # bin_name 由矩阵给（macOS 指向 lipo 的产物），这里不再自己拼 target/release/
+          BIN: ${{ matrix.bin_name }}
         run: |
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
-          echo "Version: $VERSION"
+          set -euo pipefail
           STAGE="dist/rustshell-$VERSION-${{ matrix.artifact }}"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
-          cp "target/release/${{ matrix.bin_name }}" "$STAGE/"
+          cp "$BIN" "$STAGE/"
+          echo "已暂存：$STAGE（版本 $VERSION）"
 
       - name: Archive (windows)
         if: matrix.target == 'windows'
         shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
           cd dist
-          /c/Windows/System32/tar.exe -a -c -f "rustshell-$VERSION-windows-x64.zip" "rustshell-$VERSION-windows-x64"
-          ls -lh "rustshell-$VERSION-windows-x64.zip"
+          /c/Windows/System32/tar.exe -a -c -f "rustshell-$VERSION-${{ matrix.artifact }}.zip" "rustshell-$VERSION-${{ matrix.artifact }}"
+          ls -lh "rustshell-$VERSION-${{ matrix.artifact }}.zip"
 
       - name: Archive (macos)
         if: matrix.target == 'macos'
         shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
           cd dist
-          /usr/bin/zip -r -y "rustshell-$VERSION-macos-x64-arm64.zip" "rustshell-$VERSION-macos-x64-arm64"
-          ls -lh "rustshell-$VERSION-macos-x64-arm64.zip"
+          /usr/bin/zip -r -y "rustshell-$VERSION-${{ matrix.artifact }}.zip" "rustshell-$VERSION-${{ matrix.artifact }}"
+          ls -lh "rustshell-$VERSION-${{ matrix.artifact }}.zip"
+
+      # Linux 用 tar.gz 而不是 zip：可执行位在 tar 里是原生的，
+      # 用户 `tar -xzf` 解出来就能直接跑，不用再 `chmod +x`。
+      - name: Archive (linux)
+        if: matrix.target == 'linux'
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          NAME="rustshell-$VERSION-${{ matrix.artifact }}"
+          cd dist
+          tar -czf "$NAME.tar.gz" "$NAME"
+          ls -lh "$NAME.tar.gz"
 
       - name: Install cargo-packager (windows)
         if: matrix.target == 'windows'
@@ -143,11 +327,15 @@ jobs:
         if: matrix.target == 'windows'
         run: cargo packager --release
 
+      # 三个 glob 并列：每个平台只会命中自己那一种（Windows 才有 dist/packager/*，
+      # 且 macOS / Linux 只出 .zip / .tar.gz 之一），if-no-files-found: error 仍然有效
+      # —— 一个都没命中说明暂存或打包环节坏了，必须红。
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rustshell-${{ matrix.artifact }}
           path: |
             dist/rustshell-*.zip
+            dist/rustshell-*.tar.gz
             dist/packager/*
           if-no-files-found: error

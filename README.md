@@ -59,10 +59,6 @@ SFTP 文件传输、快捷指令、系统监控与可选的 AI 助手，全部�
 > `runner` 编排 control loop、`ai.rs` 负责 LLM 通信、`agent/` 负责工具定义与安全 / 预算裁决，
 >   
 > 前端（`ui/`）仅通过 `AgentUiEvent` 通道消费进度。
->
-> **状态**：早期阶段，持续开发中。**当前依赖的 `gpui-pre-platform` 0.3.4 仅提供 Windows 后端**，
-> 因此 Windows 11 是当前唯一实测可运行的平台；macOS / Linux 的打包脚本已就绪，但需上游先提供
-> 对应平台后端。1.0 之前 API / UX 仍可能变化。
 
 ### 特性
 
@@ -103,6 +99,7 @@ AI 是**可选**能力，默认不配置任何 Provider 即完全离线。开启
 
 - Windows：`rustshell-<version>-windows-x64.zip`（绿色版，解压即用）与 `rustshell_<version>_x64-setup.exe`（NSIS 安装包，免管理员安装到当前用户）
 - macOS：`rustshell-<version>-macos-x64-arm64.zip`（通用二进制，Intel / Apple Silicon 均可运行）
+- Linux：`rustshell-<version>-linux-x64.tar.gz` 与 `rustshell-<version>-linux-arm64.tar.gz`（解压后 `./rustshell` 直接运行，tar 保留可执行位）
 
 ### 方式二：从源码构建
 
@@ -111,7 +108,15 @@ AI 是**可选**能力，默认不配置任何 Provider 即完全离线。开启
 - **Rust** stable ≥ 1.85（`terminal/` 使用 edition 2024）
 - **Windows**：Visual Studio 2022 Build Tools（MSVC 链接器与 `rc.exe`）
 - **macOS**：Xcode Command Line Tools（`xcode-select --install`）
-- **Linux**：构建 GPUI 所需的系统库（X11 / Wayland + fontconfig 等，按发行版安装）
+- **Linux**：桌面环境 + 下列开发包（Ubuntu / Debian；`./scripts/build-linux.sh` 会先检查这几项）：
+
+  ```bash
+  sudo apt-get install -y build-essential pkg-config \
+    libdbus-1-dev libx11-dev libxcb1-dev libfontconfig1-dev libfreetype-dev
+  ```
+
+  运行时还需要 `libxkbcommon.so.0`、`libwayland-client.so.0`、`libX11.so.6`、fontconfig / freetype、
+  `libdbus-1` 以及一份 Vulkan 或 OpenGL 驱动（桌面发行版通常自带）。
 
 ```bash
 git clone https://github.com/Yuxxxy/RustShell.git
@@ -133,15 +138,21 @@ cargo build --release -p rustshell
 
 # macOS：universal binary + zip -> dist/
 ./scripts/build-macos.sh
+
+# Linux：tar.gz -> dist/（按本机架构命名 x64 / arm64）
+./scripts/build-linux.sh
 ```
 
-> 两个脚本都使用 `cd "$(dirname "$0")/.."` 回到仓库根，因此在任意工作目录下调用均可。
+> 三个脚本都使用 `cd "$(dirname "$0")/.."` 回到仓库根，因此在任意工作目录下调用均可。
 >   
 > Windows 安装包的产物位于 **`dist/packager/`**（`app/Cargo.toml` 中 `out-dir = "../dist/packager"`，
 >   
 > 相对 `cargo-packager` 的工作目录 `app/` 解析）。
+>   
+> macOS / Linux 脚本在打包前会断言产物架构与文件名一致（macOS 用 `lipo -archs` 查双架构、
+> Linux 用 `file` 查 ELF 架构），避免出现「名字写着 x64 却是 arm64」这类静默错配。
 
-打 tag 即触发 CI 构建两个平台的产物：
+打 tag 即触发 CI 构建三个平台（四个构建矩阵项）的全部产物：
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
@@ -195,8 +206,7 @@ git tag v1.0.0 && git push origin v1.0.0
 | 终端内复制 / 粘贴  | `Ctrl+Shift+C` / `Ctrl+Shift+V`         | `⌘C` / `⌘V`       |
 | 分屏（右 / 下）   | `Alt+R` / `Alt+D`                       | `⌥R` / `⌥D`        |
 | 设置          | `Ctrl+,`                                | `⌘,`              |
-| —（无独立快捷键）   | 在「设置 → 外观」中切换三态            | 同左               |
-| —（无独立快捷键）   | 通过活动栏或命令面板进入 AI 面板        | 同左               |
+
 
 全部绑定可在「设置 → 快捷键」中录制重绑并导入 / 导出。设计上刻意避开了 `Ctrl+K`、`Ctrl+L`
   
@@ -220,25 +230,11 @@ git tag v1.0.0 && git push origin v1.0.0
 
 ---
 
-## 路线图
-
-近期方向：
-
-- OpenSSH `~/.ssh/config` 导入、连接配置迁移导入导出
-- 端口转发（本地 / 远端 / SOCKS）完整管理与隧道列表
-- 断线自动重连（指数退避）、会话恢复
-- IME 输入法支持、会话日志落盘、系统托盘
-- SFTP 断点续传 / 拖拽上传、远程文件编辑回传
-- 命令行参数与 `ssh://` URL 关联、自动更新
-
 ---
 
 ## 已知限制
 
-- **Windows 11 是当前唯一可运行平台**：`gpui-pre-platform` 0.3.4 仅提供 Windows Win32/DirectWrite 后端（CI 亦据此固定在 `windows-latest`）。macOS / Linux 的打包脚本已就绪，但需上游提供对应平台后端后才能构建
-- 依赖 `gpui-pre` 的 pre-release 快照线与 `gpui-component` 0.6.x，上游 API 仍可能变动
-- 终端选区、超链接识别、OSC 标题 / cwd 追踪等细节仍在打磨
-- 打包产物未做代码签名，macOS 首次运行需手动允许（脚本已去除 quarantine 属性）
+- GPU较差的内网环境运行可能会卡顿
 
 ---
 

@@ -39,7 +39,16 @@ if ! cargo packager --version >/dev/null 2>&1; then
 fi
 cargo packager --version
 
-VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+# 版本号提取**不要**用 `sed -E 's/version\s*=\s*"([^"]+)"/\1/'`：`\s` 是 GNU sed
+# 扩展，BSD sed（macOS 自带 /usr/bin/sed）不认它 —— 会把 `\s` 当字面量 `s`，
+# 正则匹配不上、替换静默失败，`VERSION` 会变成整行 `version = "1.0.0"`，
+# 产物名里带上双引号（2026-10-16 CI 的 macOS 失败就是这个）。awk 按引号切分
+# 不涉及任何正则转义，GNU / BSD 行为一致。
+VERSION=$(awk -F'"' '/^version/ { print $2; exit }' Cargo.toml)
+if [ -z "$VERSION" ]; then
+  echo "无法从根 Cargo.toml 解析版本号（^version 行缺失或格式变了）" >&2
+  exit 1
+fi
 echo "    版本：$VERSION"
 echo "    格式：$FORMATS"
 

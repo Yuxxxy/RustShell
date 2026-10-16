@@ -55,10 +55,6 @@ No Electron, no WebView: terminal rendering is handled by the in-repo **`rustshe
 > agent harness**. `runner` drives the control loop, `ai.rs` handles LLM communication, and
 > `agent/` owns tool definitions plus the security/budget arbitration; the frontend (`ui/`)
 > only consumes progress over the `AgentUiEvent` channel.
->
-> **Status:** early-stage, actively developed. The current `gpui-pre-platform` 0.3.4 dependency
-> ships **a Windows backend only**, so Windows 11 is the sole platform that actually runs today;
-> macOS / Linux build scripts are in place but require upstream platform backends.
 
 ### Features
 
@@ -98,6 +94,7 @@ Grab a build from [Releases](https://github.com/Yuxxxy/RustShell/releases) or th
 
 - Windows: `rustshell-<version>-windows-x64.zip` (portable, unzip and run) and `rustshell_<version>_x64-setup.exe` (NSIS installer, installs to the current user without admin rights)
 - macOS: `rustshell-<version>-macos-x64-arm64.zip` (universal binary, runs on both Intel and Apple Silicon)
+- Linux: `rustshell-<version>-linux-x64.tar.gz` and `rustshell-<version>-linux-arm64.tar.gz` (untar and run `./rustshell`; tar preserves the executable bit)
 
 ### Option 2: Build from source
 
@@ -106,7 +103,15 @@ Prerequisites:
 - **Rust** stable ≥ 1.85 (`terminal/` uses edition 2024)
 - **Windows:** Visual Studio 2022 Build Tools (MSVC linker and `rc.exe`)
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`)
-- **Linux:** the system libraries GPUI needs (X11 / Wayland + fontconfig, depending on distro)
+- **Linux:** a desktop environment plus these dev packages (Ubuntu / Debian; `./scripts/build-linux.sh` checks them up front):
+
+  ```bash
+  sudo apt-get install -y build-essential pkg-config \
+    libdbus-1-dev libx11-dev libxcb1-dev libfontconfig1-dev libfreetype-dev
+  ```
+
+  At runtime you also need `libxkbcommon.so.0`, `libwayland-client.so.0`, `libX11.so.6`, fontconfig /
+  freetype, `libdbus-1`, and a Vulkan or OpenGL driver (desktop distros ship these anyway).
 
 ```bash
 git clone https://github.com/Yuxxxy/RustShell.git
@@ -128,14 +133,21 @@ Packaging (scripts live in [`scripts/`](./scripts); run them from the repo root)
 
 # macOS: universal binary + zip -> dist/
 ./scripts/build-macos.sh
+
+# Linux: tarball -> dist/ (named x64 / arm64 after the host architecture)
+./scripts/build-linux.sh
 ```
 
-> Both scripts do `cd "$(dirname "$0")/.."`, so they resolve the repo root and can be invoked from
+> All three scripts do `cd "$(dirname "$0")/.."`, so they resolve the repo root and can be invoked from
 > any working directory. The Windows installer lands in **`dist/packager/`**, because
 > `out-dir = "../dist/packager"` in `app/Cargo.toml` resolves relative to `app/`, which is
 > `cargo-packager`'s working directory.
+>
+> The macOS / Linux scripts assert that the built architecture matches the file name before packing
+> (`lipo -archs` for the macOS dual-arch binary, `file` for the Linux ELF), so a mislabelled artifact
+> cannot slip out silently.
 
-Pushing a tag triggers CI builds for both platforms:
+Pushing a tag triggers CI builds for all three platforms (four matrix entries):
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
@@ -221,22 +233,11 @@ shell when the terminal is focused.
 
 ---
 
-## Roadmap
 
-Near-term directions:
-
-- OpenSSH `~/.ssh/config` import, connection profile migration import / export
-- Full port-forwarding management (local / remote / SOCKS) and a tunnel list
-- Automatic reconnect with exponential backoff, session resume
-- IME support, session transcript logging, system tray
-- Resumable SFTP transfers / drag-and-drop upload, remote file edit write-back
-- CLI arguments and `ssh://` URL handling, auto-update
-
----
 
 ## Known limitations
 
-- **Windows 11 is currently the only runnable platform**: `gpui-pre-platform` 0.3.4 ships a Windows Win32/DirectWrite backend only (and CI is pinned to `windows-latest` accordingly). macOS / Linux packaging scripts exist but need upstream platform backends before they can build
+- **Windows 11 is the platform tested day to day**: `gpui-pre-platform` 0.3.5 ships Windows / macOS / Linux backends and the release workflow builds for all three (runners: `windows-latest`, `macos-latest`, `ubuntu-22.04`, `ubuntu-22.04-arm`). The macOS artifact is a real `lipo`-merged universal binary; the Linux artifacts are built on Ubuntu 22.04 (minimum glibc 2.35). The macOS / Linux paths have no on-device runtime regression suite yet — the build passing is all they guarantee
 - Depends on the `gpui-pre` pre-release snapshot line and `gpui-component` 0.6.x; upstream APIs may still change
 - Terminal selection, hyperlink recognition, OSC title / cwd tracking and similar details are still being polished
 - Release artifacts are not code-signed; first launch on macOS requires manual approval (the scripts strip the quarantine attribute)
