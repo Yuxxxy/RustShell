@@ -1642,6 +1642,20 @@ mod tests {
         main.update_in(&mut vcx.clone(), |m, window, cx| {
             m.ai_ui.ai_cfg.base_url = "https://api.deepseek.com/v1".into();
             m.ai_ui.ai_cfg.model = "deepseek-flash".into();
+            // **必须**把 `api_key_cipher` 也置上（与同文件 `ai_composer_shows_at_least_two_lines`、
+            // `the_expanded_tool_detail_can_be_selected_with_the_mouse` 同一口径）。
+            //
+            // `ai_cfg` 是 `MainView::new` 从 `paths::ai_config_path()`（开发机上的
+            // `%APPDATA%/rustshell/ai_config.json`）读进来的，而 `is_configured()`
+            // 要求**端点 / 模型 / key 三者齐全**。用例只覆盖了前两项 ⇒ 面板落到
+            // 「未配置 AI 服务」空态卡片并 `return`（`message_area` 态 1），消息列表
+            // 压根不建，轨迹块与确认卡片自然都找不到。
+            //
+            // 这就是 2026-10-16 CI 失败的全部原因：开发机上那份 ai_config.json 恰好
+            // 有一把真 key，本地因此是绿的；CI 是干净机器、没有这个文件 ⇒
+            // `ai-trace-ok` 缺席 ⇒ `ui\src\ai_panel.rs:1694` panic。
+            // 用例不能吃机器上的残留配置，自己把三件套配齐才算自洽。
+            m.ai_ui.ai_cfg.api_key_cipher = Some("cipher".into());
             m.ai_passthrough("", window, cx);
             // 一条 assistant 回复，带三行轨迹（成功 / 异常 / 等待确认）
             let mut reply = ChatMessage::assistant(1, "三台都看过了。");
