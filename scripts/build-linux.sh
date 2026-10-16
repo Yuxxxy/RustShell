@@ -12,11 +12,16 @@
 #
 # 前置要求：
 #   · rustup（stable toolchain）
-#   · 系统开发包（Ubuntu / Debian）：
-#       sudo apt-get install -y build-essential pkg-config \
-#         libdbus-1-dev libx11-dev libxcb1-dev libfontconfig1-dev libfreetype-dev
-#   · 运行时（运行产物的机器上）：libxkbcommon.so.0、libwayland-client.so.0、
-#     libX11.so.6、fontconfig / freetype、libdbus-1，以及一份 Vulkan 或 OpenGL 驱动
+#   · 系统开发包（Ubuntu / Debian）。这份清单的来历见 release.yml 里同名步骤的注释 ——
+#     按「build.rs 调 pkg-config」「只写 #[link(name = ...)] 但没有 build.rs」
+#     「CMake 现场构建」三类，逐条从 Linux 依赖闭包里查出来的：
+#       sudo apt-get install -y build-essential pkg-config cmake \
+#         libdbus-1-dev libx11-dev libxcb1-dev \
+#         libxkbcommon-dev libxkbcommon-x11-dev \
+#         libfontconfig1-dev libfreetype-dev
+#   · 运行时（运行产物的机器上）：libxkbcommon.so.0、libxkbcommon-x11.so.0、
+#     libwayland-client.so.0、libX11.so.6、fontconfig / freetype、libdbus-1，
+#     以及一份 Vulkan 或 OpenGL 驱动（桌面发行版通常自带）
 
 set -euo pipefail
 # 脚本位于 <repo>/scripts/，必须回到仓库根：VERSION 从根 Cargo.toml 读，
@@ -39,13 +44,18 @@ esac
 echo "    架构：$(uname -m) -> $ARCH"
 
 echo "==> 2/4 检查系统依赖"
-# 逐个 pkg-config 探测。这几条正是 Linux 目标依赖闭包里**真的会调 pkg-config** 的包
-# （gpui-pre-linux → zed-scap → xcb → x11 crate；keyring → dbus-secret-service；
-#  gpui-pre-wgpu → zed-font-kit → fontconfig / freetype）。它们各自的 build.rs 用的是
-# `.unwrap()` 或直接 panic ⇒ 缺一个就编不过，所以在这里提前说清楚，
-# 而不是让用户在 cargo build 的报错里大海捞针。
+# 逐个 pkg-config 探测。分两类 —— 缺了都会让 cargo build 失败，但**失败时机差别很大**：
+#   ① build.rs 里 probe 的（x11 / xcb / fontconfig / freetype / dbus-1）：build.rs 用的是
+#      `.unwrap()` 或直接 panic ⇒ 缺了当场就报，提示里常还带着 apt 包名；
+#   ② 只写 `#[link(name = "xkbcommon")]`、压根没有 build.rs 的：**编译期毫无征兆**，
+#      一路编到链接阶段才炸成 `unable to find library -lxkbcommon`（2026-10-16 的 Linux 红）。
+#      这类包同样提供 .pc（xkbcommon.pc / xkbcommon-x11.pc），所以照样能用 pkg-config 探。
+#   ③ cmake：rustls 的默认 provider aws-lc-rs 用 CMake 构建 aws-lc-sys，缺了同样会失败。
+# 在这里提前说清楚，好过让用户在 cargo build 的报错里大海捞针。
 missing=""
-for spec in "dbus-1:libdbus-1-dev" "x11:libx11-dev" "xcb:libxcb1-dev" "fontconfig:libfontconfig1-dev" "freetype2:libfreetype-dev"; do
+for spec in "dbus-1:libdbus-1-dev" "x11:libx11-dev" "xcb:libxcb1-dev" \
+  "xkbcommon:libxkbcommon-dev" "xkbcommon-x11:libxkbcommon-x11-dev" \
+  "fontconfig:libfontconfig1-dev" "freetype2:libfreetype-dev"; do
   pc="${spec%%:*}"
   pkg="${spec##*:}"
   if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists "$pc"; then
@@ -55,6 +65,10 @@ for spec in "dbus-1:libdbus-1-dev" "x11:libx11-dev" "xcb:libxcb1-dev" "fontconfi
     missing="$missing $pkg"
   fi
 done
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "    缺失 cmake（apt 包：cmake）"
+  missing="$missing cmake"
+fi
 if [ -n "$missing" ]; then
   echo "缺少系统开发包，先执行（Ubuntu / Debian）：" >&2
   echo "  sudo apt-get install -y build-essential pkg-config$missing" >&2

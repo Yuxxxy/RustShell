@@ -16,7 +16,12 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # JS Action 一律固定到「**首个**声明 `using: node24` 的主版本」：Node20 已于
+      # 2026-09-23 从所有 runner 上移除（官方时间线：2026-06-16 默认切 Node24，
+      # 2026-09-23 移除 Node20），旧版本既会打印弃用告警，下一轮也会被强制跑在 node24 上。
+      # checkout 与 cache 的首个 node24 主版本都是 v5（已核对 action.yml 的 runs.using）。
+      # ⚠️ upload-artifact 是例外，它的 v5 仍是 node20 —— 见 release.yml，别按这里"统一"。
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -24,7 +29,7 @@ jobs:
           components: rustfmt
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry

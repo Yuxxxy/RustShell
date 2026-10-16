@@ -70,6 +70,22 @@ jobs:
     outputs:
       targets: ${{ steps.pick.outputs.targets }}
     steps:
+      # v5 = checkout 的首个 node24 主版本（Node20 已于 2026-09-23 从 runner 移除）
+      - uses: actions/checkout@v5
+
+      # 先花 10 秒把三类「静默错」挡住，再决定要不要起 1~2 小时的编译
+      # （脚本：scripts/check-release-workflow.py）：
+      #   · 换行 / 不可见字符 —— 混进一个 CR，Linux/macOS 上的 bash 会把整行当成
+      #     选项名或命令名，报出来的错跟真实原因毫无关系（"invalid option name"、
+      #     "$'\r': command not found" 之类），排查成本极高；
+      #   · 每个 run 块的 shell 语法（bash -n，先把它里面的 ${{ }} 换成哑值）；
+      #   · 版本号能否从 Cargo.toml 解析出来、且不含文件名非法字符。
+      # 2026-10-16 那次 macOS 红（BSD sed 静默失败 → 产物名里带双引号 →
+      # upload-artifact 以「文件名含非法字符」拒绝）本来可以在这里就拦住。
+      - name: Preflight check
+        shell: bash
+        run: python3 scripts/check-release-workflow.py
+
       - id: pick
         name: Resolve build targets
         shell: bash
@@ -114,7 +130,8 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.targets) }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      # v5 = checkout 的首个 node24 主版本（Node20 已于 2026-09-23 从 runner 移除）
+      - uses: actions/checkout@v5
 
       # 版本号只在这里解析一次，后面每个打包步骤统一消费 —— 原先它们各自把同一行
       # `sed -E 's/version\s*=\s*"([^"]+)"/\1/'` 抄了一遍。
@@ -123,7 +140,7 @@ jobs:
       # BSD sed（macOS runner 的 /usr/bin/sed）不认它，会把 `\s` 当成字面量 `s`，
       # 正则因此匹配不到 `version = "1.0.0"` ⇒ 替换**静默失败**（sed 的 s 命令不匹配
       # 时不报错，原样输出）⇒ `VERSION` 变成**整行** `version = "1.0.0"`，
-      # 产物目录/压缩包名里于是带上了双引号，upload-artifact@v4 以「文件名含非法字符」
+      # 产物目录/压缩包名里于是带上了双引号，upload-artifact 以「文件名含非法字符」
       # 直接拒绝：`/rustshell-version = "1.0.0"-macos-x64-arm64.zip`。
       # Windows runner 走 Git Bash 的 **GNU** sed，`\s` 生效 —— 所以同一个 workflow
       # 只有 macOS 这一路红。
@@ -145,8 +162,15 @@ jobs:
               exit 1
               ;;
           esac
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "版本号：$VERSION"
+          # 产物基名只在这里拼一次：暂存目录名、压缩包名、上传时的匹配路径全部由它派生。
+          # 三处各自拼字符串 = 三处都可能拼错，而且拼错了也不会报错，只会静默产出一个
+          # 名字不对（但看起来很像对）的产物 —— 正是 2026-10-16 那次事故的形态。
+          PKG="rustshell-$VERSION-${{ matrix.artifact }}"
+          {
+            echo "version=$VERSION"
+            echo "pkg=$PKG"
+          } >> "$GITHUB_OUTPUT"
+          echo "版本号 $VERSION；产物基名 $PKG"
 
       # rust_targets 由矩阵给：macOS 通用二进制要 aarch64 + x86_64 两个目标，
       # 其余平台为空串（只装 host 目标）。dtolnay 这个 action 的 targets 是逗号分隔。
@@ -155,36 +179,62 @@ jobs:
         with:
           targets: ${{ matrix.rust_targets }}
 
-      # Linux 的**构建期**系统依赖只有下面这几个 —— 逐条是从 Linux 目标的真实依赖闭包里
-      # 查出来的（`cargo metadata --filter-platform x86_64-unknown-linux-gnu` 后沿 deps
-      # 走一遍闭包，再扫每个包的 build.rs 里有没有 pkg-config）：
-      #   · libdbus-1-dev —— keyring → dbus-secret-service → dbus → libdbus-sys，
-      #       其 build.rs 直接 `pkg_config::probe("dbus-1")`，找不到就 panic
-      #       （提示就是 "sudo apt install libdbus-1-dev pkg-config"）⇒ 硬需求。
-      #   · libx11-dev —— gpui-pre-linux（非可选依赖）→ zed-scap → xcb → x11 crate。
-      #       x11 crate 只开了 `xlib` 一个 feature，它的 build.rs 就只 probe 一次
-      #       `x11 >= 1.4.99.1`，而且用 `.unwrap()` ⇒ 找不到同样 panic。
-      #   · libxcb1-dev —— 同一条链上的 libxcb 链接（xcb crate 的 xlib_xcb）。
-      #   · libfontconfig1-dev / libfreetype-dev —— gpui-pre-wgpu → zed-font-kit 的
-      #       Linux 字体后端：yeslogic-fontconfig-sys 是 `find_library("fontconfig").unwrap()`；
-      #       freetype-sys 则 probe `freetype2 >= 24.3.18`（probe 失败会退回用 cc 现场编
-      #       vendored 源码，能过但慢、且要 g++，所以照装）。
-      #   · build-essential / pkg-config —— ring 的 C 与汇编、以及上面几次 probe 的工具。
+      # Linux 的**构建期**系统依赖 —— 逐条从 Linux 目标的真实依赖闭包里查出来：
+      #   `cargo metadata --filter-platform x86_64-unknown-linux-gnu` 沿 deps 走完闭包
+      #   （rustshell 的 Linux 闭包 712 个包，其中 28 个声明了外部链接），再扫每个包的
+      #   build.rs（pkg-config / rustc-link-lib）与源码里的 `#[link(name = ...)]`。
+      #   **依赖升级后重推一遍**：python3 scripts/audit-linux-link-libs.py
       #
-      # 以下是**故意不装**的（同样查过闭包，装了纯属浪费）：
-      #   · libwayland-dev：wayland-sys 的 `dlopen` feature 已开，build.rs 直接返回；
-      #   · libegl* / libvulkan-dev：khronos-egl 是 `dynamic` + `no-pkg-config`，
-      #     ash 是 `loaded`，两者都运行时 dlopen；GPU 驱动由用户机器提供；
-      #   · libxkbcommon-dev：xkbcommon 0.8 没有任何 -sys 依赖、也没有 build.rs（同样 dlopen）。
+      # 三个来源必须分清，漏掉第二类就是 2026-10-16 的 Linux 红：
+      #   ① build.rs 里调 pkg-config 的 —— 缺失时当场 panic，提示里通常带 apt 包名；
+      #   ② **只写 `#[link(name = "x")]`、压根没有 build.rs 的** —— 编译期不报错，
+      #      一路编到**链接**阶段才炸成 `unable to find library -lx`，且不提示装哪个包；
+      #   ③ 走 CMake / cc 现场构建的 —— 要 cmake / gcc。
+      #
+      #   · libdbus-1-dev ①—— keyring → dbus-secret-service → dbus → libdbus-sys，
+      #       build.rs 直接 `pkg_config::probe("dbus-1")`，找不到就 panic。
+      #   · libx11-dev ①—— gpui-pre-linux（非可选）→ zed-scap → xcb → x11 crate。
+      #       x11 的 build.rs 按 feature 逐项 probe，我们只开 `xlib`，故只 probe
+      #       `x11 >= 1.4.99.1`，而且用 `.unwrap()`。
+      #   · libxcb1-dev ①②—— 同一条链上的 libxcb（xcb crate 的 xlib_xcb；
+      #       x11rb 源码里的 `#[link(name = "xcb")]`）。
+      #   · libxkbcommon-dev / libxkbcommon-x11-dev ②—— **那次 Linux 红的根因**。
+      #       gpui-pre-linux 直接依赖 xkbcommon 0.8，而 `src/xkb/ffi.rs` 写的是
+      #       `#[link(name = "xkbcommon")]`、`src/xkb/x11/ffi.rs` 写的是
+      #       `#[link(name = "xkbcommon-x11")]`。它既没有 build.rs 也不走 pkg-config，
+      #       所以既不 panic 也不提示装包，只在链接时变成
+      #       `rust-lld: error: unable to find library -lxkbcommon`。
+      #       （x11 feature 确实是开着的：锁文件里 xkbcommon 的依赖含
+      #        as-raw-xcb-connection，那正是 x11 feature 带进来的。）
+      #       dev 包提供的正是链接用的 `libxkbcommon.so` / `libxkbcommon-x11.so`。
+      #   · libfontconfig1-dev / libfreetype-dev ①—— gpui-pre-wgpu → zed-font-kit 的
+      #       Linux 字体后端：yeslogic-fontconfig-sys 是 `find_library("fontconfig").unwrap()`；
+      #       freetype-sys probe `freetype2 >= 24.3.18`（probe 失败会退回 cc 现场编 vendored
+      #       源码，能过但慢、且要 g++，所以照装）。
+      #   · build-essential / pkg-config ③—— ring 的 C 与汇编、以及上面几次 probe 的工具。
+      #   · cmake ③—— rustls 的默认 provider 是 aws-lc-rs，其 aws-lc-sys 0.45 用 cmake crate
+      #       起 CMake 构建（NASM 只在 Windows 目标上需要）。runner 镜像本来自带 cmake，
+      #       这里显式装一次是为了不赌镜像内容。
+      #
+      # 以下是**故意不装**的（同样查过闭包，并对着链接器报错逐条反证，装了纯属浪费）：
+      #   · libwayland-dev：wayland-sys 的 build.rs 确实会 probe wayland-client 等四个 .pc，
+      #     但那几段全在 `dlopen` feature 门后，开了 dlopen 就直接返回 —— 不产生
+      #     `-lwayland-client`。**反证**：链接器会把所有找不到的 -l 一次性列出来，那次报错
+      #     里只有 xkbcommon 两个，没有 wayland ⇒ dlopen 路径确实生效。
+      #   · libegl* / libvulkan-dev：khronos-egl 是 `dynamic` + `no-pkg-config`、ash 是
+      #     `loaded`，都是运行时 dlopen（同上，报错里也没有 -lEGL / -lvulkan）；
+      #     GPU 驱动由用户机器提供。
+      #   · libssl-dev：锁文件里**没有 openssl-sys**，TLS 走纯 Rust 的 rustls。
       - name: Install Linux system dependencies
         if: matrix.target == 'linux'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
+            build-essential pkg-config cmake \
             libdbus-1-dev \
             libx11-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig1-dev libfreetype-dev
 
       # key 里必须带 matrix.artifact：x64 与 arm64 两个 Linux job 的 runner.os 都是
@@ -193,7 +243,8 @@ jobs:
       # restore-keys 是给「Cargo.lock 变了」这种情况兜底的：精确 key 未命中时退到
       # 同平台的前一份缓存，增量编译仍能重用绝大多数依赖（否则每次锁文件一动就全量重编）。
       - name: Cache cargo
-        uses: actions/cache@v4
+        # v5 = cache 的首个 node24 主版本（v4 是 node20，会在日志里打弃用告警）
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -268,36 +319,51 @@ jobs:
         shell: bash
         env:
           # 走 env 而不是内插 ${{ }}：与 plan 段同一口径，值不会变成 shell 代码
-          VERSION: ${{ steps.ver.outputs.version }}
+          PKG: ${{ steps.ver.outputs.pkg }}
           # bin_name 由矩阵给（macOS 指向 lipo 的产物），这里不再自己拼 target/release/
           BIN: ${{ matrix.bin_name }}
         run: |
           set -euo pipefail
-          STAGE="dist/rustshell-$VERSION-${{ matrix.artifact }}"
+          # 两个变量都先点名再使用：`:?` 在 set -u 下对「未设」和「空」都生效。
+          # 不写这两行的话，空的 PKG 会静默造出 "dist/rustshell--xxx" 这种看不出对错的
+          # 目录名、空的 BIN 只换来一句含糊的 cp 报错；写了之后这一段任何失败都能自证，
+          # 不必再回头猜「变量为什么是空的 / 报错行号为什么和仓库里对不上」。
+          : "${PKG:?产物基名解析失败（Resolve version 的输出丢了？）}"
+          : "${BIN:?bin_name 为空（矩阵项缺字段？）}"
+          STAGE="dist/$PKG"
+          echo "BIN   = $BIN"
+          echo "STAGE = $STAGE"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/"
-          echo "已暂存：$STAGE（版本 $VERSION）"
+          ls -lh "$STAGE/"
 
       - name: Archive (windows)
         if: matrix.target == 'windows'
         shell: bash
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          PKG: ${{ steps.ver.outputs.pkg }}
         run: |
+          set -euo pipefail
+          # 基名统一从 Resolve version 拿，不再各步自己拼一遍。
+          # set -e 也别省：压缩命令失败后若还有一条成功的 ls，整步会被判为通过。
+          : "${PKG:?}"
           cd dist
-          /c/Windows/System32/tar.exe -a -c -f "rustshell-$VERSION-${{ matrix.artifact }}.zip" "rustshell-$VERSION-${{ matrix.artifact }}"
-          ls -lh "rustshell-$VERSION-${{ matrix.artifact }}.zip"
+          /c/Windows/System32/tar.exe -a -c -f "$PKG.zip" "$PKG"
+          ls -lh "$PKG.zip"
 
       - name: Archive (macos)
         if: matrix.target == 'macos'
         shell: bash
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          PKG: ${{ steps.ver.outputs.pkg }}
         run: |
+          set -euo pipefail
+          : "${PKG:?}"
           cd dist
-          /usr/bin/zip -r -y "rustshell-$VERSION-${{ matrix.artifact }}.zip" "rustshell-$VERSION-${{ matrix.artifact }}"
-          ls -lh "rustshell-$VERSION-${{ matrix.artifact }}.zip"
+          # -y 保留符号链接（不加会把链接展开成副本）
+          /usr/bin/zip -r -y "$PKG.zip" "$PKG"
+          ls -lh "$PKG.zip"
 
       # Linux 用 tar.gz 而不是 zip：可执行位在 tar 里是原生的，
       # 用户 `tar -xzf` 解出来就能直接跑，不用再 `chmod +x`。
@@ -305,13 +371,13 @@ jobs:
         if: matrix.target == 'linux'
         shell: bash
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          PKG: ${{ steps.ver.outputs.pkg }}
         run: |
           set -euo pipefail
-          NAME="rustshell-$VERSION-${{ matrix.artifact }}"
+          : "${PKG:?}"
           cd dist
-          tar -czf "$NAME.tar.gz" "$NAME"
-          ls -lh "$NAME.tar.gz"
+          tar -czf "$PKG.tar.gz" "$PKG"
+          ls -lh "$PKG.tar.gz"
 
       - name: Install cargo-packager (windows)
         if: matrix.target == 'windows'
@@ -327,15 +393,22 @@ jobs:
         if: matrix.target == 'windows'
         run: cargo packager --release
 
-      # 三个 glob 并列：每个平台只会命中自己那一种（Windows 才有 dist/packager/*，
-      # 且 macOS / Linux 只出 .zip / .tar.gz 之一），if-no-files-found: error 仍然有效
-      # —— 一个都没命中说明暂存或打包环节坏了，必须红。
+      # 三个条目并列：前两条用 Resolve version 算出的**精确**基名（不再是通配），于是
+      # 「包名与版本号脱节」会以失败收场，而不是悄悄上传一个名字不对的产物 ——
+      # 2026-10-16 那次 macOS 红的实质就是「名字不对」，只是当时拖到 upload 才被拒。
+      # 每个平台只会命中自己那一条（macOS / Linux 只出 .zip / .tar.gz 之一，
+      # dist/packager/* 仅 Windows 有）；if-no-files-found: error 保证一个都没命中时必红。
+      # upload-artifact 必须用 v6，**不能只升到 v5**：v5.0.0 的 release note 措辞含糊，
+      # 但它的 action.yml 里 `runs.using` 实际仍是 `node20`（已直接拉取核对），
+      # node24 支持是从 v6.0.0 起（"Upload Artifact Node 24 support"）。
+      # 这是本次唯一需要跨两个大版本的一个；v6 的输入与 v4 完全一致
+      # （name / path / if-no-files-found 都在），所以下面无需改动。
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rustshell-${{ matrix.artifact }}
           path: |
-            dist/rustshell-*.zip
-            dist/rustshell-*.tar.gz
+            dist/${{ steps.ver.outputs.pkg }}.zip
+            dist/${{ steps.ver.outputs.pkg }}.tar.gz
             dist/packager/*
           if-no-files-found: error

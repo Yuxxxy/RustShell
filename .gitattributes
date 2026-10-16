@@ -1,0 +1,12 @@
+# 换行符口径写死在仓库里，不依赖各人本机的 core.autocrlf。
+#
+# 为什么只钉这几个后缀：CI 跑在 Linux / macOS runner 上，workflow 与 shell 脚本里混进
+# 一个 CR，bash 会把整行当成选项名或命令名，报出来的错跟真实原因毫无关系
+# （"invalid option name"、`$'\r': command not found`），2026-10-16 排查那次 macOS 失败
+# 时就在这上面绕了很久。本机 git 配了 core.autocrlf=true（工作树 CRLF、仓库 LF），
+# 这层保险是给「将来有人在 autocrlf=false 的机器上提交 CRLF」准备的。
+#
+# 校验：scripts/check-release-workflow.py 会在 CI 的 plan job 里当场拦住 CR。
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.sh     text eol=lf
