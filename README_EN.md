@@ -90,11 +90,20 @@ The AI assistant is **optional** — with no Provider configured, RustShell is f
 ### Option 1: Download a prebuilt package
 
 Grab a build from [Releases](https://github.com/Yuxxxy/RustShell/releases) or the Artifacts of
-[Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml):
+[Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml).
+Each platform ships exactly **one installer**, named `RustShell-<platform>-<version>.<ext>`:
 
-- Windows: `rustshell-<version>-windows-x64.zip` (portable, unzip and run) and `rustshell_<version>_x64-setup.exe` (NSIS installer, installs to the current user without admin rights)
-- macOS: `rustshell-<version>-macos-x64-arm64.zip` (universal binary, runs on both Intel and Apple Silicon)
-- Linux: `rustshell-<version>-linux-x64.tar.gz` and `rustshell-<version>-linux-arm64.tar.gz` (untar and run `./rustshell`; tar preserves the executable bit)
+- Windows 10/11 (x64): `RustShell-windows-x64-<version>.exe` — NSIS installer, installs to the current user without admin rights
+- macOS (Intel / Apple Silicon): `RustShell-macos-universal-<version>.dmg` — open it and drag RustShell into Applications
+- Linux (x64 / arm64): `RustShell-linux-<x64|arm64>-<version>.deb` — `sudo apt install ./RustShell-linux-x64-<version>.deb`
+
+> Pushing a `v*` tag publishes these files to the Releases page automatically; a manual
+> workflow run only produces Actions artifacts (GitHub wraps them in a zip on download —
+> the file inside is the one listed above).
+>
+> First launch: the Windows installer is not code-signed, so SmartScreen reports an unknown
+> publisher; the macOS app is ad-hoc signed only (not notarized) — right-click → Open, or run
+> `xattr -dr com.apple.quarantine /Applications/RustShell.app`.
 
 ### Option 2: Build from source
 
@@ -103,7 +112,7 @@ Prerequisites:
 - **Rust** stable ≥ 1.85 (`terminal/` uses edition 2024)
 - **Windows:** Visual Studio 2022 Build Tools (MSVC linker and `rc.exe`)
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`)
-- **Linux:** a desktop environment plus these dev packages (Ubuntu / Debian; `./scripts/build-linux.sh` checks them up front):
+- **Linux:** a desktop environment plus these dev packages (Ubuntu / Debian; `./scripts/package-linux.sh` checks them up front):
 
   ```bash
   sudo apt-get install -y build-essential pkg-config \
@@ -128,22 +137,23 @@ cargo build --release -p rustshell
 Packaging (scripts live in [`scripts/`](./scripts); run them from the repo root):
 
 ```bash
-# Windows: NSIS installer -> dist/packager/
+# Windows: NSIS installer -> dist/RustShell-windows-x64-<version>.exe
 ./scripts/package-windows.sh
 
-# macOS: universal binary + zip -> dist/
-./scripts/build-macos.sh
+# macOS: universal binary + .app + dmg -> dist/RustShell-macos-universal-<version>.dmg
+./scripts/package-macos.sh
 
-# Linux: tarball -> dist/ (named x64 / arm64 after the host architecture)
-./scripts/build-linux.sh
+# Linux: .deb -> dist/RustShell-linux-<x64|arm64>-<version>.deb
+./scripts/package-linux.sh
 ```
 
 > All three scripts do `cd "$(dirname "$0")/.."`, so they resolve the repo root and can be invoked from
-> any working directory. The Windows installer lands in **`dist/packager/`**, because
-> `out-dir = "../dist/packager"` in `app/Cargo.toml` resolves relative to `app/`, which is
-> `cargo-packager`'s working directory.
+> any working directory. Without arguments they **build first, then package**; pass a binary path to
+> package an existing build (that is how CI uses them). Windows keeps its intermediate output in
+> **`dist/packager/`** (`out-dir = "../dist/packager"` resolves relative to `app/`, `cargo-packager`'s
+> working directory) and writes the renamed installer to `dist/`.
 >
-> The macOS / Linux scripts assert that the built architecture matches the file name before packing
+> Before packing, each script asserts that the artifact architecture matches the file name
 > (`lipo -archs` for the macOS dual-arch binary, `file` for the Linux ELF), so a mislabelled artifact
 > cannot slip out silently.
 

@@ -9,23 +9,37 @@
 # 触发方式：
 #   · 手动：Actions 页 -> Release Build -> Run workflow（选择平台）
 #   · 打 tag：git tag v1.0.0 && git push origin v1.0.0
-# 产物：Actions 页对应 run 的 Artifacts 中下载。
+#     除 artifact 外还会**自动建 GitHub Release 并上传成品**（见文件末尾的 publish）。
 #
-# 四个矩阵项（另见 plan 段的 target 表）：
-#   · windows-x64      windows-latest   -> rustshell-<version>-windows-x64.zip（绿色包）
-#                                          + dist/packager/rustshell_<version>_x64-setup.exe（NSIS 安装包）
-#   · macos-x64-arm64  macos-latest     -> rustshell-<version>-macos-x64-arm64.zip（**真·通用二进制**：
-#                                          两条架构各编一遍再 lipo 合并，并由 lipo -archs 断言）
-#   · linux-x64        ubuntu-22.04     -> rustshell-<version>-linux-x64.tar.gz
-#   · linux-arm64      ubuntu-22.04-arm -> rustshell-<version>-linux-arm64.tar.gz
+# 产物：每个平台**只有一个可直接安装的文件**，命名规则全仓唯一 ——
+#
+#     RustShell-<平台>-<版本>.<扩展名>
+#
+#   · windows-x64      windows-latest   -> RustShell-windows-x64-<ver>.exe    （NSIS 安装包）
+#   · macos-universal  macos-latest     -> RustShell-macos-universal-<ver>.dmg（内含 .app + /Applications 软链）
+#   · linux-x64        ubuntu-22.04     -> RustShell-linux-x64-<ver>.deb
+#   · linux-arm64      ubuntu-22.04-arm -> RustShell-linux-arm64-<ver>.deb
+#
+# 为什么不再出「绿色包」（免安装 zip / tar.gz）：
+#   Actions 的 artifact 在下载时会被 GitHub **再包一层 zip**，于是用户拿到的是
+#   「压缩包里还有一个压缩包」；而绿色包本身就是压缩包，等于套娃两层。改成安装文件
+#   之后，.exe / .dmg / .deb 都不是压缩包，artifact 里就只剩这一个文件。
+#   安装文件的生成逻辑不写在 workflow 里，而是三个脚本（本地与 CI 共用同一份）：
+#     scripts/package-windows.sh（cargo-packager + 改名）
+#     scripts/package-macos.sh  （组装 .app + ad-hoc 签名 + dmg + 挂载校验）
+#     scripts/package-linux.sh  （目录树 + control + dpkg-deb + 包内容校验）
+#
+# macOS 用真正的通用二进制：x86_64 与 aarch64 各编一遍再 lipo 合并，
+# 并由 lipo -archs 断言（见 scripts/package-macos.sh 与下面的 Verify binary）。
 #
 # Linux 两条选 22.04 而不是 -latest（24.04）：产物要求的最低 glibc 由**构建机**决定，
 # 在 22.04（glibc 2.35）上构建才能在 22.04 及更新的发行版上跑；用 24.04 构建出来的
-# 二进制在 22.04 上会直接 `GLIBC_2.39 not found`。
+# 二进制在 22.04 上会直接 `GLIBC_2.39 not found`。.deb 的 Depends 里那条
+# `libc6 (>= 2.35)` 也是按构建机实测的 glibc 生成的（见 package-linux.sh）。
 #
 # Windows 侧的 NSIS 安装包由 cargo-packager 生成（配置在 app/Cargo.toml；
 # 本地等价命令是 ./scripts/package-windows.sh）。注意：packager 以 crate 目录 app/
-# 为工作目录，产物落在仓库根的 dist/packager/。
+# 为工作目录，中间产物落在仓库根的 dist/packager/，改名后的安装包落在 dist/。
 
 name: Release Build
 
@@ -55,13 +69,15 @@ jobs:
   #     （matrix 在 runs-on 和 steps.if 里可用，唯独 job 级 if 不可用——它求值早于矩阵展开）；
   #   · strategy.matrix 的取值本身又不支持表达式，所以也没法把「当前平台」塞进矩阵条件里绕开。
   # 于是先由 plan 算出「本次要构建的矩阵」，build 再用 fromJSON 消费。
-  # 好处：build 侧的公共骨架（取版本、装工具链、暂存、上传）只写一份，平台差异用 steps.if 分流。
+  # 好处：build 侧的公共骨架（取版本、装工具链、校验、上传）只写一份，平台差异用 steps.if 分流。
   #
   # 矩阵项字段（每加一个字段，build 里的引用点都要跟着改，所以字段名一次定准）：
   #   os            runner 标签
   #   target        平台分组，steps.if 用它做分支（windows / macos / linux）
-  #   artifact      产物名后缀：暂存目录名、压缩包名、upload-artifact 的 name 共用这一处
-  #   bin_name      构建产物在仓库根下的相对路径（Verify / Stage 都读它）
+  #   artifact      平台标识：**也是产物文件名里的平台段**（dist/RustShell-<artifact>-<ver>.<ext>）
+  #                 以及 artifact 名的来源。改它等于改最终发布出去的文件名。
+  #   ext           安装文件的扩展名：exe / dmg / deb
+  #   bin_name      构建产物在仓库根下的相对路径（Verify 与打包脚本都读它）
   #   rust_targets  交给 dtolnay/rust-toolchain 的附加 rustup 目标（逗号分隔，空串=不加）
   #   expect_arch   期望的 `uname -m`：守住「产物名字里的架构」与「runner 真实架构」一致。
   #                 macOS 留空 —— 那两条架构都是我们主动编的，改由 lipo -archs 查产物本身。
@@ -98,10 +114,10 @@ jobs:
           # 加个字段就漏抄一处（漏抄不会报错，只会让某个平台少一个产物）。
           # macOS 的 bin_name 指向 lipo 合并后的文件，不是 cargo 的 target/release/
           # （通用二进制的构建方式见下面 Build release (macos universal)）。
-          WIN_ITEM='{"os":"windows-latest","target":"windows","artifact":"windows-x64","bin_name":"target/release/rustshell.exe","rust_targets":"","expect_arch":"x86_64"}'
-          MAC_ITEM='{"os":"macos-latest","target":"macos","artifact":"macos-x64-arm64","bin_name":"target/universal-apple-darwin/release/rustshell","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","expect_arch":""}'
-          LIN_X64_ITEM='{"os":"ubuntu-22.04","target":"linux","artifact":"linux-x64","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"x86_64"}'
-          LIN_ARM_ITEM='{"os":"ubuntu-22.04-arm","target":"linux","artifact":"linux-arm64","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"aarch64"}'
+          WIN_ITEM='{"os":"windows-latest","target":"windows","artifact":"windows-x64","ext":"exe","bin_name":"target/release/rustshell.exe","rust_targets":"","expect_arch":"x86_64"}'
+          MAC_ITEM='{"os":"macos-latest","target":"macos","artifact":"macos-universal","ext":"dmg","bin_name":"target/universal-apple-darwin/release/rustshell","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","expect_arch":""}'
+          LIN_X64_ITEM='{"os":"ubuntu-22.04","target":"linux","artifact":"linux-x64","ext":"deb","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"x86_64"}'
+          LIN_ARM_ITEM='{"os":"ubuntu-22.04-arm","target":"linux","artifact":"linux-arm64","ext":"deb","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"aarch64"}'
 
           WIN="{\"include\":[$WIN_ITEM]}"
           MAC="{\"include\":[$MAC_ITEM]}"
@@ -133,7 +149,7 @@ jobs:
       # v5 = checkout 的首个 node24 主版本（Node20 已于 2026-09-23 从 runner 移除）
       - uses: actions/checkout@v5
 
-      # 版本号只在这里解析一次，后面每个打包步骤统一消费 —— 原先它们各自把同一行
+      # 版本号只在这里解析一次，后面每个步骤统一消费 —— 原先它们各自把同一行
       # `sed -E 's/version\s*=\s*"([^"]+)"/\1/'` 抄了一遍。
       #
       # 2026-10-16 Release #2 的 macOS 失败就出在这行：`\s` 是 **GNU sed 扩展**，
@@ -150,6 +166,9 @@ jobs:
       - name: Resolve version
         id: ver
         shell: bash
+        env:
+          # 平台段走 env 而不是内插 ${{ }}：与本文件其它地方同一口径
+          ARTIFACT: ${{ matrix.artifact }}
         run: |
           VERSION=$(awk -F'"' '/^version/ { print $2; exit }' Cargo.toml)
           case "$VERSION" in
@@ -162,10 +181,12 @@ jobs:
               exit 1
               ;;
           esac
-          # 产物基名只在这里拼一次：暂存目录名、压缩包名、上传时的匹配路径全部由它派生。
+          # 产物基名只在这里拼一次：打包脚本的产物名、上传时的匹配路径全部由它派生。
           # 三处各自拼字符串 = 三处都可能拼错，而且拼错了也不会报错，只会静默产出一个
           # 名字不对（但看起来很像对）的产物 —— 正是 2026-10-16 那次事故的形态。
-          PKG="rustshell-$VERSION-${{ matrix.artifact }}"
+          # 完整文件名 = dist/<pkg>.<ext>，与 scripts/package-*.sh 的产物名必须逐字相同
+          # （Packaged 后紧跟的 Verify installer 会拿这个路径去 stat）。
+          PKG="RustShell-$ARTIFACT-$VERSION"
           {
             echo "version=$VERSION"
             echo "pkg=$PKG"
@@ -183,7 +204,10 @@ jobs:
       #   `cargo metadata --filter-platform x86_64-unknown-linux-gnu` 沿 deps 走完闭包
       #   （rustshell 的 Linux 闭包 712 个包，其中 28 个声明了外部链接），再扫每个包的
       #   build.rs（pkg-config / rustc-link-lib）与源码里的 `#[link(name = ...)]`。
-      #   **依赖升级后重推一遍**：python3 scripts/audit-linux-link-libs.py
+      #   **依赖升级后要重新做这项审计**（脚本是一次性的，审计结论已固化在本清单与
+      #   scripts/package-linux.sh 的 pkg-config 探测里，故不入库）：
+      #     cargo metadata --filter-platform x86_64-unknown-linux-gnu --format-version 1
+      #   沿 deps 走闭包，再扫每个包的 build.rs 与 `#[link(name = ...)]`。
       #
       # 三个来源必须分清，漏掉第二类就是 2026-10-16 的 Linux 红：
       #   ① build.rs 里调 pkg-config 的 —— 缺失时当场 panic，提示里通常带 apt 包名；
@@ -258,8 +282,9 @@ jobs:
         if: matrix.target != 'macos'
         run: cargo build --release -p rustshell
 
-      # macOS：真·通用二进制。两条架构各编一遍再 lipo 合并 —— 与 scripts/build-macos.sh
-      # 完全同一口径。（此前 CI 只跑 host 单架构，却把产物命名成 macos-x64-arm64，
+      # macOS：真·通用二进制。两条架构各编一遍再 lipo 合并 —— 与
+      # scripts/package-macos.sh 的「不传参数」分支完全同一口径。
+      # （此前 CI 只跑 host 单架构，却把产物命名成 macos-x64-arm64，
       # Intel 机器解压后会直接 `bad CPU type in executable`；名字必须与内容一致，
       # 下面的 Verify 会拿 `lipo -archs` 把这件事钉死。）
       # 代价：macos job 的编译量约翻倍 —— 交叉目标要从头编整棵依赖树，缓存帮不上忙。
@@ -299,11 +324,11 @@ jobs:
             echo "通用二进制包含架构：$ARCHS"
             case "$ARCHS" in
               *x86_64*) ;;
-              *) echo "::error::产物缺少 x86_64 架构，名字里的 macos-x64 名不副实"; exit 1 ;;
+              *) echo "::error::产物缺少 x86_64 架构，名字里的 macos-universal 名不副实"; exit 1 ;;
             esac
             case "$ARCHS" in
               *arm64*) ;;
-              *) echo "::error::产物缺少 arm64 架构，名字里的 macos-arm64 名不副实"; exit 1 ;;
+              *) echo "::error::产物缺少 arm64 架构，名字里的 macos-universal 名不副实"; exit 1 ;;
             esac
           else
             HOST_ARCH="$(uname -m)"
@@ -315,89 +340,87 @@ jobs:
           fi
           echo "校验通过：$BIN"
 
-      - name: Stage portable package
-        shell: bash
-        env:
-          # 走 env 而不是内插 ${{ }}：与 plan 段同一口径，值不会变成 shell 代码
-          PKG: ${{ steps.ver.outputs.pkg }}
-          # bin_name 由矩阵给（macOS 指向 lipo 的产物），这里不再自己拼 target/release/
-          BIN: ${{ matrix.bin_name }}
-        run: |
-          set -euo pipefail
-          # 两个变量都先点名再使用：`:?` 在 set -u 下对「未设」和「空」都生效。
-          # 不写这两行的话，空的 PKG 会静默造出 "dist/rustshell--xxx" 这种看不出对错的
-          # 目录名、空的 BIN 只换来一句含糊的 cp 报错；写了之后这一段任何失败都能自证，
-          # 不必再回头猜「变量为什么是空的 / 报错行号为什么和仓库里对不上」。
-          : "${PKG:?产物基名解析失败（Resolve version 的输出丢了？）}"
-          : "${BIN:?bin_name 为空（矩阵项缺字段？）}"
-          STAGE="dist/$PKG"
-          echo "BIN   = $BIN"
-          echo "STAGE = $STAGE"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE"
-          cp "$BIN" "$STAGE/"
-          ls -lh "$STAGE/"
-
-      - name: Archive (windows)
-        if: matrix.target == 'windows'
-        shell: bash
-        env:
-          PKG: ${{ steps.ver.outputs.pkg }}
-        run: |
-          set -euo pipefail
-          # 基名统一从 Resolve version 拿，不再各步自己拼一遍。
-          # set -e 也别省：压缩命令失败后若还有一条成功的 ls，整步会被判为通过。
-          : "${PKG:?}"
-          cd dist
-          /c/Windows/System32/tar.exe -a -c -f "$PKG.zip" "$PKG"
-          ls -lh "$PKG.zip"
-
-      - name: Archive (macos)
-        if: matrix.target == 'macos'
-        shell: bash
-        env:
-          PKG: ${{ steps.ver.outputs.pkg }}
-        run: |
-          set -euo pipefail
-          : "${PKG:?}"
-          cd dist
-          # -y 保留符号链接（不加会把链接展开成副本）
-          /usr/bin/zip -r -y "$PKG.zip" "$PKG"
-          ls -lh "$PKG.zip"
-
-      # Linux 用 tar.gz 而不是 zip：可执行位在 tar 里是原生的，
-      # 用户 `tar -xzf` 解出来就能直接跑，不用再 `chmod +x`。
-      - name: Archive (linux)
-        if: matrix.target == 'linux'
-        shell: bash
-        env:
-          PKG: ${{ steps.ver.outputs.pkg }}
-        run: |
-          set -euo pipefail
-          : "${PKG:?}"
-          cd dist
-          tar -czf "$PKG.tar.gz" "$PKG"
-          ls -lh "$PKG.tar.gz"
-
+      # ── 打包：三个平台各出一个安装文件 ─────────────────────────────────────
+      #
+      # 具体逻辑不在 workflow 里，而在 scripts/package-*.sh —— 同一份实现既是
+      # CI 的打包步骤，也是本地的一条命令（不传参数即「先编译再打包」）。
+      # 这里只负责「装依赖 + 调用 + 验名」。
+      # macOS / Linux 会把矩阵给的 bin_name 作为参数传进去：脚本不会自己猜
+      # target/release/ —— macOS 的产物在 target/universal-apple-darwin/ 下，
+      # 猜错就等于安静地打包一个不存在的文件。Windows 例外：cargo-packager
+      # 的输入来自 cargo metadata，不读命令行参数（原因见下面那一步）。
       - name: Install cargo-packager (windows)
         if: matrix.target == 'windows'
         run: cargo install cargo-packager --locked --version ^0.11
 
-      # 安装包（NSIS）走 app/Cargo.toml 的 [package.metadata.packager]，
-      # 见 scripts/package-windows.sh。路径口径：`icons` / `installer-icon` 相对 **app/**
-      # 解析（packager 会切到 crate 目录），所以从仓库根执行是对的；
-      # `out-dir = "../dist/packager"` 同样相对 app/ 解析，产物落在仓库根的 dist/packager/。
-      # packager 只打包不构建，构建交给配置里的 before-packaging-command。
-      # 不写 --formats：默认取配置里的 formats（nsis），口径只有一处。
+      # 脚本内部：调用 packager → 把 `rustshell_<ver>_<arch>-setup.exe`
+      # 改名成 `RustShell-windows-<arch>-<ver>.exe` → 校验体积。
+      # 这里**不传 bin_name**：packager 的输入不来自命令行，而是 cargo metadata
+      # 推出来的 binaries 目录（`--release` ⇒ target/release）加配置里的
+      # before-packaging-command，传参数它也读不到。二进制是否在预期位置，
+      # 上一步 Verify binary 已经断言过。
+      # 不传 --formats：默认取 app/Cargo.toml 里的 formats（nsis），口径只有一处。
       - name: Package installer (windows)
         if: matrix.target == 'windows'
-        run: cargo packager --release
+        shell: bash
+        run: ./scripts/package-windows.sh
 
-      # 三个条目并列：前两条用 Resolve version 算出的**精确**基名（不再是通配），于是
-      # 「包名与版本号脱节」会以失败收场，而不是悄悄上传一个名字不对的产物 ——
-      # 2026-10-16 那次 macOS 红的实质就是「名字不对」，只是当时拖到 upload 才被拒。
-      # 每个平台只会命中自己那一条（macOS / Linux 只出 .zip / .tar.gz 之一，
-      # dist/packager/* 仅 Windows 有）；if-no-files-found: error 保证一个都没命中时必红。
+      # 脚本内部：组装 RustShell.app（Info.plist / PkgInfo / icns）→ ad-hoc 签名
+      # → hdiutil 出 UDZO 镜像 → 挂载回读校验 .app 与 /Applications 软链。
+      - name: Package installer (macos)
+        if: matrix.target == 'macos'
+        shell: bash
+        env:
+          # 走 env 而不是内插 ${{ }}：与本文件其它地方同一口径
+          BIN: ${{ matrix.bin_name }}
+        run: |
+          set -euo pipefail
+          : "${BIN:?bin_name 为空（矩阵项缺字段？）}"
+          ./scripts/package-macos.sh "$BIN"
+
+      # 脚本内部：目录树（/usr/bin + .desktop + hicolor 图标 + copyright）
+      # → 按构建机 glibc 生成 Depends → dpkg-deb --root-owner-group → 包内容校验。
+      # 第二个参数（架构）刻意**不传矩阵值**：脚本按 uname -m 取真实架构，
+      # 与上面 Verify binary 的 runner 架构断言互为印证；传矩阵值反而会掩盖
+      # 「runner 换架构了」这件事。
+      - name: Package installer (linux)
+        if: matrix.target == 'linux'
+        shell: bash
+        env:
+          BIN: ${{ matrix.bin_name }}
+        run: |
+          set -euo pipefail
+          : "${BIN:?bin_name 为空（矩阵项缺字段？）}"
+          ./scripts/package-linux.sh "$BIN"
+
+      # 打包脚本产出的文件名必须与 Resolve version 算出的**逐字相同**。
+      # 两者是独立推导的（脚本按自己的规则拼、这里按 matrix.artifact + version 拼），
+      # 所以这一条断言同时在守两件事：命名规则没漂移、产物确实存在。
+      # 少了它，名字不一致只会在 upload 阶段以「no files found」收场，
+      # 而那个报错看不出「是命名漂移还是压根没打包」。
+      - name: Verify installer
+        shell: bash
+        env:
+          PKG: ${{ steps.ver.outputs.pkg }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          : "${PKG:?产物基名解析失败（Resolve version 的输出丢了？）}"
+          : "${EXT:?ext 为空（矩阵项缺字段？）}"
+          OUT="dist/$PKG.$EXT"
+          if [ ! -f "$OUT" ]; then
+            echo "::error::没有找到 $OUT —— 打包脚本的产物名与 workflow 的命名规则不一致，或打包其实失败了"
+            echo "dist/ 实际内容："
+            ls -lR dist || true
+            exit 1
+          fi
+          ls -lh "$OUT"
+
+      # 只传**这一个**文件。以前这里有三条 glob（绿色 zip + tar.gz + packager 目录），
+      # 于是下载 artifact 时用户拿到的是「zip 里还有一个 zip」。
+      # artifact 名带上版本号：同一次 run 的四个平台名互不冲突，
+      # 且历史 run 里翻 artifact 时能直接看出是哪个版本。
+      # artifact-name 与文件名刻意一致（下载得到 <名字>.zip，里面就是 <名字>.<ext>）。
       # upload-artifact 必须用 v6，**不能只升到 v5**：v5.0.0 的 release note 措辞含糊，
       # 但它的 action.yml 里 `runs.using` 实际仍是 `node20`（已直接拉取核对），
       # node24 支持是从 v6.0.0 起（"Upload Artifact Node 24 support"）。
@@ -406,9 +429,115 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: rustshell-${{ matrix.artifact }}
-          path: |
-            dist/${{ steps.ver.outputs.pkg }}.zip
-            dist/${{ steps.ver.outputs.pkg }}.tar.gz
-            dist/packager/*
+          name: ${{ steps.ver.outputs.pkg }}
+          path: dist/${{ steps.ver.outputs.pkg }}.${{ matrix.ext }}
           if-no-files-found: error
+
+  # 打 tag 推送（v1.0.0）时，把四个成品发布到 GitHub Release。
+  #
+  # 为什么还要 Release：Actions 的 artifact 在下载时会被 GitHub **再包一层 zip**，
+  # 用户点「Download」拿到的是 `RustShell-windows-x64-1.0.0.zip`，里面才是 exe。
+  # Release 页的 assets 则是文件本身，点一下就是 .exe / .dmg / .deb。
+  #
+  # 只有 tag 触发才发布；workflow_dispatch 手动跑只出 artifact（便于试跑，
+  # 不至于每次调试都在仓库里留一个 Release）。
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create/upload 要写权限；actions: read 留给 artifact 下载
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      # tag 与 Cargo.toml 必须一致：拿 v1.0.1 的 tag 打出 1.0.0 的包，是 Release 页上
+      # 看起来完全正常、装上去版本号却不对的一类错误。
+      - name: Resolve version
+        id: ver
+        shell: bash
+        env:
+          # ref_name 在 tag 触发时是 `v1.0.0`
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION=$(awk -F'"' '/^version/ { print $2; exit }' Cargo.toml)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Cargo.toml 里找不到 ^version 行，取不到版本号"
+            exit 1
+          fi
+          TAG_VERSION="${TAG#v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::tag $TAG 与 Cargo.toml 的版本 $VERSION 不一致 —— 先改版本号再打 tag"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag $TAG 与版本号 $VERSION 一致"
+
+      # merge-multiple: true —— 四个 artifact 平铺进 dist/，而不是各占一个子目录。
+      # 必须用 v8（node24）：v5/v6 的 action.yml 里 runs.using 仍是 node20，
+      # 而 Node20 已于 2026-09-23 从 runner 移除。v7 起才有 Node24 支持。
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          : "${TAG:?}"
+          : "${VERSION:?}"
+          ls -lh dist
+
+          # 断言每个文件都符合 RustShell-<平台>-<版本>.<exe|dmg|deb>。
+          # 这条只是兜底：真正拦住命名漂移的是 build 里的 Verify installer。
+          BAD=$(find dist -maxdepth 1 -type f \
+            ! -name "RustShell-*-$VERSION.exe" \
+            ! -name "RustShell-*-$VERSION.dmg" \
+            ! -name "RustShell-*-$VERSION.deb")
+          if [ -n "$BAD" ]; then
+            echo "::error::下列文件不符合命名规则："
+            echo "$BAD"
+            exit 1
+          fi
+          COUNT=$(find dist -maxdepth 1 -type f | wc -l)
+          echo "待发布文件 $COUNT 个"
+
+          # 发布说明：直接写「下载哪个 + 怎么装」，而不是指望用户去翻 README。
+          # 未签名/未公证的后果必须写在最显眼的位置 —— 否则用户第一句反馈
+          # 一定是「打不开，说未知发布者」。
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "## 下载"
+            echo
+            echo "| 平台 | 文件 | 说明 |"
+            echo "| --- | --- | --- |"
+            echo "| Windows 10/11 (x64) | \`RustShell-windows-x64-$VERSION.exe\` | NSIS 安装包，装到当前用户，不弹 UAC |"
+            echo "| macOS (Intel / Apple Silicon) | \`RustShell-macos-universal-$VERSION.dmg\` | 打开后把 RustShell 拖进「应用程序」 |"
+            echo "| Linux (x64) | \`RustShell-linux-x64-$VERSION.deb\` | \`sudo apt install ./RustShell-linux-x64-$VERSION.deb\` |"
+            echo "| Linux (arm64) | \`RustShell-linux-arm64-$VERSION.deb\` | \`sudo apt install ./RustShell-linux-arm64-$VERSION.deb\` |"
+            echo
+            echo "## 首次运行"
+            echo
+            echo "- **Windows**：安装包未做代码签名，SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」。"
+            echo "- **macOS**：dmg 里的 App 只做了 ad-hoc 签名、未公证，首次请**右键 → 打开**；"
+            echo "  或在终端执行 \`xattr -dr com.apple.quarantine /Applications/RustShell.app\`。"
+            echo "- **Linux**：.deb 会一并装好桌面入口与图标；也可以直接命令行运行 \`rustshell\`。"
+          } > "$NOTES"
+
+          # 已存在就只补传（--clobber 覆盖同名 asset），否则新建。
+          # 这样「打 tag 失败 → 重跑」不会因为 Release 已存在而整步失败。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，改为补传"
+          else
+            gh release create "$TAG" --title "RustShell $TAG" --notes-file "$NOTES"
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          echo "已发布："
+          gh release view "$TAG" --json assets --jq '.assets[] | "  \(.name)  \(.size) 字节"'

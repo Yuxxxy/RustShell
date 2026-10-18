@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=RustShell
+GenericName=Terminal & SSH Client
+Comment=SSH / 终端 / SFTP 一体化桌面客户端
+Comment[zh_CN]=SSH / 终端 / SFTP 一体化桌面客户端
+# .deb 里二进制装到 /usr/bin/rustshell（见 scripts/package-linux.sh），
+# 这里写**裸命令名**而不是绝对路径：dpkg 的 lintian 要求 Exec 用 PATH 解析，
+# 且以后换安装前缀时不用改这个文件。
+Exec=rustshell
+# 图标名与 hicolor 里落盘的文件名（rustshell.png）必须一致，否则启动器显示空白图标。
+Icon=rustshell
+Terminal=false
+# 不声明 StartupWMClass：gpui 设置 WM_CLASS 的时机在首帧之后，写死一个猜的值
+# 只会在启动器里多出一个「未归类」条目，不如不写。
+StartupNotify=true
+Categories=Development;Utility;TerminalEmulator;
+Keywords=ssh;sftp;terminal;shell;server;终端;服务器;

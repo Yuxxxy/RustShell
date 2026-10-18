@@ -20,10 +20,15 @@ embed-resource = "3"
 #
 # 用法：
 #     cargo install cargo-packager --locked     # 只需一次
-#     ./package-windows.sh                      # 或直接 cargo packager --release
-# 产物：dist/packager/rustshell_<version>_x64-setup.exe
+#     ./scripts/package-windows.sh              # 推荐：打包 + 统一改名 + 校验
+#     cargo packager --release                  # 只打包：产物名是 packager 自己拼的
+# 产物：
+#     dist/RustShell-windows-<arch>-<version>.exe          ← 发布用（脚本改名后的）
+#     dist/packager/rustshell_<version>_<arch>-setup.exe   ← packager 的原始输出
 #   文件名由 packager 固定拼成「**二进制名** + 版本 + 架构 + `-setup.exe`」，
-#   `product-name` 只影响安装界面/开始菜单/安装目录里显示的名字，改不动文件名。
+#   `product-name` 只影响安装界面/开始菜单/安装目录里显示的名字，改不动文件名 ——
+#   所以发布用的 `RustShell-<平台>-<版本>.<扩展名>` 由 scripts/package-windows.sh
+#   在打包后改名得到（三个平台同一条命名规则，见 .github/workflows/release.yml）。
 #
 # 为什么配置写在 `app/` 而不是仓库根：packager 从 cargo metadata 的**每个包**里
 # 读 `[package.metadata.packager]`，而根 Cargo.toml 是 virtual workspace（没有
@@ -35,7 +40,7 @@ embed-resource = "3"
 # `app/dist/packager/`，且 `app/assets/rustshell.ico` 这种「仓库根口径」的写法
 # 直接报 `I/O Error (app/assets/rustshell.ico): 系统找不到指定的路径`。
 # 所以下面写 `assets/...` 与 `../dist/packager`（产物仍落在仓库根的 dist/ 下，
-# 与 build-macos.sh / CI 的口径一致）。
+# 与 scripts/package-*.sh 及 CI 的口径一致）。
 #
 # 未配置的项由 packager 从 cargo metadata 兜底（源码 `cli/config.rs`）：
 # name / version / description / authors / binaries 全部自动推导，别在这里重复写死
@@ -52,7 +57,7 @@ publisher = "RustShell"
 # 版权声明：写进 exe 的 VERSIONINFO 与安装包属性。这里是**著作权人**，不是许可证名
 # —— 误填成 "Apache-2.0" 会让「右键属性 → 详细信息 → 版权」显示成许可证。
 # 许可证另由 Cargo.toml 的 `license.workspace`（= Apache-2.0）与仓库根 LICENSE 声明。
-copyright = "Copyright 2026 于新宇"
+copyright = "Copyright 2026 yuxinyu"
 # 图标与 exe 资源里嵌的是同一个文件（app/build.rs 也用它），
 # 避免出现「装好的程序」与「安装器/快捷方式」长得不一样。
 icons = ["assets/rustshell.ico"]

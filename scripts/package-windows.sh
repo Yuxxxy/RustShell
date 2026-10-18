@@ -4,8 +4,11 @@
 # 用法（从任意目录执行均可，脚本会自动定位仓库根）：
 #   ./scripts/package-windows.sh         # NSIS 安装包（.exe，默认）
 #   ./scripts/package-windows.sh nsis,wix   # 再出一个 .msi（wix 需本机已装 WiX Toolset）
-# 产物：dist/packager/rustshell_<version>_x64-setup.exe
-#   （文件名是「二进制名_版本_架构-setup.exe」，由 packager 固定拼出）
+# 产物：dist/RustShell-windows-<x64|arm64>-<version>.exe
+#   命名规则全仓唯一：`RustShell-<平台>-<版本>.<扩展名>`。
+#   cargo-packager 自己固定拼出的是 `rustshell_<version>_<arch>-setup.exe`
+#   （前缀是**二进制名**，product-name 改不动它），所以最后一步统一改名 ——
+#   三平台的产物名因此出自同一条规则（见 release.yml 的 Resolve version）。
 #
 # 前置（只需一次）：
 #   cargo install cargo-packager --locked
@@ -30,7 +33,7 @@ cd "$(dirname "$0")/.."
 
 FORMATS="${1:-nsis}"
 
-echo "==> 1/4 检查工具链"
+echo "==> 1/5 检查工具链"
 command -v cargo >/dev/null || { echo "未找到 cargo，请先安装 rustup"; exit 1; }
 if ! cargo packager --version >/dev/null 2>&1; then
   echo "未安装 cargo-packager。先执行："
@@ -138,11 +141,11 @@ provision_nsis() {
   fi
 
   if [ "$need_base" -eq 0 ] && [ "$need_aid" -eq 0 ] && [ "$need_utils" -eq 0 ]; then
-    echo "==> 2/4 NSIS 工具链就绪，跳过下载（$NSIS_DIR）"
+    echo "==> 2/5 NSIS 工具链就绪，跳过下载（$NSIS_DIR）"
     return 0
   fi
 
-  echo "==> 2/4 补齐 NSIS 工具链"
+  echo "==> 2/5 补齐 NSIS 工具链"
   command -v curl >/dev/null    || { echo "    需要 curl，跳过补齐"; return 0; }
   command -v sha1sum >/dev/null || { echo "    需要 sha1sum，跳过补齐"; return 0; }
 
@@ -220,23 +223,66 @@ provision_nsis() {
 
 provision_nsis
 
-echo "==> 3/4 打包（构建 release 由配置里的 before-packaging-command 负责）"
+echo "==> 3/5 打包（构建 release 由配置里的 before-packaging-command 负责）"
 cargo packager --release --formats "$FORMATS"
 
-echo "==> 4/4 校验产物"
-# 产物落在仓库根的 dist/packager/（app/Cargo.toml 里 out-dir = "../dist/packager"，
-# 相对 packager 的工作目录 app/ 解析）
+echo "==> 4/5 统一命名"
+# packager 的产物名是它自己拼的：`rustshell_<version>_<arch>-setup.exe`，
+# 前缀取的是**二进制名**，`product-name` 只影响安装界面显示，改不动文件名
+# （见 app/Cargo.toml 里那段注释）。这里把它改成与外平台一致的
+# `RustShell-windows-<arch>-<version>.exe`。
 OUT_DIR="dist/packager"
-# 若 packager 改了产物命名规则，这里会明确报出来，而不是让人以为「打包没跑」
 if ! ls "$OUT_DIR"/* >/dev/null 2>&1; then
-  echo "打包结束但 $OUT_DIR 里没有产物 —— 检查上面的 packager 输出"
+  echo "打包结束但 $OUT_DIR 里没有产物 —— 检查上面的 packager 输出" >&2
   exit 1
 fi
-ls -lh "$OUT_DIR"/
+
+# 用通配匹配而不是写死 `_x64-setup.exe`：packager 若改了命名规则，
+# 这里会**明确报错并列出实际文件名**，而不是让人以为「打包没跑」。
+# 只处理 NSIS 的 .exe：`--formats wix` 产出的 .msi 不在发布口径内
+# （三个平台的发布产物是 exe / dmg / deb，多一个 .msi 只会让「下哪个」变模糊）。
+NSIS=""
+for candidate in "$OUT_DIR"/rustshell_"$VERSION"_*-setup.exe; do
+  # 通配没命中时，bash 会把模式原样留在变量里 —— 必须判 -f，不能只看非空
+  [ -f "$candidate" ] && NSIS="$candidate"
+done
+if [ -z "$NSIS" ]; then
+  echo "没有找到 NSIS 安装包（期望 $OUT_DIR/rustshell_${VERSION}_<arch>-setup.exe）。实际内容：" >&2
+  ls -l "$OUT_DIR"/ >&2
+  exit 1
+fi
+
+# 架构后缀从**实际文件名**里取，不假设一定是 x64 —— 产物名里的架构必须是真的
+# （ARM64 Windows 上编出来的包还叫 x64，就是一句假话）。
+case "$(basename "$NSIS")" in
+*_x64-setup.exe) ARCH=x64 ;;
+*_arm64-setup.exe) ARCH=arm64 ;;
+*)
+  echo "无法从 $NSIS 识别架构（期望 …_x64-setup.exe / …_arm64-setup.exe）" >&2
+  exit 1
+  ;;
+esac
+
+OUT="dist/RustShell-windows-$ARCH-$VERSION.exe"
+mkdir -p dist
+# cp 而不是 mv：保留 packager 的原始产物便于排查（它才是工具的直接输出）
+cp -f "$NSIS" "$OUT"
+ls -lh "$OUT"
+
+echo "==> 5/5 校验产物"
+# 两个断言：文件非空、体积在合理量级。安装包被截断/只写了个头，症状是
+# 「双击闪一下就没了」，比直接报错难查得多。
+[ -s "$OUT" ] || { echo "$OUT 是空文件" >&2; exit 1; }
+SIZE_BYTES=$(wc -c < "$OUT")
+if [ "$SIZE_BYTES" -lt 1000000 ]; then
+  echo "$OUT 只有 $SIZE_BYTES 字节，明显不是完整安装包" >&2
+  exit 1
+fi
+echo "校验通过：$OUT（$((SIZE_BYTES / 1024)) KiB）"
 
 cat <<EOF
 
-完成。安装包在 $OUT_DIR/ 下：
-  · NSIS 安装包（.exe）：装到当前用户目录，不弹 UAC
+完成。安装包：$OUT
+  · NSIS 安装包（.exe）：装到当前用户目录（%LOCALAPPDATA%），不弹 UAC
   · 安装前请先按需卸载旧版本；本安装包未做代码签名，SmartScreen 会提示「未知发布者」
 EOF

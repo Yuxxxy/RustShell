@@ -94,12 +94,20 @@ AI 是**可选**能力，默认不配置任何 Provider 即完全离线。开启
 ### 方式一：下载预构建包
 
 在 [Releases](https://github.com/Yuxxxy/RustShell/releases) 或
-  
-[Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml) 的 Artifacts 中取包：
 
-- Windows：`rustshell-<version>-windows-x64.zip`（绿色版，解压即用）与 `rustshell_<version>_x64-setup.exe`（NSIS 安装包，免管理员安装到当前用户）
-- macOS：`rustshell-<version>-macos-x64-arm64.zip`（通用二进制，Intel / Apple Silicon 均可运行）
-- Linux：`rustshell-<version>-linux-x64.tar.gz` 与 `rustshell-<version>-linux-arm64.tar.gz`（解压后 `./rustshell` 直接运行，tar 保留可执行位）
+[Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml) 的 Artifacts 中取包。
+每个平台只有一个**安装文件**，命名统一为 `RustShell-<平台>-<版本>.<扩展名>`：
+
+- Windows 10/11（x64）：`RustShell-windows-x64-<version>.exe` —— NSIS 安装包，装到当前用户目录，不弹 UAC
+- macOS（Intel / Apple Silicon）：`RustShell-macos-universal-<version>.dmg` —— 打开后把 RustShell 拖进「应用程序」
+- Linux（x64 / arm64）：`RustShell-linux-<x64|arm64>-<version>.deb` —— `sudo apt install ./RustShell-linux-x64-<version>.deb`
+
+> 推 `v*` tag 会自动发布到 Releases 页（下载即是上面的文件）；手动跑 workflow 只在
+> Artifacts 里出包（Actions 的 artifact 下载时会被 GitHub 包一层 zip，解压后就是该文件）。
+>
+> 首次运行提示：Windows 安装包未做代码签名，SmartScreen 会提示「未知发布者」；
+> macOS 侧的 App 只做了 ad-hoc 签名、未公证，首次请**右键 → 打开**（或
+> `xattr -dr com.apple.quarantine /Applications/RustShell.app`）。
 
 ### 方式二：从源码构建
 
@@ -108,7 +116,7 @@ AI 是**可选**能力，默认不配置任何 Provider 即完全离线。开启
 - **Rust** stable ≥ 1.85（`terminal/` 使用 edition 2024）
 - **Windows**：Visual Studio 2022 Build Tools（MSVC 链接器与 `rc.exe`）
 - **macOS**：Xcode Command Line Tools（`xcode-select --install`）
-- **Linux**：桌面环境 + 下列开发包（Ubuntu / Debian；`./scripts/build-linux.sh` 会先检查这几项）：
+- **Linux**：桌面环境 + 下列开发包（Ubuntu / Debian；`./scripts/package-linux.sh` 会先检查这几项）：
 
   ```bash
   sudo apt-get install -y build-essential pkg-config \
@@ -133,23 +141,24 @@ cargo build --release -p rustshell
 打包分发（脚本位于 [`scripts/`](./scripts)，从仓库根执行）：
 
 ```bash
-# Windows：NSIS 安装包 -> dist/packager/
+# Windows：NSIS 安装包 -> dist/RustShell-windows-x64-<version>.exe
 ./scripts/package-windows.sh
 
-# macOS：universal binary + zip -> dist/
-./scripts/build-macos.sh
+# macOS：通用二进制 + .app + dmg -> dist/RustShell-macos-universal-<version>.dmg
+./scripts/package-macos.sh
 
-# Linux：tar.gz -> dist/（按本机架构命名 x64 / arm64）
-./scripts/build-linux.sh
+# Linux：.deb -> dist/RustShell-linux-<x64|arm64>-<version>.deb
+./scripts/package-linux.sh
 ```
 
-> 三个脚本都使用 `cd "$(dirname "$0")/.."` 回到仓库根，因此在任意工作目录下调用均可。
+> 三个脚本都使用 `cd "$(dirname "$0")/.."` 回到仓库根，因此在任意工作目录下调用均可；
+> 不带参数时**先编译再打包**，带一个二进制路径参数时只打包（CI 就是这么用的）。
 >   
-> Windows 安装包的产物位于 **`dist/packager/`**（`app/Cargo.toml` 中 `out-dir = "../dist/packager"`，
+> Windows 的中间产物位于 **`dist/packager/`**（`app/Cargo.toml` 中 `out-dir = "../dist/packager"`，
 >   
-> 相对 `cargo-packager` 的工作目录 `app/` 解析）。
+> 相对 `cargo-packager` 的工作目录 `app/` 解析），改名后的安装包落在 `dist/`。
 >   
-> macOS / Linux 脚本在打包前会断言产物架构与文件名一致（macOS 用 `lipo -archs` 查双架构、
+> 三个脚本在打包前都会断言产物架构与文件名一致（macOS 用 `lipo -archs` 查双架构、
 > Linux 用 `file` 查 ELF 架构），避免出现「名字写着 x64 却是 arm64」这类静默错配。
 
 打 tag 即触发 CI 构建三个平台（四个构建矩阵项）的全部产物：

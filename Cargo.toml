@@ -6,7 +6,7 @@ members = ["app", "shell", "ui", "core", "platform", "terminal"]
 version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
-authors = ["于新宇"]
+authors = ["yuxinyu"]
 
 [workspace.dependencies]
 # --- GPUI 生态（统一版本线：gpui-pre 0.3.1 新快照线，见 docs 技术选型说明） ---
