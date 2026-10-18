@@ -345,6 +345,15 @@ jobs:
       # 具体逻辑不在 workflow 里，而在 scripts/package-*.sh —— 同一份实现既是
       # CI 的打包步骤，也是本地的一条命令（不传参数即「先编译再打包」）。
       # 这里只负责「装依赖 + 调用 + 验名」。
+      #
+      # ⚠️ 三个脚本一律用 `bash ./scripts/xxx.sh` 调用，**不写 `./scripts/xxx.sh`**。
+      # 2026-10-18 第一次跑就栽在这上面：脚本是在 Windows 上 `git add` 的，而
+      # Git for Windows 默认 `core.filemode=false` —— `chmod +x` 根本不进索引，
+      # 入库的 blob 全是 100644。于是 Linux / macOS runner 上 `./script.sh` 报
+      # `Permission denied`（exit 126），而 Windows runner 的 Git Bash 不检查执行位，
+      # 同一次 run 里只有两个平台红、一个绿，看着像平台相关 bug。
+      # 索引里的模式已经用 `git update-index --chmod=+x` 修过，但显式 `bash` 前缀
+      # 才是真正不会复发的那道保险：它不依赖克隆下来的文件权限。
       # macOS / Linux 会把矩阵给的 bin_name 作为参数传进去：脚本不会自己猜
       # target/release/ —— macOS 的产物在 target/universal-apple-darwin/ 下，
       # 猜错就等于安静地打包一个不存在的文件。Windows 例外：cargo-packager
@@ -363,7 +372,7 @@ jobs:
       - name: Package installer (windows)
         if: matrix.target == 'windows'
         shell: bash
-        run: ./scripts/package-windows.sh
+        run: bash ./scripts/package-windows.sh
 
       # 脚本内部：组装 RustShell.app（Info.plist / PkgInfo / icns）→ ad-hoc 签名
       # → hdiutil 出 UDZO 镜像 → 挂载回读校验 .app 与 /Applications 软链。
@@ -376,7 +385,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${BIN:?bin_name 为空（矩阵项缺字段？）}"
-          ./scripts/package-macos.sh "$BIN"
+          bash ./scripts/package-macos.sh "$BIN"
 
       # 脚本内部：目录树（/usr/bin + .desktop + hicolor 图标 + copyright）
       # → 按构建机 glibc 生成 Depends → dpkg-deb --root-owner-group → 包内容校验。
@@ -391,7 +400,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${BIN:?bin_name 为空（矩阵项缺字段？）}"
-          ./scripts/package-linux.sh "$BIN"
+          bash ./scripts/package-linux.sh "$BIN"
 
       # 打包脚本产出的文件名必须与 Resolve version 算出的**逐字相同**。
       # 两者是独立推导的（脚本按自己的规则拼、这里按 matrix.artifact + version 拼），
