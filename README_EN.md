@@ -91,11 +91,11 @@ The AI assistant is **optional** — with no Provider configured, RustShell is f
 
 Grab a build from [Releases](https://github.com/Yuxxxy/RustShell/releases) or the Artifacts of
 [Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml).
-Each platform ships exactly **one installer**, named `RustShell-<platform>-<version>.<ext>`:
+Each platform ships exactly **one installer**, named `RustShell-<version>-<platform>-<arch>.<ext>`:
 
-- Windows 10/11 (x64): `RustShell-windows-x64-<version>.exe` — NSIS installer, installs to the current user without admin rights
-- macOS (Intel / Apple Silicon): `RustShell-macos-universal-<version>.dmg` — open it and drag RustShell into Applications
-- Linux (x64 / arm64): `RustShell-linux-<x64|arm64>-<version>.deb` — `sudo apt install ./RustShell-linux-x64-<version>.deb`
+- Windows 10/11 (x64): `RustShell-<version>-windows-x64.exe` — NSIS installer, installs to the current user without admin rights
+- macOS (Intel / Apple Silicon): `RustShell-<version>-macos-universal.dmg` — open it and drag RustShell into Applications
+- Linux (x64 / arm64): `RustShell-<version>-linux-<x64|arm64>.deb` — `sudo apt install ./RustShell-<version>-linux-x64.deb`
 
 > Pushing a `v*` tag publishes these files to the Releases page automatically; a manual
 > workflow run only produces Actions artifacts (GitHub wraps them in a zip on download —
@@ -137,13 +137,13 @@ cargo build --release -p rustshell
 Packaging (scripts live in [`scripts/`](./scripts); run them from the repo root):
 
 ```bash
-# Windows: NSIS installer -> dist/RustShell-windows-x64-<version>.exe
+# Windows: NSIS installer -> dist/RustShell-<version>-windows-x64.exe
 ./scripts/package-windows.sh
 
-# macOS: universal binary + .app + dmg -> dist/RustShell-macos-universal-<version>.dmg
+# macOS: universal binary + .app + dmg -> dist/RustShell-<version>-macos-universal.dmg
 ./scripts/package-macos.sh
 
-# Linux: .deb -> dist/RustShell-linux-<x64|arm64>-<version>.deb
+# Linux: .deb -> dist/RustShell-<version>-linux-<x64|arm64>.deb
 ./scripts/package-linux.sh
 ```
 

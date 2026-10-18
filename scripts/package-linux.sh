@@ -6,8 +6,8 @@
 #   ./scripts/package-linux.sh <二进制路径>        # 只打包已编好的二进制（CI 用法）
 #   ./scripts/package-linux.sh <二进制> arm64      # 显式指定架构（跨架构打包时用）
 #
-# 产物：dist/RustShell-linux-<x64|arm64>-<version>.deb
-#   命名规则全仓唯一：`RustShell-<平台>-<版本>.<扩展名>`。
+# 产物：dist/RustShell-<version>-linux-<x64|arm64>.deb
+#   命名规则全仓唯一：`RustShell-<版本号>-<平台>-<架构>.<扩展名>`。
 #
 # 为什么手写 dpkg-deb 而不用 cargo-packager：
 #   · packager 的 deb 后端会按 `[package.metadata.packager]` 走它的通用配置
@@ -63,7 +63,7 @@ else
     if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists "$pc"; then
       echo "    ok   $pc"
     else
-      echo "    缺失 $pc（apt 包：$pkg）"
+      echo "    缺失 ${pc}（apt 包：${pkg}）"
       missing="$missing $pkg"
     fi
   done
@@ -93,7 +93,7 @@ case "$RAW_ARCH" in
 x64 | amd64 | x86_64) ARCH=x64 ;;
 arm64 | aarch64) ARCH=arm64 ;;
 *)
-  echo "暂不支持的架构：$RAW_ARCH（只出 x64 / arm64 两种产物）" >&2
+  echo "暂不支持的架构：${RAW_ARCH}（只出 x64 / arm64 两种产物）" >&2
   exit 1
   ;;
 esac
@@ -191,7 +191,7 @@ Description: RustShell —— SSH / 终端 / SFTP 一体化桌面客户端
 EOF
 
 echo "==> 5/6 构建 .deb"
-OUT="dist/RustShell-linux-$ARCH-$VERSION.deb"
+OUT="dist/RustShell-$VERSION-linux-$ARCH.deb"
 mkdir -p dist
 # --root-owner-group：把文件属主统一写成 root:root，否则打出来的包里会带上
 # 构建机的 UID/GID，装到别的机器上就是一堆「属于 uid 1001 的文件」。

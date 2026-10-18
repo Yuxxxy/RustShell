@@ -4,8 +4,8 @@
 # 用法（从任意目录执行均可，脚本会自动定位仓库根）：
 #   ./scripts/package-windows.sh         # NSIS 安装包（.exe，默认）
 #   ./scripts/package-windows.sh nsis,wix   # 再出一个 .msi（wix 需本机已装 WiX Toolset）
-# 产物：dist/RustShell-windows-<x64|arm64>-<version>.exe
-#   命名规则全仓唯一：`RustShell-<平台>-<版本>.<扩展名>`。
+# 产物：dist/RustShell-<version>-windows-<x64|arm64>.exe
+#   命名规则全仓唯一：`RustShell-<版本号>-<平台>-<架构>.<扩展名>`。
 #   cargo-packager 自己固定拼出的是 `rustshell_<version>_<arch>-setup.exe`
 #   （前缀是**二进制名**，product-name 改不动它），所以最后一步统一改名 ——
 #   三平台的产物名因此出自同一条规则（见 release.yml 的 Resolve version）。
@@ -122,7 +122,7 @@ verify_sha1() {
   if [ "$got" = "$2" ]; then
     return 0
   fi
-  echo "      SHA1 校验失败：期望 $2，实际 $got（镜像可能返回了错误内容）"
+  echo "      SHA1 校验失败：期望 $2，实际 ${got}（镜像可能返回了错误内容）"
   return 1
 }
 
@@ -141,7 +141,7 @@ provision_nsis() {
   fi
 
   if [ "$need_base" -eq 0 ] && [ "$need_aid" -eq 0 ] && [ "$need_utils" -eq 0 ]; then
-    echo "==> 2/5 NSIS 工具链就绪，跳过下载（$NSIS_DIR）"
+    echo "==> 2/5 NSIS 工具链就绪，跳过下载（${NSIS_DIR}）"
     return 0
   fi
 
@@ -230,7 +230,7 @@ echo "==> 4/5 统一命名"
 # packager 的产物名是它自己拼的：`rustshell_<version>_<arch>-setup.exe`，
 # 前缀取的是**二进制名**，`product-name` 只影响安装界面显示，改不动文件名
 # （见 app/Cargo.toml 里那段注释）。这里把它改成与外平台一致的
-# `RustShell-windows-<arch>-<version>.exe`。
+# `RustShell-<version>-windows-<arch>.exe`。
 OUT_DIR="dist/packager"
 if ! ls "$OUT_DIR"/* >/dev/null 2>&1; then
   echo "打包结束但 $OUT_DIR 里没有产物 —— 检查上面的 packager 输出" >&2
@@ -263,7 +263,7 @@ case "$(basename "$NSIS")" in
   ;;
 esac
 
-OUT="dist/RustShell-windows-$ARCH-$VERSION.exe"
+OUT="dist/RustShell-$VERSION-windows-$ARCH.exe"
 mkdir -p dist
 # cp 而不是 mv：保留 packager 的原始产物便于排查（它才是工具的直接输出）
 cp -f "$NSIS" "$OUT"
@@ -278,7 +278,7 @@ if [ "$SIZE_BYTES" -lt 1000000 ]; then
   echo "$OUT 只有 $SIZE_BYTES 字节，明显不是完整安装包" >&2
   exit 1
 fi
-echo "校验通过：$OUT（$((SIZE_BYTES / 1024)) KiB）"
+echo "校验通过：${OUT}（$((SIZE_BYTES / 1024)) KiB）"
 
 cat <<EOF
 

@@ -23,6 +23,13 @@
      最后以「文件名含非法字符」之类完全无关的报错收场。这里要求每个被引用的
      输出都能在同 id 的 step 里找到写入口。
 
+  5. `$VAR` 后紧跟非 ASCII 字符
+     macOS runner 的 `/bin/bash` 是 **3.2**，它会把紧跟变量名的全角标点算进变量名：
+     `"$VERSION（CFBundle...）"` 被解析成变量 `VERSION（`，在 `set -u` 下直接报
+     `VERSION?: unbound variable`；而 Linux 的 bash 5 + glibc 不会 —— 同一个脚本
+     因此只有 macOS job 红（2026-10-18 首次跑 macOS 打包就栽在这行）。
+     正确写法是 `${VERSION}（...`。本项同时扫 workflow 正文与 `scripts/*.sh`。
+
 用法：
     python3 scripts/check-release-workflow.py
 
@@ -87,7 +94,7 @@ def check_invisible(raw):
     必须以二进制读入再自己解码：`Path.read_text()` 默认做 universal newlines
     转换，会把 `\\r` 直接吃掉 —— 那样这个检查就永远看不到自己要查的东西。
     """
-    print("[1/4] 不可见字符与换行")
+    print("[1/5] 不可见字符与换行")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -161,7 +168,7 @@ def extract_run_blocks(text):
 
 
 def check_shell(normalized):
-    print("[2/4] 每个 run 块的 shell 语法（bash -n）")
+    print("[2/5] 每个 run 块的 shell 语法（bash -n）")
     if not normalized:
         return
     blocks = extract_run_blocks(normalized)
@@ -204,7 +211,7 @@ RE_SAFE_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]*")
 
 
 def check_version():
-    print("[3/4] 版本号解析与字符集")
+    print("[3/5] 版本号解析与字符集")
     if not CARGO_TOML.exists():
         bad("找不到 %s，无法校验版本号" % show(CARGO_TOML))
         return
@@ -270,7 +277,7 @@ def collect_steps(lines):
 
 
 def check_outputs(normalized):
-    print("[4/4] steps.<id>.outputs.<key> 引用是否有出处")
+    print("[4/5] steps.<id>.outputs.<key> 引用是否有出处")
     if not normalized:
         return
     steps = collect_steps(normalized.split("\n"))
@@ -305,6 +312,57 @@ def check_outputs(normalized):
 
 
 # --------------------------------------------------------------------------- #
+# 5. `$VAR` 后紧跟非 ASCII 字符（macOS bash 3.2 会把标点吃进变量名）
+# --------------------------------------------------------------------------- #
+
+RE_BARE_VAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def check_var_cjk(normalized):
+    """扫「`$VAR` 后面紧跟非 ASCII 字符」的写法。
+
+    为什么必须查：macOS runner 的 `/bin/bash` 是 3.2，变量名解析按**字节**走
+    `isalnum`，而 Apple 的 libc 在 UTF-8 环境下把全角标点的前导字节也算作字母 ——
+    于是 `$VERSION（` 变成变量 `VERSION（`，在 `set -u` 下直接
+    `VERSION?: unbound variable`。Linux 的 bash 5 + glibc 不这样，所以同一个脚本
+    只有 macOS job 红，报错里的变量名还带着一个乱码字节，很难第一时间想到是标点。
+    写成 `${VERSION}（` 就永远不会有歧义。
+
+    范围：workflow 正文 + `scripts/*.sh`（打包脚本不在 workflow 里，只在仓库里，
+    但它是同一个 bash 在执行，同样会炸）。
+    """
+    print("[5/5] 变量名后紧跟非 ASCII 字符")
+    if not normalized:
+        return
+    targets = [(show(WORKFLOW), normalized)]
+    for path in sorted((REPO / "scripts").glob("*.sh")):
+        try:
+            text = path.read_bytes().decode("utf-8", "replace").replace("\r\n", "\n")
+        except OSError as exc:
+            bad("读不到 %s：%s" % (show(path), exc))
+            continue
+        targets.append((show(path), text))
+
+    hits = 0
+    for name, text in targets:
+        for lineno, line in enumerate(text.split("\n"), 1):
+            # 注释不执行；本文件的说明里会出现反面例子（`$VERSION（`），不能误报
+            if line.strip().startswith("#"):
+                continue
+            for m in RE_BARE_VAR.finditer(line):
+                nxt = line[m.end() : m.end() + 1]
+                if nxt and ord(nxt) > 127:
+                    bad(
+                        "%s:%d 里 `$%s` 后面紧跟 `%s` —— macOS 的 bash 3.2 会把它算进"
+                        "变量名，`set -u` 下报 unbound variable；改写成 `${%s}%s`"
+                        % (name, lineno, m.group(1), nxt, m.group(1), nxt)
+                    )
+                    hits += 1
+    if not hits:
+        ok("%d 个文件里没有「$VAR 紧跟非 ASCII」的写法" % len(targets))
+
+
+# --------------------------------------------------------------------------- #
 
 
 def main():
@@ -320,6 +378,7 @@ def main():
         check_shell(normalized)
         check_version()
         check_outputs(normalized)
+        check_var_cjk(normalized)
 
     if PROBLEMS:
         print("\n预检未通过：%d 个问题（上面 [!!] 各行）" % len(PROBLEMS))

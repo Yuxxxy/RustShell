@@ -96,11 +96,11 @@ AI 是**可选**能力，默认不配置任何 Provider 即完全离线。开启
 在 [Releases](https://github.com/Yuxxxy/RustShell/releases) 或
 
 [Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml) 的 Artifacts 中取包。
-每个平台只有一个**安装文件**，命名统一为 `RustShell-<平台>-<版本>.<扩展名>`：
+每个平台只有一个**安装文件**，命名统一为 `RustShell-<版本号>-<平台>-<架构>.<扩展名>`：
 
-- Windows 10/11（x64）：`RustShell-windows-x64-<version>.exe` —— NSIS 安装包，装到当前用户目录，不弹 UAC
-- macOS（Intel / Apple Silicon）：`RustShell-macos-universal-<version>.dmg` —— 打开后把 RustShell 拖进「应用程序」
-- Linux（x64 / arm64）：`RustShell-linux-<x64|arm64>-<version>.deb` —— `sudo apt install ./RustShell-linux-x64-<version>.deb`
+- Windows 10/11（x64）：`RustShell-<version>-windows-x64.exe` —— NSIS 安装包，装到当前用户目录，不弹 UAC
+- macOS（Intel / Apple Silicon）：`RustShell-<version>-macos-universal.dmg` —— 打开后把 RustShell 拖进「应用程序」
+- Linux（x64 / arm64）：`RustShell-<version>-linux-<x64|arm64>.deb` —— `sudo apt install ./RustShell-<version>-linux-x64.deb`
 
 > 推 `v*` tag 会自动发布到 Releases 页（下载即是上面的文件）；手动跑 workflow 只在
 > Artifacts 里出包（Actions 的 artifact 下载时会被 GitHub 包一层 zip，解压后就是该文件）。
@@ -141,13 +141,13 @@ cargo build --release -p rustshell
 打包分发（脚本位于 [`scripts/`](./scripts)，从仓库根执行）：
 
 ```bash
-# Windows：NSIS 安装包 -> dist/RustShell-windows-x64-<version>.exe
+# Windows：NSIS 安装包 -> dist/RustShell-<version>-windows-x64.exe
 ./scripts/package-windows.sh
 
-# macOS：通用二进制 + .app + dmg -> dist/RustShell-macos-universal-<version>.dmg
+# macOS：通用二进制 + .app + dmg -> dist/RustShell-<version>-macos-universal.dmg
 ./scripts/package-macos.sh
 
-# Linux：.deb -> dist/RustShell-linux-<x64|arm64>-<version>.deb
+# Linux：.deb -> dist/RustShell-<version>-linux-<x64|arm64>.deb
 ./scripts/package-linux.sh
 ```
 

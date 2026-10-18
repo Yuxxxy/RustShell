@@ -23,11 +23,11 @@ embed-resource = "3"
 #     ./scripts/package-windows.sh              # 推荐：打包 + 统一改名 + 校验
 #     cargo packager --release                  # 只打包：产物名是 packager 自己拼的
 # 产物：
-#     dist/RustShell-windows-<arch>-<version>.exe          ← 发布用（脚本改名后的）
+#     dist/RustShell-<version>-windows-<arch>.exe          ← 发布用（脚本改名后的）
 #     dist/packager/rustshell_<version>_<arch>-setup.exe   ← packager 的原始输出
 #   文件名由 packager 固定拼成「**二进制名** + 版本 + 架构 + `-setup.exe`」，
 #   `product-name` 只影响安装界面/开始菜单/安装目录里显示的名字，改不动文件名 ——
-#   所以发布用的 `RustShell-<平台>-<版本>.<扩展名>` 由 scripts/package-windows.sh
+#   所以发布用的 `RustShell-<版本号>-<平台>-<架构>.<扩展名>` 由 scripts/package-windows.sh
 #   在打包后改名得到（三个平台同一条命名规则，见 .github/workflows/release.yml）。
 #
 # 为什么配置写在 `app/` 而不是仓库根：packager 从 cargo metadata 的**每个包**里

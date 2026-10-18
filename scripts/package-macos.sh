@@ -5,8 +5,9 @@
 #   ./scripts/package-macos.sh                    # 编译通用二进制并打包（本地用法）
 #   ./scripts/package-macos.sh <二进制路径>        # 只打包已编好的二进制（CI 用法）
 #
-# 产物：dist/RustShell-macos-universal-<version>.dmg
-#   命名规则全仓唯一：`RustShell-<平台>-<版本>.<扩展名>`。
+# 产物：dist/RustShell-<version>-macos-universal.dmg
+#   命名规则全仓唯一：`RustShell-<版本号>-<平台>-<架构>.<扩展名>`
+#   （macOS 出的是通用二进制，架构段写 universal）。
 #
 # 为什么是 .dmg 而不是 .zip：
 #   用户下载一个 .zip 解开后拿到的是一个裸二进制，双击只会弹终端、也不会进
@@ -29,7 +30,7 @@ APP_NAME="RustShell"
 echo "==> 1/6 检查工具链"
 for tool in hdiutil codesign ditto lipo; do
   command -v "$tool" >/dev/null || {
-    echo "未找到 $tool（macOS 自带；缺失通常意味着 Xcode Command Line Tools 没装）" >&2
+    echo "未找到 ${tool}（macOS 自带；缺失通常意味着 Xcode Command Line Tools 没装）" >&2
     exit 1
   }
 done
@@ -48,7 +49,13 @@ fi
 # 而 CFBundleShortVersionString 允许预发布后缀。所以两份字段用两个值：
 # 版本号里一旦出现 `-` / `+`，CFBundleVersion 就退化成数字前缀。
 CF_VERSION="${VERSION%%[+-]*}"
-echo "    版本：$VERSION（CFBundleVersion 用 $CF_VERSION）"
+# ⚠️ `${VAR}` 的花括号不是风格问题，是**正确性**问题：macOS runner 上的 bash 是
+# 3.2（/bin/bash），它把紧跟 `$VAR` 的全角括号当成变量名的一部分 ——
+# `"$VERSION（CFBundle...）"` 会被解析成变量 `VERSION（`，`set -u` 直接报
+# `VERSION?: unbound variable`（2026-10-18 首次跑 macOS job 就栽在这行）。
+# Linux 的 bash 5 + glibc 不会这样，所以同一个脚本只有 macOS 红。
+# 规则：**`$VAR` 后面只要是非 ASCII 字符，一律写成 `${VAR}`**。
+echo "    版本：${VERSION}（CFBundleVersion 用 ${CF_VERSION}）"
 
 echo "==> 2/6 准备通用二进制"
 if [ -n "$BIN_ARG" ]; then
@@ -176,7 +183,7 @@ ditto "$APP" "$DMGROOT/$APP_NAME.app"
 # /Applications 软链：这是 dmg 的「拖拽安装」惯例，用户把图标拖过去就装好了
 ln -s /Applications "$DMGROOT/Applications"
 
-OUT="dist/RustShell-macos-universal-$VERSION.dmg"
+OUT="dist/RustShell-$VERSION-macos-universal.dmg"
 mkdir -p dist
 rm -f "$OUT"
 # -fs HFS+：显式指定文件系统，不依赖 hdiutil 在不同 macOS 版本上的默认值

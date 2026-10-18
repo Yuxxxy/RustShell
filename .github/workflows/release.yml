@@ -13,12 +13,17 @@
 #
 # 产物：每个平台**只有一个可直接安装的文件**，命名规则全仓唯一 ——
 #
-#     RustShell-<平台>-<版本>.<扩展名>
+#     RustShell-<版本号>-<平台>-<架构>.<扩展名>
 #
-#   · windows-x64      windows-latest   -> RustShell-windows-x64-<ver>.exe    （NSIS 安装包）
-#   · macos-universal  macos-latest     -> RustShell-macos-universal-<ver>.dmg（内含 .app + /Applications 软链）
-#   · linux-x64        ubuntu-22.04     -> RustShell-linux-x64-<ver>.deb
-#   · linux-arm64      ubuntu-22.04-arm -> RustShell-linux-arm64-<ver>.deb
+#   · windows / x64      windows-latest   -> RustShell-<ver>-windows-x64.exe    （NSIS 安装包）
+#   · macos / universal  macos-latest     -> RustShell-<ver>-macos-universal.dmg（内含 .app + /Applications 软链）
+#   · linux / x64        ubuntu-22.04     -> RustShell-<ver>-linux-x64.deb
+#   · linux / arm64      ubuntu-22.04-arm -> RustShell-<ver>-linux-arm64.deb
+#
+#   版本号在前、平台与架构各占一段：同一次发布里四个文件按名字排序就是
+#   「Windows → macOS → Linux(x64) → Linux(arm64)」，也方便直接 glob
+#   `RustShell-1.0.0-*` 拿到某个版本的全部产物。
+#   macOS 出的是通用二进制，架构段固定写 universal（名字必须与内容一致）。
 #
 # 为什么不再出「绿色包」（免安装 zip / tar.gz）：
 #   Actions 的 artifact 在下载时会被 GitHub **再包一层 zip**，于是用户拿到的是
@@ -74,8 +79,9 @@ jobs:
   # 矩阵项字段（每加一个字段，build 里的引用点都要跟着改，所以字段名一次定准）：
   #   os            runner 标签
   #   target        平台分组，steps.if 用它做分支（windows / macos / linux）
-  #   artifact      平台标识：**也是产物文件名里的平台段**（dist/RustShell-<artifact>-<ver>.<ext>）
-  #                 以及 artifact 名的来源。改它等于改最终发布出去的文件名。
+  #   platform      产物文件名里的**平台段**，同时也是缓存 key 的一部分
+  #   arch          产物文件名里的**架构段**（macOS 固定 universal）。
+  #                 platform+arch 一起决定发布出去的文件名，改它等于改对外契约。
   #   ext           安装文件的扩展名：exe / dmg / deb
   #   bin_name      构建产物在仓库根下的相对路径（Verify 与打包脚本都读它）
   #   rust_targets  交给 dtolnay/rust-toolchain 的附加 rustup 目标（逗号分隔，空串=不加）
@@ -114,10 +120,10 @@ jobs:
           # 加个字段就漏抄一处（漏抄不会报错，只会让某个平台少一个产物）。
           # macOS 的 bin_name 指向 lipo 合并后的文件，不是 cargo 的 target/release/
           # （通用二进制的构建方式见下面 Build release (macos universal)）。
-          WIN_ITEM='{"os":"windows-latest","target":"windows","artifact":"windows-x64","ext":"exe","bin_name":"target/release/rustshell.exe","rust_targets":"","expect_arch":"x86_64"}'
-          MAC_ITEM='{"os":"macos-latest","target":"macos","artifact":"macos-universal","ext":"dmg","bin_name":"target/universal-apple-darwin/release/rustshell","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","expect_arch":""}'
-          LIN_X64_ITEM='{"os":"ubuntu-22.04","target":"linux","artifact":"linux-x64","ext":"deb","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"x86_64"}'
-          LIN_ARM_ITEM='{"os":"ubuntu-22.04-arm","target":"linux","artifact":"linux-arm64","ext":"deb","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"aarch64"}'
+          WIN_ITEM='{"os":"windows-latest","target":"windows","platform":"windows","arch":"x64","ext":"exe","bin_name":"target/release/rustshell.exe","rust_targets":"","expect_arch":"x86_64"}'
+          MAC_ITEM='{"os":"macos-latest","target":"macos","platform":"macos","arch":"universal","ext":"dmg","bin_name":"target/universal-apple-darwin/release/rustshell","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","expect_arch":""}'
+          LIN_X64_ITEM='{"os":"ubuntu-22.04","target":"linux","platform":"linux","arch":"x64","ext":"deb","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"x86_64"}'
+          LIN_ARM_ITEM='{"os":"ubuntu-22.04-arm","target":"linux","platform":"linux","arch":"arm64","ext":"deb","bin_name":"target/release/rustshell","rust_targets":"","expect_arch":"aarch64"}'
 
           WIN="{\"include\":[$WIN_ITEM]}"
           MAC="{\"include\":[$MAC_ITEM]}"
@@ -167,8 +173,9 @@ jobs:
         id: ver
         shell: bash
         env:
-          # 平台段走 env 而不是内插 ${{ }}：与本文件其它地方同一口径
-          ARTIFACT: ${{ matrix.artifact }}
+          # 平台段 / 架构段走 env 而不是内插 ${{ }}：与本文件其它地方同一口径
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           VERSION=$(awk -F'"' '/^version/ { print $2; exit }' Cargo.toml)
           case "$VERSION" in
@@ -185,13 +192,15 @@ jobs:
           # 三处各自拼字符串 = 三处都可能拼错，而且拼错了也不会报错，只会静默产出一个
           # 名字不对（但看起来很像对）的产物 —— 正是 2026-10-16 那次事故的形态。
           # 完整文件名 = dist/<pkg>.<ext>，与 scripts/package-*.sh 的产物名必须逐字相同
-          # （Packaged 后紧跟的 Verify installer 会拿这个路径去 stat）。
-          PKG="RustShell-$ARTIFACT-$VERSION"
+          # （打包后紧跟的 Verify installer 会拿这个路径去 stat）。
+          PKG="RustShell-$VERSION-$PLATFORM-$ARCH"
           {
             echo "version=$VERSION"
             echo "pkg=$PKG"
           } >> "$GITHUB_OUTPUT"
-          echo "版本号 $VERSION；产物基名 $PKG"
+          # ⚠️ 变量后面只要跟非 ASCII 字符就必须写 `${VAR}`：macOS runner 的 bash 3.2
+          # 会把紧跟 `$VAR` 的全角标点吃进变量名（详见下方 Package 段落的说明）。
+          echo "版本号 ${VERSION}；产物基名 ${PKG}"
 
       # rust_targets 由矩阵给：macOS 通用二进制要 aarch64 + x86_64 两个目标，
       # 其余平台为空串（只装 host 目标）。dtolnay 这个 action 的 targets 是逗号分隔。
@@ -261,11 +270,11 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig1-dev libfreetype-dev
 
-      # key 里必须带 matrix.artifact：x64 与 arm64 两个 Linux job 的 runner.os 都是
-      # "Linux"、Cargo.lock 哈希也一样，不带 artifact 的话两条 job 会抢同一份缓存
+      # key 里必须带平台与架构：x64 与 arm64 两个 Linux job 的 runner.os 都是
+      # "Linux"、Cargo.lock 哈希也一样，不区分的话两条 job 会抢同一份缓存
       # （arm64 job 可能把 x64 编出来的 target/ 全量恢复进来，白占磁盘还拖慢）。
       # restore-keys 是给「Cargo.lock 变了」这种情况兜底的：精确 key 未命中时退到
-      # 同平台的前一份缓存，增量编译仍能重用绝大多数依赖（否则每次锁文件一动就全量重编）。
+      # 同平台同架构的前一份缓存，增量编译仍能重用绝大多数依赖（否则每次锁文件一动就全量重编）。
       - name: Cache cargo
         # v5 = cache 的首个 node24 主版本（v4 是 node20，会在日志里打弃用告警）
         uses: actions/cache@v5
@@ -274,9 +283,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-release-${{ matrix.artifact }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-release-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-release-${{ matrix.artifact }}-
+            ${{ runner.os }}-release-${{ matrix.platform }}-${{ matrix.arch }}-
 
       - name: Build release
         if: matrix.target != 'macos'
@@ -332,7 +341,7 @@ jobs:
             esac
           else
             HOST_ARCH="$(uname -m)"
-            echo "runner 架构：$HOST_ARCH（矩阵声明 $EXPECT_ARCH）"
+            echo "runner 架构：${HOST_ARCH}（矩阵声明 ${EXPECT_ARCH}）"
             if [ "$HOST_ARCH" != "$EXPECT_ARCH" ]; then
               echo "::error::runner 架构 $HOST_ARCH 与矩阵声明的 $EXPECT_ARCH 不一致（runner 标签换架构了？）"
               exit 1
@@ -363,7 +372,7 @@ jobs:
         run: cargo install cargo-packager --locked --version ^0.11
 
       # 脚本内部：调用 packager → 把 `rustshell_<ver>_<arch>-setup.exe`
-      # 改名成 `RustShell-windows-<arch>-<ver>.exe` → 校验体积。
+      # 改名成 `RustShell-<ver>-windows-<arch>.exe` → 校验体积。
       # 这里**不传 bin_name**：packager 的输入不来自命令行，而是 cargo metadata
       # 推出来的 binaries 目录（`--release` ⇒ target/release）加配置里的
       # before-packaging-command，传参数它也读不到。二进制是否在预期位置，
@@ -403,7 +412,7 @@ jobs:
           bash ./scripts/package-linux.sh "$BIN"
 
       # 打包脚本产出的文件名必须与 Resolve version 算出的**逐字相同**。
-      # 两者是独立推导的（脚本按自己的规则拼、这里按 matrix.artifact + version 拼），
+      # 两者是独立推导的（脚本按自己的规则拼、这里按 version + platform + arch 拼），
       # 所以这一条断言同时在守两件事：命名规则没漂移、产物确实存在。
       # 少了它，名字不一致只会在 upload 阶段以「no files found」收场，
       # 而那个报错看不出「是命名漂移还是压根没打包」。
@@ -445,7 +454,7 @@ jobs:
   # 打 tag 推送（v1.0.0）时，把四个成品发布到 GitHub Release。
   #
   # 为什么还要 Release：Actions 的 artifact 在下载时会被 GitHub **再包一层 zip**，
-  # 用户点「Download」拿到的是 `RustShell-windows-x64-1.0.0.zip`，里面才是 exe。
+  # 用户点「Download」拿到的是 `RustShell-1.0.0-windows-x64.zip`，里面才是 exe。
   # Release 页的 assets 则是文件本身，点一下就是 .exe / .dmg / .deb。
   #
   # 只有 tag 触发才发布；workflow_dispatch 手动跑只出 artifact（便于试跑，
@@ -504,12 +513,14 @@ jobs:
           : "${VERSION:?}"
           ls -lh dist
 
-          # 断言每个文件都符合 RustShell-<平台>-<版本>.<exe|dmg|deb>。
+          # 断言每个文件都符合 RustShell-<版本>-<平台>-<架构>.<exe|dmg|deb>。
+          # 版本段已在命名里前移，所以前缀检查就能一步到位：
+          # 凡是 `RustShell-<本版本>-*` 之外的文件都算命名漂移。
           # 这条只是兜底：真正拦住命名漂移的是 build 里的 Verify installer。
           BAD=$(find dist -maxdepth 1 -type f \
-            ! -name "RustShell-*-$VERSION.exe" \
-            ! -name "RustShell-*-$VERSION.dmg" \
-            ! -name "RustShell-*-$VERSION.deb")
+            ! -name "RustShell-$VERSION-*.exe" \
+            ! -name "RustShell-$VERSION-*.dmg" \
+            ! -name "RustShell-$VERSION-*.deb")
           if [ -n "$BAD" ]; then
             echo "::error::下列文件不符合命名规则："
             echo "$BAD"
@@ -527,10 +538,10 @@ jobs:
             echo
             echo "| 平台 | 文件 | 说明 |"
             echo "| --- | --- | --- |"
-            echo "| Windows 10/11 (x64) | \`RustShell-windows-x64-$VERSION.exe\` | NSIS 安装包，装到当前用户，不弹 UAC |"
-            echo "| macOS (Intel / Apple Silicon) | \`RustShell-macos-universal-$VERSION.dmg\` | 打开后把 RustShell 拖进「应用程序」 |"
-            echo "| Linux (x64) | \`RustShell-linux-x64-$VERSION.deb\` | \`sudo apt install ./RustShell-linux-x64-$VERSION.deb\` |"
-            echo "| Linux (arm64) | \`RustShell-linux-arm64-$VERSION.deb\` | \`sudo apt install ./RustShell-linux-arm64-$VERSION.deb\` |"
+            echo "| Windows 10/11 (x64) | \`RustShell-$VERSION-windows-x64.exe\` | NSIS 安装包，装到当前用户，不弹 UAC |"
+            echo "| macOS (Intel / Apple Silicon) | \`RustShell-$VERSION-macos-universal.dmg\` | 打开后把 RustShell 拖进「应用程序」 |"
+            echo "| Linux (x64) | \`RustShell-$VERSION-linux-x64.deb\` | \`sudo apt install ./RustShell-$VERSION-linux-x64.deb\` |"
+            echo "| Linux (arm64) | \`RustShell-$VERSION-linux-arm64.deb\` | \`sudo apt install ./RustShell-$VERSION-linux-arm64.deb\` |"
             echo
             echo "## 首次运行"
             echo
