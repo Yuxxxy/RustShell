@@ -5164,9 +5164,18 @@ mod tests {
 
         // (窗口底边, 卡片上边, 卡片下边, 窗格上边, 窗格下边, 网格行数)
         let geo = |vcx: &mut gpui::VisualTestContext| -> (f32, f32, f32, f32, f32, usize) {
-            vcx.update(|w, cx| {
-                w.draw(cx).clear(cx);
-            });
+            // **必须画两帧**（gpui-fast 的 retained 渲染，2026-10-19 升级后）：
+            // 第一帧只把新子树（这里是刚 push 进去的标签 → `render_workspace` →
+            // `term-pane`）建进布局与缓存，`Div::paint` 还没轮到它 —— 此时
+            // `debug_bounds` 查不到 `term-pane`（只有卡片壳与标签栏在）。
+            // 第二帧复用缓存、把它画进 scene，`debug_bounds` 才拿得到。
+            // 这是**引擎的渲染节奏**，与本用例要钉的「纵向几何与全屏无关」无关：
+            // 两帧之间没有用户输入，也没有任何状态变化。
+            for _ in 0..2 {
+                vcx.update(|w, cx| {
+                    w.draw(cx).clear(cx);
+                });
+            }
             let win_h: f32 = vcx.update(|w, _cx| w.bounds().size.height).into();
             let edge = |vcx: &mut gpui::VisualTestContext, sel: &'static str| -> (f32, f32) {
                 let b = vcx

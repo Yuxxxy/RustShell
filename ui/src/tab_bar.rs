@@ -1778,8 +1778,40 @@ mod tests {
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let (_, vcx) = cx.add_window_view(move |_, _| BarProbe { selected, phase });
+        vcx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
         vcx.run_until_parked();
         vcx
+    }
+
+    /// 递归收集一帧里**所有**画出来的 quad（含圆角裁剪组、滚动层里的）。
+    ///
+    /// 为什么不能直接用 `Window::painted_quads()`：gpui-fast 在帧末做
+    /// `rounded_clip_scene::compile`（`src/fast/rounded_clip_scene.rs`）—— 凡落在
+    /// 「`overflow_hidden` + 有圆角」容器里的图元，都会被**搬进一个子 scene**，
+    /// 该子 scene 挂在 `Scene::layers.frames[i].content` 上，父 scene 里只剩一个指向
+    /// 它的 `PolychromeSprite`。于是 `painted_quads()`（只读父 scene 的 `quads`）
+    /// 看不到它们。
+    ///
+    /// gpui-component 的 `Tab` 根节点正是这种容器（胶囊 + `overflow_hidden`），
+    /// 所以不改这里的口径，状态圆点/光环永远量到 0 个（2026-10-19 换引擎后实测：
+    /// 整帧 `quads=2`，只有窗口底色和胶囊，圆点/光环都在子 scene 里）。
+    ///
+    /// 子 scene 里的坐标与父 scene **同一空间**（`compile` 只是把 primitive 原样搬过去，
+    /// 不做位移），所以外面拿到的 bounds 仍然可以直接和 `debug_bounds` 比。
+    fn all_painted_quads(window: &gpui::Window) -> Vec<Quad> {
+        fn walk(scene: &gpui::Scene, out: &mut Vec<Quad>) {
+            out.extend(scene.quads.iter().cloned());
+            for frame in &scene.layers.frames {
+                if let Some(child) = frame.content.scene() {
+                    walk(child, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(window.painted_scene(), &mut out);
+        out
     }
 
     /// 标签高度必须等于 `TAB_ROW_HEIGHT`（也即当前 `TAB_SIZE` 档位的官方高度）。
@@ -2388,9 +2420,11 @@ mod tests {
         let dot_side = half.dot * scale;
         let halo_side = half.halo * scale;
         // 只收「小方块」：圆点与它的光环是这一片里唯一两种这么小的 quad。
+        // 口径是 `all_painted_quads` 而不是 `Window::painted_quads()` —— 后者看不到
+        // 被 `overflow_hidden` + 圆角容器搬进裁剪组子 scene 的图元（标签胶囊正是），
+        // 详见那个函数的说明。
         let small: Vec<Quad> = vcx.update(|window, _| {
-            window
-                .painted_quads()
+            all_painted_quads(window)
                 .into_iter()
                 .filter(|q| {
                     let (w, h) = (q.bounds.size.width.as_f32(), q.bounds.size.height.as_f32());

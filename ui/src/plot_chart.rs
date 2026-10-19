@@ -28,9 +28,20 @@ use gpui_component::plot::{
     scale::{Scale, ScaleLinear, ScalePoint},
     shape::Area,
     tooltip::{CrossLine, Dot, Tooltip, TooltipState},
-    AxisText, Grid, IntoPlot, Plot, PlotAxis, AXIS_GAP,
+    AxisText, Grid, IntoPlot, Plot, PlotAxis,
 };
 use gpui_component::ActiveTheme as _;
+
+/// x 轴刻度区占掉的底部高度（px）。
+///
+/// 0.7.0 起 `plot::AXIS_GAP`（常量 18.）被**弃用**，官方口径改为
+/// `plot::axis_gutter(刻度字号)` = `字号 + TEXT_GAP × 4` —— 留白由标签字号算出来，
+/// 图表若画更大的刻度就传自己的字号，否则刻度会被裁掉。
+/// 本组件的刻度走默认字号（[`gpui_component::plot::label::TEXT_SIZE`]，10px：
+/// 10 + 2×4 = 18），与旧常量取值完全相同，所以这次替换不改变任何一个像素。
+fn axis_gutter() -> f32 {
+    gpui_component::plot::axis_gutter(px(gpui_component::plot::label::TEXT_SIZE))
+}
 
 /// 一条序列：怎么取值、怎么配色、hover 里叫什么、**数值怎么写成文案**。
 pub struct Series<T> {
@@ -125,12 +136,14 @@ impl<T: 'static> ValueAreaChart<T> {
             return None;
         }
         let width = bounds.size.width.as_f32();
-        let height = bounds.size.height.as_f32() - AXIS_GAP;
+        let height = bounds.size.height.as_f32() - axis_gutter();
 
         let x_of = self.x.clone();
+        // gpui-component 0.7：Plot 原语下沉到 gpui-base，scale 的 range 参数从
+        // `Vec<f32>` 收紧成 `[f32; 2]`（`plot::scale::ScalePoint::new` 签名 `range: [f32; 2]`）。
         let x = ScalePoint::new(
             self.data.iter().map(|v| x_of(v)).collect::<Vec<_>>(),
-            vec![0., width],
+            [0., width],
         );
         let domain = self
             .data
@@ -138,7 +151,7 @@ impl<T: 'static> ValueAreaChart<T> {
             .flat_map(|v| self.series.iter().map(|s| (s.value)(v)))
             .chain(Some(0.0))
             .collect::<Vec<_>>();
-        let y = ScaleLinear::new(domain, vec![height, 10.]);
+        let y = ScaleLinear::new(domain, [height, 10.]);
         Some((x, y))
     }
 
@@ -174,7 +187,7 @@ impl<T: 'static> Plot for ValueAreaChart<T> {
         let Some((x, y)) = self.scales(bounds) else {
             return;
         };
-        let height = bounds.size.height.as_f32() - AXIS_GAP;
+        let height = bounds.size.height.as_f32() - axis_gutter();
 
         // 1. x 轴线 + 刻度文案
         PlotAxis::new()
@@ -184,8 +197,10 @@ impl<T: 'static> Plot for ValueAreaChart<T> {
             .paint(&bounds, window, cx);
 
         // 2. 横向虚线网格（四等分）
+        // `Grid::y` 收的是 `impl IntoIterator<Item = impl Into<Pixels>>`：0.7 里直接喂
+        // 迭代器即可（旧版要先 `collect::<Vec<_>>()`，新签名下那样写反而推不出元素类型）。
         Grid::new()
-            .y((0..=3).map(|i| height * i as f32 / 4.0).collect())
+            .y((0..=3).map(|i| height * i as f32 / 4.0))
             .stroke(cx.theme().border)
             .dash_array(&[px(4.), px(2.)])
             .paint(&bounds, window);
@@ -219,11 +234,13 @@ impl<T: 'static> Plot for ValueAreaChart<T> {
     ) -> Option<TooltipState> {
         let (x, y) = self.scales(bounds)?;
         // 悬停到 x 轴刻度区不弹提示（官方同款守卫）
-        if position.y.as_f32() > bounds.size.height.as_f32() - AXIS_GAP {
+        if position.y.as_f32() > bounds.size.height.as_f32() - axis_gutter() {
             return None;
         }
 
-        let index = x.least_index(position.x.as_f32());
+        // 0.7 把 `ScalePoint::least_index` 改名为 `Scale::nearest_index`
+        // （`plot/scale/point.rs`：语义不变，仍是「最近的点索引」，越界钳到末位）。
+        let index = x.nearest_index(position.x.as_f32());
         let d = self.data.get(index)?;
         let x_of = self.x.clone();
         let x_tick = x.tick(&x_of(d))?;
@@ -256,7 +273,8 @@ impl<T: 'static> Plot for ValueAreaChart<T> {
         let mut tooltip = Tooltip::new(cursor, bounds.size)
             .gap(px(8.))
             .cross_line(
-                CrossLine::new(state.cross_line).height(bounds.size.height.as_f32() - AXIS_GAP),
+                CrossLine::new(state.cross_line)
+                    .height(bounds.size.height.as_f32() - axis_gutter()),
             )
             .dots(state.dots.iter().enumerate().filter_map(|(i, p)| {
                 self.series

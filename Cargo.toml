@@ -9,16 +9,31 @@ license = "Apache-2.0"
 authors = ["yuxinyu"]
 
 [workspace.dependencies]
-# --- GPUI 生态（统一版本线：gpui-pre 0.3.1 新快照线，见 docs 技术选型说明） ---
-# gpui-pre 为 Zed pre-release gpui 引擎本体，经 package 重命名以 gpui 别名引入，
-# 全工作区源码继续 `use gpui::...` 无需改动 import 路径
-gpui = { package = "gpui-pre", version = "0.3.1" }
-# 平台后端门面（gpui_platform）：按目标平台转发到 gpui-pre-windows / -macos /
+# --- GPUI 生态（统一版本线：gpui-kit v0.7.3 发布线 + gpui-fast 引擎） ---
+#
+# 2026-10-19：从「gpui-pre 0.3.x + gpui-component 0.6.1」升级到 gpui-kit 0.7.3 线，
+# 引擎同时换成 longbridge/gpui-fast 0.1.9（gpui 的 fork，带 retained rendering 与
+# 布局优化；gpui-kit 0.7.3 的 `gpui-fast` feature 指向它）。
+#
+# ⚠️ 一旦启用 gpui-fast，**全图必须同源**，这是这次升级最容易踩的一条：
+# gpui-component 0.7.3 / gpui-base 0.7.3 / gpui-kit-assets 0.7.3 的 `gpui-fast`
+# feature 干的事是 `extern crate gpui_fast as gpui;`（见各自 `src/lib.rs` 开头），
+# 把整层源码重绑到 gpui-fast 上；而它们**照旧依赖 gpui-pre**（那是被 cfg 掉不用的
+# 那份，只多编译不多链接）。所以我们的 app/ui/shell/terminal 也必须把 `gpui`
+# 依赖指到 gpui-fast —— 指错的表现不是「少个方法」，而是同名类型分属两个 crate：
+# `impl Render for MainView` 会报「trait bound not satisfied」，看着像业务代码写错了。
+#
+# 版本口径（对齐 gpui-kit 0.7.3 的 Cargo.toml）：
+#   - `gpui-fast` / `gpui-fast-platform` 由 gpui-kit 声明为 `^0.1.7`，锁定 0.1.9 实测；
+#   - `gpui-component` / `gpui-base` / `gpui-kit-assets` 声明为 `^0.7.1`，用 0.7.3；
+#   - **三条线必须一起动**：只升其中之一，组件库与引擎的 `gpui` 就不是同一个 crate。
+gpui = { package = "gpui-fast", version = "0.1.9" }
+# 平台后端门面（gpui_platform）：按目标平台转发到 gpui-fast-windows / -macos /
 # -linux（`gpui_platform::application()` 内部就是 `current_platform` 的一层 cfg 壳）。
 #
 # ⚠️ `x11` / `wayland` 这两个 feature **必须显式打开**，否则 Linux 构建编不过：
-# gpui-pre-platform 对 gpui_linux 声明的是 `default-features = false`，而
-# gpui-pre-linux 的 `default = ["wayland", "x11"]` 恰好被这一行关掉了 —— 不打开的话
+# gpui-fast-platform 对 gpui_linux 声明的是 `default-features = false`，而
+# gpui-fast-linux 的 `default = ["wayland", "x11"]` 恰好被这一行关掉了 —— 不打开的话
 # `gpui_linux::text_system`（`#[cfg(any(feature = "wayland", feature = "x11"))]`）
 # 整块不参与编译，LinuxPlatform 缺 TextSystem 直接编译失败；即便侥幸编过，
 # `current_platform` 也会落进 `unreachable!("At least one of the \"wayland\" or
@@ -28,14 +43,15 @@ gpui = { package = "gpui-pre", version = "0.3.1" }
 # 所以在 Windows 上打开它们就会让 Cargo.lock 多出 xkbcommon / x11rb / wayland-* 等
 # Linux 侧依赖 —— 这是正常的（锁文件本来就是全平台口径）。
 #
-# `font-kit` 同理**必须显式打开**，否则 **macOS 上一个字都不显示**（2026-10-19 定位）：
-# gpui-pre-macos 的 `MacPlatform::new` 是这样分叉的 ——
+# `font-kit` 同理**必须显式打开**，否则 **macOS 上一个字都不显示**（2026-10-19 定位；
+# 换到 gpui-fast 后这条**依旧成立**，分叉点连代码都没变）：
+# gpui-fast-macos 的 `MacPlatform::new` 是这样分叉的 ——
 #
-#   #[cfg(feature = "font-kit")]      let text_system = Arc::new(MacTextSystem::new());
+#   #[cfg(feature = "font-kit")]      let text_system = Arc::new(AppleTextSystem::new());
 #   #[cfg(not(feature = "font-kit"))] let text_system = Arc::new(gpui::NoopTextSystem::new());
 #
-# `gpui-pre-macos` 的 `default = ["gpui/default"]` **不含** font-kit，`gpui-pre-platform`
-# 的 `default = []` 也不含（它的 `font-kit = ["gpui_macos/font-kit"]` 是纯转发）。
+# `gpui-fast-macos` 的 default **不含** font-kit，`gpui-fast-platform`
+# 的 `default = ["multithreaded"]` 也不含（它的 `font-kit = ["gpui_macos/font-kit"]` 是纯转发）。
 # 于是缺了这一个 feature 时，macOS 用 `NoopTextSystem`：
 #   - `layout_line` **照常排版**（按 `em_width` 逐字符累加位置）⇒ 布局、行高、控件尺寸全对；
 #   - `glyph_raster_bounds` 返回 `Bounds::default()`、`rasterize_glyph` 返回 `(size, Vec::new())`
@@ -46,29 +62,57 @@ gpui = { package = "gpui-pre", version = "0.3.1" }
 # 官方 gpui-kit 文档把这条列在「macOS text rendering」专章里，措辞一致：
 # 「Without it, the macOS backend uses NoopTextSystem: a window can open while no text is rendered.」
 #
-# 代价：`zed-font-kit` 在 gpui-pre-macos 里声明为
+# 代价：`zed-font-kit` 在 gpui-fast-macos 里声明为
 # `[target.'cfg(target_os = "macos")'.dependencies.font-kit]` ⇒ **只有 macOS 目标会编译它**，
 # Windows / Linux 构建不受影响；但 Cargo 的 feature 解析与目标平台无关，
 # `Cargo.lock` 会多出 zed-font-kit 及其依赖，属正常（与上面 x11/wayland 同一个道理）。
+#
+# `runtime_shaders`：macOS 上把 Metal shader 改成**运行时编译**，而不是构建期用
+# `metal` 命令行工具预编译。gpui-kit 0.7.3 对平台层正是这么配的（见其 Cargo.toml），
+# 我们也跟上 —— 构建期编译要求机器装齐 Xcode 的 Metal Toolchain
+# （`xcodebuild -downloadComponent MetalToolchain`），CI 的 `macos-latest` 上是个额外地雷；
+# 运行时编译只多几十毫秒首帧，换来「没有 Metal 工具链也能编」。
 # 自检命令（在 Windows/Linux 上也能跑，看的是 macOS 目标的 feature 解析）：
-#   cargo tree --target aarch64-apple-darwin -e features -i gpui-pre-macos
-gpui-platform = { package = "gpui-pre-platform", version = "0.3.4", features = [
+#   cargo tree --target aarch64-apple-darwin -e features -i gpui-fast-macos
+gpui-platform = { package = "gpui-fast-platform", version = "0.1.9", features = [
     "x11",
     "wayland",
     "font-kit",
+    "runtime_shaders",
 ] }
-# gpui-component 0.6.1（= gpui-kit v0.6.1 发布线）：
-# 新增 setting（Settings/SettingPage/SettingGroup/SettingItem/SettingField）、
-# message_scroller（MessageScroller/MessageScrollerState）等组件，
-# 并带 Editor 多光标 / 自动括号配对 / gpui_kit::test 无头 UI 测试。
-gpui-component = "0.6.1"
+# ── gpui-component 0.7.3（= gpui-kit v0.7.3 发布线）──
+#
+# **0.7.0 的架构调整（本次升级的核心，不是「顺手升个版本」）**：
+#
+# ① 单一窗口入口 + Root 托管浮层：窗口内容一律包在 `gpui_base::Root` 里
+#    （`gpui_component::Root` 只是 `pub use gpui_base::Root` 的 re-export），
+#    Dialog / Sheet / Notification / Tooltip 这些窗口级层由 Root 的 **plugin** 机制
+#    自动渲染 —— `gpui_component::init(cx)` 把 `WindowState` 注册成 plugin，
+#    `Root::render` 里 `.child(self.view.clone()).child(plugins...)` 绝对定位铺在内容之上。
+#    **0.6.x 的 `Root::render_dialog_layer` / `render_sheet_layer` 已被删除**，
+#    应用侧那两行必须去掉（见 `ui/src/main_view/app_shell.rs`）。
+#    官方 `gpui_kit::open_window(options, cx, build)` 做的就是
+#    `cx.open_window(options, |w, cx| cx.new(|cx| base::Root::new(build(w, cx), w, cx)))`；
+#    本仓不用 gpui-kit 门面（会多一条平行的 `gpui` 再导出线），
+#    所以在 `shell/src/app.rs` 里逐字复刻这个形状 —— 语义相同，少一层依赖。
+#    异步任务里建窗口必须走 `cx.update` 内，与 gpui 的既有约束一致。
+# ② Plot 原语下沉：`plot::{scale, shape, Plot, PlotElement, Grid, PlotAxis}` 移入 **gpui-base**，
+#    gpui-component 的 `plot` 只是 `pub use gpui_base::plot::*` + 自己的 tooltip / derive。
+#    导入路径因此**兼容**，但 API 有细节调整（见 `ui/src/plot_chart.rs` 的三处适配：
+#    `ScalePoint/ScaleLinear::new` 的 range 变 `[f32; 2]`、`Grid::y` 收回迭代器、
+#    `least_index` → `Scale::nearest_index`）。
+# ③ DatePicker 的 `Change` 载荷变更：本仓未使用 DatePicker，无迁移成本（`grep` 可验证）。
+#
+# `gpui-fast` feature 本身只有一件事 —— 让本层源码 `extern crate gpui_fast as gpui;`。
+# 不开它就会和 gpui-fast 引擎形成「两套同名类型」，症状见文件开头的版本口径说明。
+gpui-component = { version = "0.7.3", features = ["gpui-fast"] }
 # 图标全量目录（Lucide）：
 # `gpui_component::IconName` 只是**组件默认子集**（约 90 个，清单见
 # gpui-kit-assets/default-icons.txt），`Trash` / `Brain` / `MessageSquare` 之类
 # 根本不在枚举里（写出来直接编译不过，不是「图标空白」这种软失败）。
 # 全量枚举 + `IconNamed` 实现由 gpui-kit-assets 提供，且与 gpui-component 同版本线
 # ——它本来就在依赖图里（gpui-component 的传递依赖），加为直接依赖不引入新下载。
-gpui-kit-assets = "0.6.1"
+gpui-kit-assets = { version = "0.7.3", features = ["gpui-fast"] }
 # 窗口级「纯文本可拖选」元素（`gpui_base::SelectableText`）：
 # AI 面板里 agent 工具的**展开明细**（`run_command` 之类工具的原样输出）与思考正文
 # 要能用鼠标拖选、并能被 Ctrl+C / 右键复制取走。
@@ -80,7 +124,7 @@ gpui-kit-assets = "0.6.1"
 # 选区的全局状态由 **gpui-component 的 `Root`** 持有（`TextSelectionLayer` + `Copy`），
 # 版本线走岔时表现是「拖了没高亮、Ctrl+C 没反应」且**编译不报错**，
 # 故 `ui/src/ai_panel.rs` 里配了一条编译期护栏把两条版本线钉在一起。
-gpui-base = "0.6.1"
+gpui-base = { version = "0.7.3", features = ["gpui-fast"] }
 # 终端引擎（本仓自有 crate）
 rustshell-terminal = { path = "terminal" }
 

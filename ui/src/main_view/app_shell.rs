@@ -1,4 +1,8 @@
-//! 窗口外壳视图 `AppShell`：挂载官方 Dialog / Sheet 层。
+//! 窗口外壳视图 `AppShell`：`Root` 与 `MainView` 之间的那一层。
+//!
+//! 0.6.x 时代它负责挂 Dialog / Sheet 两个层；**0.7.0 起浮层由 `Root` 自动托管**
+//! （plugin 机制，见 `render` 里的说明），本视图退化成「原样交出 `MainView`」。
+//! 留着它是因为 `Root::new(AppShell)` 是生产与二十多处护栏测试共用的装配口径。
 //!
 //! 与四个「独立子视图」（`SidebarPanelView` / `AiChatPanelView` /
 //! `GroupNameDialogView` / `TermSearchBarView`）一起，从 `main_view.rs` 本体拆出。
@@ -394,14 +398,21 @@ fn render_sidebar_panel(m: &mut MainView, cx: &mut Context<MainView>) -> gpui::A
 }
 
 impl Render for AppShell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet_layer = gpui_component::Root::render_sheet_layer(window, cx);
-        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
-
-        div()
-            .size_full()
-            .child(self.main.clone())
-            .children(sheet_layer)
-            .children(dialog_layer)
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // gpui-component 0.7 起，Dialog / Sheet / Notification / Tooltip 这些窗口级层
+        // **不再由应用自己挂**：`Root`（= `gpui_base::Root`，组件库只是 re-export）
+        // 在 render 里把注册过的 plugin 视图绝对定位铺在内容之上
+        // （`gpui-base/src/root.rs`：`.child(self.view.clone()).child(plugins...)`），
+        // 而 `gpui_component::init(cx)` 已经把 `WindowState`（持有 active_dialogs /
+        // active_sheet / notification）注册成 plugin。
+        //
+        // 0.6.x 的 `Root::render_dialog_layer` / `render_sheet_layer` 这两个函数
+        // **已经不存在**（0.7 公开 API 里搜不到），所以这里只剩「原样交出 MainView」。
+        // 通知层现在用的是 Root 的**全部边界**，不再由外壳裁一刀 —— 这正是 0.7.0
+        // 「Root 自动托管浮层」要解决的问题（层被抑制 / 缓存内容重复）。
+        //
+        // 外壳保留而非删掉：`Root::new(AppShell)` 是生产与二十多处护栏测试共用的装配口径，
+        // 删了要改二十几处 `cx.new(|_| AppShell::new(main))`，收益为零。
+        div().size_full().child(self.main.clone())
     }
 }

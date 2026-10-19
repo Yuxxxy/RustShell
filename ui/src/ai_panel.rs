@@ -2236,8 +2236,14 @@ mod tests {
              那样即便选中了也证明不了「拖得动」。"
         );
 
-        // 一行之内从左拖到右：起止点都取该盒子的**垂直中线**（文字就在那一行上）
-        let y = detail_box.center().y;
+        // 一行之内从左拖到右。**垂直位置取盒子顶部下 6px，不取中线**：
+        // `ai-trace-detail-*` 量出来的盒子是「明细 + 行首 head」整行的高度
+        // （2026-10-19 实测：明细盒 34px 高、起点 128.5；head 的热区在 144.5..162.5，
+        // 而盒子中线正好 145.5 —— 差 1px 就落在 head 里）。中线落在 head 上时，
+        // 这一次拖选会先在 head 的 `on_click` 上把它折起来，选的却是「热区没盖住整行」
+        // 这条用例本来要证伪的现象，报出来的原因还是错的。
+        // 文本行本身在这一盒子的**顶上**，所以顶部下 6px 才是真的落在字上。
+        let y = detail_box.origin.y + px(6.);
         let from = gpui::point(detail_box.origin.x + px(1.), y);
         let to = gpui::point(detail_box.origin.x + detail_box.size.width - px(1.), y);
         vcx.simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::default());
