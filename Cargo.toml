@@ -27,7 +27,36 @@ gpui = { package = "gpui-pre", version = "0.3.1" }
 # Windows / macOS 构建不受影响；但 Cargo 的 feature 解析与目标平台**无关**，
 # 所以在 Windows 上打开它们就会让 Cargo.lock 多出 xkbcommon / x11rb / wayland-* 等
 # Linux 侧依赖 —— 这是正常的（锁文件本来就是全平台口径）。
-gpui-platform = { package = "gpui-pre-platform", version = "0.3.4", features = ["x11", "wayland"] }
+#
+# `font-kit` 同理**必须显式打开**，否则 **macOS 上一个字都不显示**（2026-10-19 定位）：
+# gpui-pre-macos 的 `MacPlatform::new` 是这样分叉的 ——
+#
+#   #[cfg(feature = "font-kit")]      let text_system = Arc::new(MacTextSystem::new());
+#   #[cfg(not(feature = "font-kit"))] let text_system = Arc::new(gpui::NoopTextSystem::new());
+#
+# `gpui-pre-macos` 的 `default = ["gpui/default"]` **不含** font-kit，`gpui-pre-platform`
+# 的 `default = []` 也不含（它的 `font-kit = ["gpui_macos/font-kit"]` 是纯转发）。
+# 于是缺了这一个 feature 时，macOS 用 `NoopTextSystem`：
+#   - `layout_line` **照常排版**（按 `em_width` 逐字符累加位置）⇒ 布局、行高、控件尺寸全对；
+#   - `glyph_raster_bounds` 返回 `Bounds::default()`、`rasterize_glyph` 返回 `(size, Vec::new())`
+#     ⇒ 字形位图**永远空白** ⇒ 一个字符都看不见；
+#   - `all_font_names()` 返回空数组（gpui-component 的 `resolve_default_mono_font` 探测失效）。
+# 症状因此极具欺骗性：窗口、图标、卡片、终端光标、选区全都在，**只有文字消失**，
+# 且**只在 macOS**（Windows 走 DirectWrite、Linux 走 x11/wayland 自带文本系统，都不用这个 feature）。
+# 官方 gpui-kit 文档把这条列在「macOS text rendering」专章里，措辞一致：
+# 「Without it, the macOS backend uses NoopTextSystem: a window can open while no text is rendered.」
+#
+# 代价：`zed-font-kit` 在 gpui-pre-macos 里声明为
+# `[target.'cfg(target_os = "macos")'.dependencies.font-kit]` ⇒ **只有 macOS 目标会编译它**，
+# Windows / Linux 构建不受影响；但 Cargo 的 feature 解析与目标平台无关，
+# `Cargo.lock` 会多出 zed-font-kit 及其依赖，属正常（与上面 x11/wayland 同一个道理）。
+# 自检命令（在 Windows/Linux 上也能跑，看的是 macOS 目标的 feature 解析）：
+#   cargo tree --target aarch64-apple-darwin -e features -i gpui-pre-macos
+gpui-platform = { package = "gpui-pre-platform", version = "0.3.4", features = [
+    "x11",
+    "wayland",
+    "font-kit",
+] }
 # gpui-component 0.6.1（= gpui-kit v0.6.1 发布线）：
 # 新增 setting（Settings/SettingPage/SettingGroup/SettingItem/SettingField）、
 # message_scroller（MessageScroller/MessageScrollerState）等组件，
