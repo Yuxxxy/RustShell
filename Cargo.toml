@@ -3,7 +3,7 @@ resolver = "2"
 members = ["app", "shell", "ui", "core", "platform", "terminal"]
 
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["yuxinyu"]
