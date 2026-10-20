@@ -518,13 +518,11 @@ impl MainView {
         }
     }
 
-    /// 让连接树**下一帧重建一次**：清掉库内部按下标记的选中/右击高亮，并按连接 id
+    /// 让连接树**下一帧重建一次**：清掉库内部按下标记的选中态，并按连接 id
     /// 重新对齐真正的选中行（对齐发生在 `connections_panel::render` 的重建分支里）。
     ///
-    /// 两个调用点：
-    /// 1. 行右键（`ui_call_invalidate_conn_tree`）——清那圈会永久残留的「右击外框」；
-    /// 2. 展开/折叠事件——`toggle_expand` 会整体位移条目下标，不重新对齐，
-    ///    库的选中框就会停在**别的连接**上。
+    /// 调用点：展开/折叠事件——`toggle_expand` 会整体位移条目下标，不重新对齐，
+    /// 库的选中框就会停在**别的连接**上。
     pub fn invalidate_conn_tree(&mut self, cx: &mut Context<Self>) {
         self.conn_ui.conn_tree_key = None;
         cx.notify();

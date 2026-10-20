@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use gpui::{
     div, prelude::FluentBuilder as _, px, App, AppContext as _, Context, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -13,7 +13,7 @@ use gpui_component::{
     input::Input,
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
-    tree::{Tree as TreeView, TreeEntry, TreeItem},
+    tree::{Tree as TreeView, TreeEntry, TreeItem, TreeState},
     v_flex, Icon, IconName, Sizable as _,
 };
 
@@ -102,19 +102,6 @@ pub struct ConnTreeSnapshot {
     pub positions: HashMap<String, (usize, usize)>,
 }
 impl gpui::Global for ConnTreeSnapshot {}
-
-/// 连接树「本次右键落在哪个节点」的命中记录（节点 id，形如 `grp:<id>` / `prof:<id>`）。
-///
-/// 树的右键菜单**只有容器那一处**（原因见 `render` 里 body 的注释），所以需要这条
-/// 记录来区分「点了行」和「点了空白」：
-/// - 行在右键按下（冒泡）时写入自己的节点 id；
-/// - 容器在捕获阶段先清成 `None`（捕获早于冒泡，保证空白处读到的是 None）；
-/// - 菜单构建被官方 `ContextMenu` 推迟到下一帧（见其 `window.defer`），故写入一定先于读取。
-#[derive(Default, Clone)]
-pub struct ConnTreeHit {
-    pub node: Option<String>,
-}
-impl gpui::Global for ConnTreeHit {}
 
 /// 渲染快照的**唯一**构建点：行显示所需的一切（选中态 / 主机标签 / 备注 / 同级位置）。
 ///
@@ -396,25 +383,20 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     } else {
         // 官方 Tree：虚拟化列表 + 内建滚动条 + 键盘导航（上下选择、左右折叠）
         //
-        // 右键菜单**只挂在树容器这一处**，不再用官方的逐行 `Tree::context_menu`：
-        // 逐行挂的菜单只在行上出现，空白处（用户想要的「新增连接 / 新增文件夹」入口）
-        // 没有菜单；而两处都挂会在行上同时弹出两个菜单。改为「容器唯一菜单 +
-        // `ConnTreeHit` 记录本次点的是哪一行」，菜单按记录分发（行菜单 / 空白菜单）。
+        // 右键菜单分两处挂：**行**用官方 `Tree::context_menu`（0.8.0 起官方 Tree
+        // 会无条件把每一行包进 `ContextMenu`，容器级菜单收不到行的右键），
+        // **空白处**仍挂在容器上（新增连接 / 新建分组）。
+        //
+        // 两处不会同时弹：行上的 `ContextMenu` 在右键按下时 `stop_propagation()`，
+        // 容器那一层收不到同一次事件。
         div()
             .flex_1()
             .min_h_0()
-            // 每次右键按下先清空上一轮命中（捕获阶段早于行的冒泡回调）。
-            // 不清的话「先右键某行、再右键空白」会继续沿用那一行的菜单。
-            .capture_any_mouse_down(|ev, _w, cx| {
-                if ev.button == MouseButton::Right {
-                    cx.set_global(ConnTreeHit { node: None });
-                }
-            })
-            .context_menu(tree_body_ctx_menu)
-            .child(TreeView::new(
-                &m.conn_ui.tree_state.clone(),
-                render_tree_item,
-            ))
+            .context_menu(|menu: PopupMenu, _w, _cx| blank_menu(menu))
+            .child(
+                TreeView::new(&m.conn_ui.tree_state.clone(), render_tree_item)
+                    .context_menu(tree_row_ctx_menu),
+            )
             .into_any_element()
     };
 
@@ -482,7 +464,6 @@ fn render_tree_item(
         // `debug_selector` 在正式构建里不产生任何东西。
         let folder_sel = format!("grp-folder:{group_id}");
         let drop_group = group_id;
-        let hit_node = id.clone();
         let drag_label = item.label.clone();
         // 三处闭包各持一份目标分组 id（move 闭包不能共享借用）
         let drop_for_prof = drop_group.clone();
@@ -494,14 +475,6 @@ fn render_tree_item(
             // 「选中框外线」上（`list_item.rs`：`selected_style.corner_radii =
             // corner_radii`），所以一处 `.rounded(..)` 就够。
             .rounded(px(SELECTION_RADIUS))
-            // 右键命中记录（冒泡）：容器唯一的菜单据此判定「点的是这一行」。
-            // 同时作废库内部的「右击高亮」——见 `invalidate_conn_tree`。
-            .on_mouse_down(MouseButton::Right, move |_ev, _w, cx| {
-                cx.set_global(ConnTreeHit {
-                    node: Some(hit_node.clone()),
-                });
-                super::main_view::ui_call_invalidate_conn_tree(cx);
-            })
             // 落点高亮：拖着服务器行/分组行经过时给出可放置反馈
             .drag_over::<DraggedProfile>(|s, _, _w, cx| {
                 let t = crate::theme::current(cx);
@@ -554,6 +527,10 @@ fn render_tree_item(
                         .min_w_0()
                         .text_size(px(ROW_TEXT))
                         .text_color(hex(t.fg_primary))
+                        // 名称必须**单行**：官方 Tree 是 uniform 列表（每行等高），
+                        // 长名字一旦在空格处折行就把行撑高，压到上下相邻行上。
+                        // `text_ellipsis` 只管截断不管换行，所以 nowrap 要显式给。
+                        .whitespace_nowrap()
                         .text_ellipsis()
                         .child(item.label.clone()),
                 ),
@@ -578,17 +555,6 @@ fn render_tree_item(
         .pl(indent)
         // 选中框圆角：与分组行同规格（见分组行处的说明）
         .rounded(px(SELECTION_RADIUS))
-        // 右键命中记录（冒泡）：容器唯一的菜单据此判定「点的是这一行」。
-        // 同时作废库内部的「右击高亮」——见 `invalidate_conn_tree`。
-        .on_mouse_down(MouseButton::Right, {
-            let hit_node = id.clone();
-            move |_ev, _w, cx| {
-                cx.set_global(ConnTreeHit {
-                    node: Some(hit_node.clone()),
-                });
-                super::main_view::ui_call_invalidate_conn_tree(cx);
-            }
-        })
         .child(
             h_flex()
                 .w_full()
@@ -606,12 +572,15 @@ fn render_tree_item(
                         .min_w_0()
                         .text_size(px(ROW_TEXT))
                         .text_color(hex(t.fg_primary))
+                        // 同上：单行 + 省略号，撑高行会压到相邻行（uniform 列表）
+                        .whitespace_nowrap()
                         .text_ellipsis()
                         .child(item.label.clone()),
                 )
                 .child(
                     div()
                         .flex_shrink_0()
+                        .whitespace_nowrap()
                         .text_size(px(10.))
                         .text_color(hex(t.fg_muted))
                         .child(SharedString::from(host_label)),
@@ -690,34 +659,34 @@ fn render_tree_item(
         })
 }
 
-/// 树容器**唯一**的右键菜单：按 `ConnTreeHit` 判断这次点的是行还是空白。
+/// 行右键菜单：官方 `Tree::context_menu` 逐行挂载，按条目 id 分发到分组 / 连接菜单。
 ///
-/// 菜单构建跑在弹层上下文（拿不到 `MainView`），所以这里只读全局命中并做纯分发；
+/// 菜单构建跑在弹层上下文（拿不到 `MainView`），所以这里只读渲染快照并做纯分发；
 /// 真正的动作全部落在各菜单项的 `on_click` 里，经 `super::main_view` 的入口回到 MainView。
-fn tree_body_ctx_menu(
+fn tree_row_ctx_menu(
+    _ix: usize,
+    entry: &TreeEntry,
     menu: PopupMenu,
     _w: &mut Window,
-    cx: &mut gpui::Context<PopupMenu>,
+    cx: &mut Context<TreeState>,
 ) -> PopupMenu {
-    let node = cx.try_global::<ConnTreeHit>().and_then(|h| h.node.clone());
+    let id = entry.item().id.to_string();
     // 「上移 / 下移」的置灰依据：本条节点在**同级**里的（序号, 总数）。
     //
     // 位置随渲染快照全局缓存（见 `ConnTreeSnapshot::positions`）：菜单构建在弹层
-    // 上下文里跑，读不到 `MainView`。快照里查不到就按 `(0, 1)` 兜底 到 两个方向都
+    // 上下文里跑，读不到 `MainView`。快照里查不到就按 `(0, 1)` 兜底到两个方向都
     // 置灰 —— 搜索过滤态正是这种情况（见 `snapshot_of`），宁可这一次点不动，
     // 也不让菜单项点了没反应。
-    let pos = node
-        .as_deref()
-        .and_then(|id| {
-            cx.try_global::<ConnTreeSnapshot>()
-                .and_then(|s| s.positions.get(id).copied())
-        })
+    let pos = cx
+        .try_global::<ConnTreeSnapshot>()
+        .and_then(|s| s.positions.get(&id).copied())
         .unwrap_or((0, 1));
-    match node.as_deref() {
-        Some(id) if id.starts_with("grp:") => group_menu(menu, &id["grp:".len()..], pos),
-        Some(id) if id.starts_with("prof:") => profile_menu(menu, &id["prof:".len()..], pos),
-        // 空白处：新增连接 + 新建分组
-        _ => blank_menu(menu),
+    if let Some(group_id) = id.strip_prefix("grp:") {
+        group_menu(menu, group_id, pos)
+    } else if let Some(profile_id) = id.strip_prefix("prof:") {
+        profile_menu(menu, profile_id, pos)
+    } else {
+        menu
     }
 }
 
@@ -1224,16 +1193,16 @@ mod tests {
     }
 
     /// 回归（2026-09-18 用户要求「连接选中框外线有时候一直停留在那，切换了也没用，
-    /// 顺便改为圆角」）：三条一起守，缺一条这个 bug 就会复发。
+    /// 顺便改为圆角」）：两条一起守。
     ///
     /// 1. **圆角**：官方 `ListItem` 用本元素的 `corner_radii` 同时画选中底色与那圈
     ///    外线，所以两行各挂一处 `.rounded(px(SELECTION_RADIUS))` 就够；
-    /// 2. **不粘住**：官方 `Tree` 把 `right_clicked_ix` 画成外线，而它只在
-    ///    `set_items` 或点分组行时才清（`toggle_expand` 对非分组行提前 return）——
-    ///    右键一条连接之后那圈线会永久留在那儿。两行右键都要走
-    ///    `ui_call_invalidate_conn_tree`（下一帧重建 ⇒ `set_items` 清掉它）；
-    /// 3. **不跳行**：展开/折叠会让条目下标整体位移，库的选中态是按下标存的，
+    /// 2. **不跳行**：展开/折叠会让条目下标整体位移，库的选中态是按下标存的，
     ///    事件后必须重建并按连接 id 对齐（`MainView::invalidate_conn_tree`）。
+    ///
+    /// 「右击外线粘住」在 0.8.0 已不会复现：官方 `Tree` 逐行包的 `ContextMenu`
+    /// 在右键冒泡时先 `stop_propagation()`，库自己的 `right_clicked_ix` 监听根本
+    /// 收不到这次按下 —— 外线（`secondary_selected`）从源头上就不会被点亮。
     #[test]
     fn selection_box_is_rounded_and_never_sticks() {
         let code = prod(include_str!("connections_panel.rs"));
@@ -1242,10 +1211,9 @@ mod tests {
             2,
             "分组行与连接行都要圆角（各一处）"
         );
-        assert_eq!(
-            code.matches("ui_call_invalidate_conn_tree(cx)").count(),
-            2,
-            "两行右键都要作废库内部的右击高亮，那圈外线才不会再粘住"
+        assert!(
+            code.contains(".context_menu(tree_row_ctx_menu)"),
+            "行右键必须走官方逐行菜单：容器级菜单收不到 0.8.0 的行右键"
         );
 
         let actions = prod(include_str!("main_view/connections.rs"));
@@ -1259,6 +1227,26 @@ mod tests {
         assert!(
             main.contains("m.invalidate_conn_tree(cx)"),
             "展开/折叠事件后必须重建并按连接 id 对齐选中行（否则选中框会跳到别的连接上）"
+        );
+    }
+
+    /// ★ 回归护栏：**行标签必须单行**。
+    ///
+    /// 官方 `Tree` 用的是 uniform 列表（每行等高），而 `text_ellipsis()` 在 gpui 里
+    /// 只设截断、**不管换行**：长连接名（「docker ssh3copycopycopycopy」）在深缩进下
+    /// 会在空格处折成两行，把该行撑到两倍高 —— 直接压在上下相邻行上（2026-10-20 反馈
+    /// 「分组下的连接文字互相重叠」）。所以每个 `.text_ellipsis()` 都要配一枚
+    /// `.whitespace_nowrap()`，分组行与连接行各一处。
+    #[test]
+    fn row_labels_are_single_line() {
+        let code = prod(include_str!("connections_panel.rs"));
+        let ellipsis = code.matches(".text_ellipsis()").count();
+        let nowrap = code.matches(".whitespace_nowrap()").count();
+        assert_eq!(ellipsis, 2, "分组行与连接行的名称各一处省略号截断");
+        assert!(
+            nowrap >= ellipsis,
+            "每个省略号截断都要配一枚 nowrap，否则长名字折行会撑高 uniform 行\
+            （名称 {ellipsis} 处 / nowrap {nowrap} 处）"
         );
     }
 
@@ -1365,7 +1353,7 @@ mod tests {
              按全量挪一格时界面上可能原地不动（点了没反应）。"
         );
         assert!(
-            code.contains("s.positions.get(id).copied()"),
+            code.contains("s.positions.get(&id).copied()"),
             "菜单必须从快照里取位置（`positions.get(id)`）作为置灰依据。"
         );
 
