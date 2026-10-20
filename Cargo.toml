@@ -9,25 +9,40 @@ license = "Apache-2.0"
 authors = ["yuxinyu"]
 
 [workspace.dependencies]
-# --- GPUI 生态（统一版本线：gpui-kit v0.7.3 发布线 + gpui-fast 引擎） ---
+# --- GPUI 生态（统一版本线：gpui-kit v0.8.0 发布线 + gpui-fast 引擎） ---
 #
 # 2026-10-19：从「gpui-pre 0.3.x + gpui-component 0.6.1」升级到 gpui-kit 0.7.3 线，
 # 引擎同时换成 longbridge/gpui-fast 0.1.9（gpui 的 fork，带 retained rendering 与
-# 布局优化；gpui-kit 0.7.3 的 `gpui-fast` feature 指向它）。
+# 布局优化；gpui-kit 的 `gpui-fast` feature 指向它）。
+# 2026-10-20：升到 gpui-kit 0.8.0 线，引擎与平台层一并跟到 gpui-fast 0.1.10；gpui-component 同时
+# 打开 `syntect`（见该条目下的说明）。
 #
-# ⚠️ 一旦启用 gpui-fast，**全图必须同源**，这是这次升级最容易踩的一条：
-# gpui-component 0.7.3 / gpui-base 0.7.3 / gpui-kit-assets 0.7.3 的 `gpui-fast`
+# ⚠️ 一旦启用 gpui-fast，**全图必须同源**，这是这条线最容易踩的一条：
+# gpui-component / gpui-base / gpui-kit-assets 的 `gpui-fast`
 # feature 干的事是 `extern crate gpui_fast as gpui;`（见各自 `src/lib.rs` 开头），
 # 把整层源码重绑到 gpui-fast 上；而它们**照旧依赖 gpui-pre**（那是被 cfg 掉不用的
 # 那份，只多编译不多链接）。所以我们的 app/ui/shell/terminal 也必须把 `gpui`
 # 依赖指到 gpui-fast —— 指错的表现不是「少个方法」，而是同名类型分属两个 crate：
 # `impl Render for MainView` 会报「trait bound not satisfied」，看着像业务代码写错了。
 #
-# 版本口径（对齐 gpui-kit 0.7.3 的 Cargo.toml）：
-#   - `gpui-fast` / `gpui-fast-platform` 由 gpui-kit 声明为 `^0.1.7`，锁定 0.1.9 实测；
-#   - `gpui-component` / `gpui-base` / `gpui-kit-assets` 声明为 `^0.7.1`，用 0.7.3；
-#   - **三条线必须一起动**：只升其中之一，组件库与引擎的 `gpui` 就不是同一个 crate。
-gpui = { package = "gpui-fast", version = "0.1.9" }
+# 版本口径（对齐 gpui-kit 0.8.0 的 Cargo.toml）：
+#   - 0.8.0 把 gpui-fast 重新改为**可选** backend，默认仍是 gpui-pre 0.3.9；
+#     本仓直连 gpui-fast，并把每一层的 `gpui-fast` feature 都显式打开；
+#   - `gpui-fast` 声明为 `^0.1.10`（0.8.0 组件库的下限），锁定 0.1.10；
+#   - `gpui-fast-platform`（含 gpui-fast-windows / -macos / -linux）同样用 0.1.10；
+#   - `gpui-component` / `gpui-base` / `gpui-kit-assets` 用 0.8.0；
+#   - **四条线必须一起动**：只升其中之一，组件库与引擎的 `gpui` 就不是同一个 crate。
+#
+# ⚠️ 平台后端**必须与 engine 同版本**，这不只是 semver 兼容问题：
+# 0.1.10 把 `MonochromeSprite` / `SubpixelSprite` / `PolychromeSprite` 的 `tile`
+# 字段从末尾挪到了 `bounds` 前面（GPU 侧按结构体布局读数据）。只升 engine 而把
+# `gpui-fast-platform` 留在 0.1.9，Windows 的 DirectX 渲染器仍按旧偏移解释字形
+# sprite ⇒ **布局、控件、光标全正常，所有文字（含终端）空白**，且不报错。
+# 2026-10-20 实测踩中：platform 0.1.10 其实已发布，`version = "0.1.9"`（^0.1.9）
+# 不会因 engine 升级而自动跳版本，Cargo.lock 里就一直是 0.1.9。自检：
+#   cargo tree -i gpui-fast-platform
+# 输出应与 `gpui-fast` 的版本一致。
+gpui = { package = "gpui-fast", version = "0.1.10" }
 # 平台后端门面（gpui_platform）：按目标平台转发到 gpui-fast-windows / -macos /
 # -linux（`gpui_platform::application()` 内部就是 `current_platform` 的一层 cfg 壳）。
 #
@@ -68,19 +83,19 @@ gpui = { package = "gpui-fast", version = "0.1.9" }
 # `Cargo.lock` 会多出 zed-font-kit 及其依赖，属正常（与上面 x11/wayland 同一个道理）。
 #
 # `runtime_shaders`：macOS 上把 Metal shader 改成**运行时编译**，而不是构建期用
-# `metal` 命令行工具预编译。gpui-kit 0.7.3 对平台层正是这么配的（见其 Cargo.toml），
+# `metal` 命令行工具预编译。gpui-kit 0.8.0 对平台层正是这么配的（见其 Cargo.toml），
 # 我们也跟上 —— 构建期编译要求机器装齐 Xcode 的 Metal Toolchain
 # （`xcodebuild -downloadComponent MetalToolchain`），CI 的 `macos-latest` 上是个额外地雷；
 # 运行时编译只多几十毫秒首帧，换来「没有 Metal 工具链也能编」。
 # 自检命令（在 Windows/Linux 上也能跑，看的是 macOS 目标的 feature 解析）：
 #   cargo tree --target aarch64-apple-darwin -e features -i gpui-fast-macos
-gpui-platform = { package = "gpui-fast-platform", version = "0.1.9", features = [
+gpui-platform = { package = "gpui-fast-platform", version = "0.1.10", features = [
     "x11",
     "wayland",
     "font-kit",
     "runtime_shaders",
 ] }
-# ── gpui-component 0.7.3（= gpui-kit v0.7.3 发布线）──
+# ── gpui-component 0.8.0（= gpui-kit v0.8.0 发布线）──
 #
 # **0.7.0 的架构调整（本次升级的核心，不是「顺手升个版本」）**：
 #
@@ -105,14 +120,22 @@ gpui-platform = { package = "gpui-fast-platform", version = "0.1.9", features = 
 #
 # `gpui-fast` feature 本身只有一件事 —— 让本层源码 `extern crate gpui_fast as gpui;`。
 # 不开它就会和 gpui-fast 引擎形成「两套同名类型」，症状见文件开头的版本口径说明。
-gpui-component = { version = "0.7.3", features = ["gpui-fast"] }
+#
+# `syntect`（0.8.0 新增）：给 `TextView::markdown` 的**围栏代码块**上色。本仓只有
+# AI 消息正文走这条路（`ui/src/ai_panel.rs`），不开的话代码块仍是无色纯文本。
+# 开启后 `gpui_component::init` / 主题切换会自动把高亮器装进 TextView 默认样式，
+# 应用侧无需初始化；高亮配色取组件的 `highlight_theme`，不跟随本仓的 token 覆盖，
+# 深浅色下需要肉眼确认。代价是编译 syntect + two-face（内嵌 bat 语法集，纯 Rust、
+# 无原生依赖），构建时间与二进制体积会涨；流式输出时代码块文本每帧变化，会重新
+# 高亮（未变化的块有缓存）。tree-sitter 更重（每种语言一个 grammar crate），不选。
+gpui-component = { version = "0.8.0", features = ["gpui-fast", "syntect"] }
 # 图标全量目录（Lucide）：
 # `gpui_component::IconName` 只是**组件默认子集**（约 90 个，清单见
 # gpui-kit-assets/default-icons.txt），`Trash` / `Brain` / `MessageSquare` 之类
 # 根本不在枚举里（写出来直接编译不过，不是「图标空白」这种软失败）。
 # 全量枚举 + `IconNamed` 实现由 gpui-kit-assets 提供，且与 gpui-component 同版本线
 # ——它本来就在依赖图里（gpui-component 的传递依赖），加为直接依赖不引入新下载。
-gpui-kit-assets = { version = "0.7.3", features = ["gpui-fast"] }
+gpui-kit-assets = { version = "0.8.0", features = ["gpui-fast"] }
 # 窗口级「纯文本可拖选」元素（`gpui_base::SelectableText`）：
 # AI 面板里 agent 工具的**展开明细**（`run_command` 之类工具的原样输出）与思考正文
 # 要能用鼠标拖选、并能被 Ctrl+C / 右键复制取走。
@@ -124,7 +147,7 @@ gpui-kit-assets = { version = "0.7.3", features = ["gpui-fast"] }
 # 选区的全局状态由 **gpui-component 的 `Root`** 持有（`TextSelectionLayer` + `Copy`），
 # 版本线走岔时表现是「拖了没高亮、Ctrl+C 没反应」且**编译不报错**，
 # 故 `ui/src/ai_panel.rs` 里配了一条编译期护栏把两条版本线钉在一起。
-gpui-base = { version = "0.7.3", features = ["gpui-fast"] }
+gpui-base = { version = "0.8.0", features = ["gpui-fast"] }
 # 终端引擎（本仓自有 crate）
 rustshell-terminal = { path = "terminal" }
 
@@ -175,13 +198,6 @@ encoding_rs = "0.8"
 # `ring` 而非默认的 aws-lc：后者在 Windows 需要 NASM（见 core/Cargo.toml 的说明）。
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
-# 窗口原生句柄（F-8）：隐藏/显示主窗口要拿到 HWND。gpui 的 `Window::window_handle()`
-# 返回的就是这个 crate 的 `WindowHandle`，全仓只有这一条取句柄的路，不会引入第二个版本线。
-raw-window-handle = "0.6"
-# 系统托盘（F-8）：内部走 Shell_NotifyIcon + muda 菜单。
-# 只在 Windows 目标启用（见 platform/Cargo.toml），default-features = false 是为了
-# 不把 Linux 的 gtk3 / libappindicator 拉进来 —— 那需要系统 dev 包，会把非 Windows 构建拖垮。
-tray-icon = { version = "0.25", default-features = false }
 
 # --- 内部 crate ---
 rustshell-core = { path = "core" }

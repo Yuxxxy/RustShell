@@ -115,7 +115,14 @@ pub fn create_terminal_view(
         // 设置项（2026-09-28 起由 `Settings::clamped_line_height` 提供；
         // 此前是硬编码 1.2，用户无处可调）
         line_height_multiplier: cfg.line_height,
-        padding: Edges::all(px(8.0)),
+        // 顶部收窄到 4px：终端背景与页签栏之间不再叠出一条过高的同色空白带；
+        // 左右和底部保持 8px，给光标、划选与滚动条留边。
+        padding: Edges {
+            top: px(4.0),
+            right: px(8.0),
+            bottom: px(8.0),
+            left: px(8.0),
+        },
         colors: to_color_palette_a(&cfg.palette, cfg.background_alpha),
         // T4-E1：编码透传（引擎侧在后台 reader 线程按此转码）
         encoding: Some(cfg.encoding.clone()),

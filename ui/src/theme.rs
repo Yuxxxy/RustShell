@@ -42,13 +42,9 @@ pub fn scrim(cx: &App) -> gpui::Hsla {
     gpui::black().opacity(if is_dark(cx) { 0.35 } else { 0.20 })
 }
 
-/// 按 Token 应用主题（：theme_mode 由 Settings 驱动，可即时切换；：System 跟随系统外观）
+/// 按 Token 应用主题（theme_mode 由 Settings 驱动，可即时切换）
 pub fn apply_theme_mode(cx: &mut App, mode: ThemeMode) {
-    let system_dark = matches!(
-        cx.window_appearance(),
-        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-    );
-    let t = ThemeTokens::resolved(mode, system_dark);
+    let t = ThemeTokens::resolved(mode);
     let dark = t.bg_base == ThemeTokens::dark().bg_base;
 
     cx.set_global(CurrentTheme(t, dark));

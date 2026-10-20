@@ -148,17 +148,6 @@ pub struct Settings {
     /// 默认 **false**：终端输出里常有口令、密钥、`export TOKEN=...`，
     /// 默认落盘等于默认留档，必须由用户显式打开。
     pub session_log_enabled: bool,
-    /// 关闭主窗口时收进系统托盘而不是退出（F-8）。
-    ///
-    /// 默认 **false**：默认「点 X 就退出」是本程序一直以来的语义，改成
-    /// 「点 X 之后程序还在后台跑」属于改变用户对关闭按钮的预期 —— 那种改动
-    /// 必须是用户自己选的，不能靠升级悄悄生效（否则会出现「以为关了、
-    /// 其实还在连服务器」这种最难解释的现象）。
-    ///
-    /// 托盘本身只要建得起来就常驻（规格 §1.8「托盘常驻」），这一位只管
-    /// **关闭按钮**的语义。托盘建不起来的平台/环境里，本项没有意义，
-    /// 设置面板会就地标注原因（见 `rustshell_platform::tray::availability`）。
-    pub close_to_tray: bool,
     /// 下载完成后校验（F-13）：单文件下载除了恒做的大小比对，再做一遍 SHA-256。
     ///
     /// 默认 **false**：校验要把远端文件**再读一遍**（不走 exec，见
@@ -199,7 +188,7 @@ pub struct Settings {
     ///
     /// 默认取 [`StartupAction::LocalShell`]：一个**终端软件**启动后给一个终端，
     /// 是最不需要解释的行为；想要命令面板/恢复会话的人在设置里改一次即可
-    /// （与 `close_to_tray`、`session_restore` 同一条口径：改默认必须由用户按下）。
+    /// （与 `session_restore` 同一条口径：改默认必须由用户按下）。
     pub startup_action: StartupAction,
 }
 
@@ -484,7 +473,6 @@ impl Default for Settings {
             terminal_cursor_style: CursorStyle::default(),
             terminal_paste_behavior: PasteBehavior::default(),
             session_log_enabled: false,
-            close_to_tray: false,
             sftp_verify_downloads: false,
             sftp_max_concurrent: DEFAULT_SFTP_MAX_CONCURRENT,
             session_restore: SessionRestoreMode::default(),
@@ -562,16 +550,15 @@ pub const DEFAULT_CURSOR_BLINK_MS: u64 = 530;
 
 impl Settings {
     /// 解析当前应生效的终端配色，按 custom 到 预设 到 跟随主题 的优先级回退，不 panic。
-    pub fn resolve_terminal_palette(&self, system_prefers_dark: bool) -> TerminalPalette {
+    pub fn resolve_terminal_palette(&self) -> TerminalPalette {
         let key = self.terminal_color_scheme.as_str();
         if key == crate::theme::SCHEME_CUSTOM {
             if let Some(cp) = &self.terminal_custom_palette {
                 return cp.to_palette();
             }
-            return TerminalPalette::resolved(self.theme_mode, system_prefers_dark);
+            return TerminalPalette::resolved(self.theme_mode);
         }
-        TerminalPalette::preset(key)
-            .unwrap_or_else(|| TerminalPalette::resolved(self.theme_mode, system_prefers_dark))
+        TerminalPalette::preset(key).unwrap_or_else(|| TerminalPalette::resolved(self.theme_mode))
     }
 
     /// 某个左侧栏面板该用的宽度（钳制到合法区间）。
@@ -791,7 +778,7 @@ mod tests {
             crate::reconnect::DEFAULT_INTERVAL_SECS
         );
         // 行为等同 follow-theme
-        assert_eq!(s.resolve_terminal_palette(true), TerminalPalette::dark());
+        assert_eq!(s.resolve_terminal_palette(), TerminalPalette::dark());
     }
 
     /// 全局代理（F-10）：口令引用解成运行期明文；解不开时留空而不是整条丢掉。
@@ -832,10 +819,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            s.resolve_terminal_palette(false),
-            TerminalPalette::resolved(s.theme_mode, false)
+            s.resolve_terminal_palette(),
+            TerminalPalette::resolved(s.theme_mode)
         );
-        assert_eq!(s.resolve_terminal_palette(false), TerminalPalette::dark());
+        assert_eq!(s.resolve_terminal_palette(), TerminalPalette::dark());
 
         // 主题设为 Light 时必须跟着走浅色，而不是钉死深色
         let s = Settings {
@@ -844,17 +831,7 @@ mod tests {
             terminal_custom_palette: None,
             ..Default::default()
         };
-        assert_eq!(s.resolve_terminal_palette(false), TerminalPalette::light());
-
-        // System 模式按系统明暗判定
-        let s = Settings {
-            theme_mode: ThemeMode::System,
-            terminal_color_scheme: SCHEME_CUSTOM.to_string(),
-            terminal_custom_palette: None,
-            ..Default::default()
-        };
-        assert_eq!(s.resolve_terminal_palette(false), TerminalPalette::light());
-        assert_eq!(s.resolve_terminal_palette(true), TerminalPalette::dark());
+        assert_eq!(s.resolve_terminal_palette(), TerminalPalette::light());
     }
 
     /// 预设生效 + 自定义优先于预设键。
@@ -865,7 +842,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            s.resolve_terminal_palette(true),
+            s.resolve_terminal_palette(),
             TerminalPalette::preset("dracula").unwrap()
         );
 
@@ -880,7 +857,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let p = s.resolve_terminal_palette(true);
+        let p = s.resolve_terminal_palette();
         assert_eq!(p.background, 0x010203);
     }
 
@@ -891,7 +868,7 @@ mod tests {
             terminal_color_scheme: "no-such-scheme".to_string(),
             ..Default::default()
         };
-        assert_eq!(s.resolve_terminal_palette(true), TerminalPalette::dark());
+        assert_eq!(s.resolve_terminal_palette(), TerminalPalette::dark());
     }
 
     /// 背景相关数值的钳制与 alpha 派生：手改 JSON 越界值不得渲染出全黑/无遮罩。
@@ -1003,7 +980,7 @@ mod tests {
     /// 会话恢复默认「询问」，且三态 key 往返稳定。
     ///
     /// 默认必须是 `Ask` 而不是「直接恢复」：启动时凭一份文件替用户开一堆标签，
-    /// 是升级就能改变的行为 —— 那类改动必须由用户按下按钮才算数（同 `close_to_tray`）。
+    /// 是升级就能改变的行为 —— 那类改动必须由用户按下按钮才算数。
     #[test]
     fn session_restore_defaults_to_ask_and_round_trips_its_key() {
         assert_eq!(Settings::default().session_restore, SessionRestoreMode::Ask);
@@ -1027,6 +1004,17 @@ mod tests {
         let legacy = r#"{"theme_mode":"Dark","language":"zh"}"#;
         let s: Settings = serde_json::from_str(legacy).expect("旧设置要能读");
         assert_eq!(s.session_restore, SessionRestoreMode::Ask);
+    }
+
+    /// 2026-10-20 用户要求「主题深色模式移除跟随系统」：旧的 `"System"` 必须还能读，
+    /// 并落到深色。枚举少一个变体不能让整份 `Settings` 反序列化失败 → 回退默认，
+    /// 那会把用户的语言、连接超时等其它配置一起清掉。
+    #[test]
+    fn legacy_system_theme_reads_as_dark() {
+        let legacy = r#"{"theme_mode":"System","language":"en"}"#;
+        let s = Settings::load_from_str(legacy);
+        assert_eq!(s.theme_mode, ThemeMode::Dark);
+        assert_eq!(s.language, "en", "主题字段的兼容不能连累其它设置");
     }
 
     /// 2026-09-28 新增三项终端外观设置的默认值。

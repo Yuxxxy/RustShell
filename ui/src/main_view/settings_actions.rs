@@ -51,16 +51,6 @@ impl MainView {
         self.present_dialog(DialogMode::Settings, w, cx);
     }
 
-    /// 把「关闭窗口时最小化到托盘」这一位推给 platform（F-8）。
-    ///
-    /// 关窗守卫（`shell/src/app.rs` 的 `on_window_should_close`）跑在窗口过程里，
-    /// 手里只有 `&mut App`，读不到设置快照 —— 所以设置侧必须**主动推**。
-    /// 三个调用点缺一不可：设置页开关（当场生效）、保存（落盘后的值）、
-    /// 取消回滚（回到快照值）。少任何一处都会出现「面板上写着 A、点关闭按 B 执行」。
-    pub(super) fn sync_close_to_tray(&self) {
-        rustshell_platform::tray::set_close_to_tray(self.settings.close_to_tray);
-    }
-
     /// 取消设置面板：回滚到打开时的快照。 覆盖三条关闭路径，「取消」按钮、ESC/点遮罩/右上角 X（走官方`on_close`）， 由`dialogs.rs`在关闭前统一调用；保存路径会先清空`set_snapshot`，故不会误回滚。
     pub(super) fn revert_settings(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let Some(prev) = self.io.set_snapshot.take() else {
@@ -70,9 +60,6 @@ impl MainView {
         self.settings = prev.settings;
         self.ai_ui.ai_cfg = prev.ai_cfg;
         self.io.smtp_cfg = prev.smtp_cfg;
-        // 关窗行为也是「立即生效」的那一类（守卫读的是推过去的那一位），
-        // 回滚时必须跟着退回快照值，否则「勾上再取消」会让关闭按钮仍然按勾上的走。
-        self.sync_close_to_tray();
         // 共用的 AI 输入框跟着回到快照；Key 框清空（本就不回显）
         self.prefill_ai_inputs(w, cx);
         self.ai_ui
@@ -250,12 +237,11 @@ impl MainView {
 
     pub fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         use rustshell_core::theme::ThemeMode;
-        // Dark 到 Light 到 System（跟随系统）三态循环
+        // Dark 到 Light 两态循环（2026-10-20 起不再有「跟随系统」）
         self.set_theme_mode(
             match self.settings.theme_mode {
                 ThemeMode::Dark => ThemeMode::Light,
-                ThemeMode::Light => ThemeMode::System,
-                ThemeMode::System => ThemeMode::Dark,
+                ThemeMode::Light => ThemeMode::Dark,
             },
             cx,
         );
@@ -274,11 +260,7 @@ impl MainView {
     /// 主题变更后统一生效：UI Token + 组件库 Theme + 全部终端配色 注意：终端配色走`resolve_terminal_palette`，「跟随主题」方案下等价于 原来的`TerminalPalette::resolved`，但选了预设/自定义方案时不被主题覆盖。
     pub(super) fn apply_theme_everywhere(&mut self, cx: &mut Context<Self>) {
         crate::theme::apply_theme_mode(cx, self.settings.theme_mode);
-        let system_dark = matches!(
-            cx.window_appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
-        let new_palette = self.settings.resolve_terminal_palette(system_dark);
+        let new_palette = self.settings.resolve_terminal_palette();
         // 终端底色 alpha：背景图启用时半透明；未启用恒为 1.0（无视觉变化）
         let bg_alpha = self.settings.panel_alpha();
         for tab in &self.tabs_state.tabs {
@@ -303,9 +285,7 @@ impl MainView {
         self.settings.terminal_color_scheme = key.to_string();
         if key == SCHEME_CUSTOM && self.settings.terminal_custom_palette.is_none() {
             // 初始值 = 当前主题解析结果（走同一入口，保证与视觉现状一致）
-            let pal = self
-                .settings
-                .resolve_terminal_palette(crate::theme::is_dark(cx));
+            let pal = self.settings.resolve_terminal_palette();
             self.settings.terminal_custom_palette =
                 Some(rustshell_core::settings::CustomPalette::from_palette(&pal));
         }
@@ -355,9 +335,7 @@ impl MainView {
 
     /// 自定义配色「恢复默认」：重置为当前主题解析出的配色。
     pub fn reset_custom_palette(&mut self, cx: &mut Context<Self>) {
-        let pal = self
-            .settings
-            .resolve_terminal_palette(crate::theme::is_dark(cx));
+        let pal = self.settings.resolve_terminal_palette();
         self.settings.terminal_custom_palette =
             Some(rustshell_core::settings::CustomPalette::from_palette(&pal));
         self.apply_terminal_palette(cx);
@@ -365,11 +343,7 @@ impl MainView {
 
     /// 把当前`settings`里解析出的终端配色推给所有已打开的终端（字体/配色即时生效）。
     pub(super) fn apply_terminal_palette(&mut self, cx: &mut Context<Self>) {
-        let system_dark = matches!(
-            cx.window_appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
-        let new_palette = self.settings.resolve_terminal_palette(system_dark);
+        let new_palette = self.settings.resolve_terminal_palette();
         // 终端底色 alpha：背景图启用时半透明；未启用恒为 1.0（无视觉变化）
         let bg_alpha = self.settings.panel_alpha();
         for tab in &self.tabs_state.tabs {
@@ -689,20 +663,6 @@ impl MainView {
         }
     }
 
-    /// 打开背景图目录（不存在则先建），提示用户把图片放进去。
-    pub fn open_background_folder(&mut self, cx: &mut Context<Self>) {
-        let dir = paths::background_dir();
-        if !paths::ensure_dir(&dir) {
-            self.set_info(
-                rustshell_core::i18n::t("背景图目录创建失败").to_string(),
-                false,
-            );
-        } else {
-            rustshell_platform::shell_open::reveal_in_file_manager(&dir);
-        }
-        cx.notify();
-    }
-
     /// 打开会话日志目录（F-7）。不存在则先建 —— 用户刚刚才打开开关、
     /// 还没有任何会话产出日志时，目录本来就不存在；此时报错等于把「想看看日志」
     /// 的第一次尝试挡在门外。
@@ -719,18 +679,6 @@ impl MainView {
         } else {
             rustshell_platform::shell_open::reveal_in_file_manager(&dir);
         }
-        cx.notify();
-    }
-
-    /// 刷新背景图候选列表（设置面板「刷新列表」按钮）。
-    pub fn refresh_background_list(&mut self, cx: &mut Context<Self>) {
-        self.refresh_background();
-        let n = self.panel_ui.bg_candidates.len();
-        let msg = rustshell_core::i18n::ts(
-            format!("找到 {n} 张背景图"),
-            format!("Found {n} background image(s)"),
-        );
-        self.set_info(msg, true);
         cx.notify();
     }
 }

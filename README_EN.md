@@ -247,8 +247,8 @@ shell when the terminal is focused.
 
 ## Known limitations
 
-- **Windows 11 is the platform tested day to day**: `gpui-fast-platform` 0.1.9 ships Windows / macOS / Linux backends and the release workflow builds for all three (runners: `windows-latest`, `macos-latest`, `ubuntu-22.04`, `ubuntu-22.04-arm`). The macOS artifact is a real `lipo`-merged universal binary; the Linux artifacts are built on Ubuntu 22.04 (minimum glibc 2.35). The macOS / Linux paths have no on-device runtime regression suite yet — the build passing is all they guarantee
-- Built on the `gpui-fast` engine (`gpui` fork with retained rendering / layout optimizations, `gpui-kit` 0.7 line) and `gpui-component` 0.7.x; upstream APIs may still change
+- **Windows 11 is the platform tested day to day**: `gpui-fast-platform` 0.1.10 ships Windows / macOS / Linux backends and the release workflow builds for all three (runners: `windows-latest`, `macos-latest`, `ubuntu-22.04`, `ubuntu-22.04-arm`). The macOS artifact is a real `lipo`-merged universal binary; the Linux artifacts are built on Ubuntu 22.04 (minimum glibc 2.35). The macOS / Linux paths have no on-device runtime regression suite yet — the build passing is all they guarantee
+- Built on the `gpui-fast` engine (`gpui` fork with retained rendering / layout optimizations, `gpui-kit` 0.8 line) and `gpui-component` 0.8.x; upstream APIs may still change
 - Terminal selection, hyperlink recognition, OSC title / cwd tracking and similar details are still being polished
 - Release artifacts are not code-signed; first launch on macOS requires manual approval (the scripts strip the quarantine attribute)
 

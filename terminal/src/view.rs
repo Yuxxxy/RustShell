@@ -851,10 +851,6 @@ pub struct TerminalView {
     /// 闪烁定时器。`None` 即停表（drop 一个 `Task` 就是取消它）。
     blink_task: Option<Task<()>>,
 
-    /// 终端侧是否要求闪烁，来自 `CursorStyle.blinking`
-    /// —— DECSCUSR（`CSI n q`）与 `ESC[?12h|l` 都会改它。
-    blink_wanted: bool,
-
     /// 终端是否持有焦点。失焦时停表并保持光标常亮。
     has_focus: bool,
 
@@ -1244,9 +1240,6 @@ impl TerminalView {
         let reader_task =
             Self::spawn_reader(bytes_rx, exit_event_tx.clone(), shell_event_tx.clone(), cx);
 
-        // 终端侧的初始闪烁要求（DECSCUSR 可随时改，改时由 CursorBlinkingChange 通知）
-        let blink_wanted = state.with_term(|t| t.cursor_style().blinking);
-
         Self {
             state,
             renderer,
@@ -1291,7 +1284,6 @@ impl TerminalView {
             content_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             blink_on: true,
             blink_task: None,
-            blink_wanted,
             has_focus: false,
             // 新建即活着：宿主在会话终止时才置 false（见 `set_alive`）。
             alive: true,
@@ -1497,7 +1489,6 @@ impl TerminalView {
         }
         self.content_gen
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.sync_blink_wanted(cx);
         self.set_alive(true, cx);
         cx.notify();
     }
@@ -1907,8 +1898,11 @@ impl TerminalView {
     ///
     /// 三者缺一即停表 —— 后台窗口每 530ms 空转重绘没有意义。
     /// 会话已死时同样停表（见 [`TerminalView::set_alive`]）。
+    ///
+    /// 「终端要求」每帧现读 [`TerminalState::cursor_blinking`]，不缓存：
+    /// DECSET 12 与 DECSCUSR 两路来源分开记，读的是合并后的结果。
     fn blink_should_run(&self) -> bool {
-        self.alive && self.config.cursor_blink && self.blink_wanted && self.has_focus
+        self.alive && self.config.cursor_blink && self.has_focus && self.state.cursor_blinking()
     }
 
     /// 重置闪烁相位并（重新）按需启动定时器。
@@ -1948,15 +1942,6 @@ impl TerminalView {
             }
         }));
         cx.notify();
-    }
-
-    /// 同步「终端侧是否要求闪烁」，变化时重置相位与定时器。
-    fn sync_blink_wanted(&mut self, cx: &mut Context<Self>) {
-        let wanted = self.state.with_term(|t| t.cursor_style().blinking);
-        if wanted != self.blink_wanted {
-            self.blink_wanted = wanted;
-            self.reset_cursor_blink(cx);
-        }
     }
 
     /// Current cursor shape (empty for the default path).
@@ -2807,8 +2792,11 @@ impl TerminalView {
                     }
                 }
                 TerminalEvent::CursorBlinkingChange => {
-                    // DECSCUSR / `ESC[?12h|l` 改了闪烁要求：同步并重置相位
-                    self.sync_blink_wanted(cx);
+                    // DECSCUSR / `ESC[?12h|l` 改了闪烁要求：按最新状态重启
+                    // 或停掉定时器。这里不比较「有没有变」——两路来源合并后
+                    // 一个事件可能并不改变最终结果，重置相位只是让光标多亮
+                    // 一下，代价可忽略。
+                    self.reset_cursor_blink(cx);
                 }
                 TerminalEvent::PromptMark(mark) => {
                     // 理论上不该走到这里：shell integration 事件由**专用通道**
@@ -3333,8 +3321,11 @@ impl Render for TerminalView {
         let font_size_value = f32::from(self.renderer.font_size);
         let line_height_multiplier = self.renderer.line_height_multiplier;
         let base_palette = self.renderer.palette.clone();
-        // 闪烁相位是 Copy 值，直接捕获进 canvas 闭包
+        // 闪烁相位与「终端是否要求闪烁」都是 Copy 值，直接捕获进 canvas 闭包。
+        // 后者不能用 `term.cursor_style().blinking`：curses 的 `cnorm`
+        // （`ESC[?12l`）会把 DECSCUSR / 默认的闪烁意图一并抹掉。
         let blink_on = self.blink_on;
+        let cursor_blinking = self.state.cursor_blinking();
         // 会话存活标记（同上：Copy 值进闭包，断连后连光标都不画）
         let alive = self.alive;
         // 输入法预编辑串：`paint` 要画它、光标可见性要避让它，一并进闭包
@@ -3502,8 +3493,8 @@ impl Render for TerminalView {
 
                         // 光标绘制参数：形状取自 DECSCUSR，可见性由三件事决定 ——
                         // `ESC[?25h/l`（vim/less 会隐藏）、闪烁要求的实时值、闪烁相位。
-                        // 用实时 `style.blinking` 而非字段 `blink_wanted`，
-                        // 免得依赖事件到达时机。
+                        // 闪烁要求用视图每帧现读的 `cursor_blinking`（两路来源
+                        // 合并后的结果），而不是 `term.cursor_style().blinking`。
                         //
                         // 会话已死时一律不画：闪动的光标是「可以打字」的承诺，
                         // 而断连的终端收不了任何输入。
@@ -3521,7 +3512,7 @@ impl Render for TerminalView {
                                             alacritty_terminal::term::TermMode::SHOW_CURSOR,
                                         ),
                                         style.shape,
-                                        style.blinking,
+                                        cursor_blinking,
                                         blink_on,
                                     ),
                             }

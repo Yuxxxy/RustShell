@@ -48,7 +48,9 @@ use crate::event::{GpuiEventProxy, TerminalEvent};
 use crate::shell_integration::{ShellIntegration, parse_osc};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
+use alacritty_terminal::vte::ansi::{
+    CursorShape, CursorStyle, Handler, NamedPrivateMode, PrivateMode, Processor,
+};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -226,6 +228,72 @@ fn split_osc_segments(bytes: &[u8]) -> Vec<(usize, usize, SegmentKind)> {
     out
 }
 
+/// 光标闪烁的两路来源，分开记。
+///
+/// # 为什么不能只看 `Term::cursor_style().blinking`
+///
+/// alacritty 把两路来源合成同一个 `blinking` 位：DECSET/DECRST 12
+/// （`ESC[?12h|l`）与 DECSCUSR（`CSI n SP q`）。后写的那一路覆盖先写的，
+/// 于是 curses 程序挂起/退出时发的 `cnorm`（`ESC[?12l ESC[?25h`）
+/// 会把 DECSCUSR / 用户默认的「闪」一并清掉 —— 表现为 `top` 里 Ctrl+Z
+/// 之后光标还在、却再也不闪。
+///
+/// foot#218 的修法：两路状态各记一份，**任一要求闪烁就闪**。
+/// `cnorm` 只关掉 `decset` 这一路，另一路（DECSCUSR，未收到时即配置默认）
+/// 仍为真，因此闪烁不会被一次 `?12l` 永久关死；而显式的稳定 DECSCUSR
+/// （`CSI 2 q`）在 `decset` 为假时确实能让光标停闪。
+#[derive(Debug)]
+struct CursorBlinkTracker {
+    /// `ESC[?12h`（true）/ `ESC[?12l`（false）。默认 false。
+    decset: bool,
+    /// 最近一次 DECSCUSR 的闪烁位；`CSI 0 q` 恢复为配置默认。
+    decscusr: bool,
+    /// 配置默认是否闪烁（构造时由默认光标样式决定）。
+    default_blink: bool,
+}
+
+impl CursorBlinkTracker {
+    fn new(default_blink: bool) -> Self {
+        Self {
+            decset: false,
+            decscusr: default_blink,
+            default_blink,
+        }
+    }
+
+    fn blinking(&self) -> bool {
+        self.decset || self.decscusr
+    }
+
+    fn is_blink_mode(mode: PrivateMode) -> bool {
+        matches!(mode, PrivateMode::Named(NamedPrivateMode::BlinkingCursor))
+    }
+}
+
+impl Handler for CursorBlinkTracker {
+    fn set_private_mode(&mut self, mode: PrivateMode) {
+        if Self::is_blink_mode(mode) {
+            self.decset = true;
+        }
+    }
+
+    fn unset_private_mode(&mut self, mode: PrivateMode) {
+        if Self::is_blink_mode(mode) {
+            self.decset = false;
+        }
+    }
+
+    fn set_cursor_style(&mut self, style: Option<CursorStyle>) {
+        // `None` 是 `CSI 0 q`：回到配置默认，而不是关掉闪烁。
+        self.decscusr = style.map_or(self.default_blink, |s| s.blinking);
+    }
+
+    fn reset_state(&mut self) {
+        self.decset = false;
+        self.decscusr = self.default_blink;
+    }
+}
+
 /// Thread-safe terminal state wrapper.
 ///
 /// This struct wraps alacritty's [`Term`] in an
@@ -272,6 +340,17 @@ pub struct TerminalState {
 
     /// VTE parser for converting byte streams into terminal actions.
     parser: Processor,
+
+    /// 与 [`parser`](Self::parser) 并行的第二路解析器：只喂给
+    /// [`CursorBlinkTracker`]，不碰网格。
+    ///
+    /// 必须独立：同一个 `Processor` 不能把同一批字节解两遍（它是有状态的
+    /// 状态机），而掩码层（`Term`）已经把两路闪烁来源合成一个位，
+    /// 事后再拆不出来。
+    blink_parser: Processor,
+
+    /// 两路闪烁来源的独立状态，见 [`CursorBlinkTracker`]。
+    blink_tracker: CursorBlinkTracker,
 
     /// 跨调用滞留的「半条 OSC」原始字节。
     ///
@@ -387,6 +466,8 @@ impl TerminalState {
             },
             ..Config::default()
         };
+        // DECSCUSR 未出现时，「另一路」闪烁意图就是这个默认值
+        let default_blink = config.default_cursor_style.blinking;
 
         // Create dimensions for terminal initialization
         let dimensions = TermDimensions::new(cols, rows);
@@ -400,6 +481,8 @@ impl TerminalState {
         Self {
             term: Arc::new(Mutex::new(term)),
             parser,
+            blink_parser: Processor::new(),
+            blink_tracker: CursorBlinkTracker::new(default_blink),
             pending_osc: Vec::new(),
             cols,
             rows,
@@ -486,6 +569,11 @@ impl TerminalState {
 
             match kind {
                 SegmentKind::Plain => {
+                    // 闪烁跟踪器只吃普通/转义段。OSC 里不可能出现
+                    // `?12h|l` 或 `CSI n q`，而「半条 OSC」在下一轮会被
+                    // 与新增字节拼起来重放 —— 跟踪器若也跟着看，就会把
+                    // 已经看过的半条再看一遍，状态机与主解析器错位。
+                    self.blink_parser.advance(&mut self.blink_tracker, seg);
                     self.parser.advance(&mut *term, seg);
                 }
                 SegmentKind::Osc => {
@@ -626,6 +714,17 @@ impl TerminalState {
     pub fn mode(&self) -> TermMode {
         let term = self.term.lock();
         *term.mode()
+    }
+
+    /// 终端当前是否**要求**光标闪烁（两路来源任一为真）。
+    ///
+    /// 这是判断闪烁的唯一正确入口：`Term::cursor_style().blinking` 把
+    /// DECSET 12 与 DECSCUSR 合成了一个位，curses 的 `cnorm`
+    /// （`ESC[?12l`）会把另一路的「闪」一起抹掉（见 [`CursorBlinkTracker`]）。
+    ///
+    /// 返回的只是**终端侧**的意愿；用户设置、焦点、会话存活仍由视图叠加。
+    pub fn cursor_blinking(&self) -> bool {
+        self.blink_tracker.blinking()
     }
 
     /// Execute a function with read access to the terminal.
@@ -907,6 +1006,7 @@ mod tests {
         let style = terminal.with_term(|t| t.cursor_style());
         assert!(style.blinking, "默认光标样式必须要求闪烁");
         assert_eq!(style.shape, CursorShape::Block);
+        assert!(terminal.cursor_blinking());
     }
 
     #[test]
@@ -920,6 +1020,93 @@ mod tests {
 
         let style = terminal.with_term(|t| t.cursor_style());
         assert!(!style.blinking, "DECSCUSR 应能关掉闪烁");
+        assert!(
+            !terminal.cursor_blinking(),
+            "显式的稳定 DECSCUSR 必须真的停闪"
+        );
+    }
+
+    /// `CSI 0 q` 是「回到配置默认」，不是「关掉闪烁」。
+    #[test]
+    fn decscusr_zero_restores_default_blinking() {
+        let (tx, _rx) = channel();
+        let mut terminal = TerminalState::new(80, 24, GpuiEventProxy::new(tx));
+
+        terminal.process_bytes(b"\x1b[2 q");
+        assert!(!terminal.cursor_blinking());
+
+        terminal.process_bytes(b"\x1b[0 q");
+        assert!(
+            terminal.cursor_blinking(),
+            "CSI 0 q 应恢复配置默认（闪烁），而不是保持上一次的稳定样式"
+        );
+    }
+
+    /// ★ 回归（2026-10-20 用户报）：SSH 里跑 `top`，Ctrl+Z 挂起后光标不再闪烁。
+    ///
+    /// 根因：curses 程序恢复终端时发 terminfo 的 `cnorm`
+    /// （`ESC[?12l ESC[?25h`）。`?12l` 会把 alacritty 的
+    /// `CursorStyle.blinking` 清掉，而视图此前只看这一个位 ⇒ 闪烁被永久
+    /// 关掉（光标还在，只是不闪）。
+    ///
+    /// 修法（foot#218）：DECSET 12 与 DECSCUSR 的闪烁意图分开记，
+    /// 任一要求闪烁就闪。`cnorm` 只关掉前者，配置默认 / DECSCUSR 那一路
+    /// 仍为真 ⇒ 光标继续闪。
+    #[test]
+    fn cnorm_does_not_stop_blinking() {
+        let (tx, _rx) = channel();
+        let mut terminal = TerminalState::new(80, 24, GpuiEventProxy::new(tx));
+
+        // top 挂起 / 退出时恢复光标：cnorm = ?12l + ?25h
+        terminal.process_bytes(b"\x1b[?12l\x1b[?25h");
+
+        // alacritty 自己的单一位确实被关掉了（这就是旧实现的依据）
+        assert!(
+            !terminal.with_term(|t| t.cursor_style().blinking),
+            "夹具前提：?12l 会清掉 alacritty 的 blinking 位"
+        );
+        assert!(
+            terminal.cursor_blinking(),
+            "cnorm 的 ?12l 不得把 DECSCUSR/默认的闪烁意图一并关掉"
+        );
+    }
+
+    /// `?12h` 能重新打开闪烁；之后的 `?12l` 只退回到 DECSCUSR 的意图。
+    #[test]
+    fn decset_12_combines_with_decscusr() {
+        let (tx, _rx) = channel();
+        let mut terminal = TerminalState::new(80, 24, GpuiEventProxy::new(tx));
+
+        terminal.process_bytes(b"\x1b[2 q"); // 稳定块
+        assert!(!terminal.cursor_blinking());
+
+        terminal.process_bytes(b"\x1b[?12h"); // 显式要求闪
+        assert!(terminal.cursor_blinking(), "?12h 应能覆盖稳定 DECSCUSR");
+
+        terminal.process_bytes(b"\x1b[?12l");
+        assert!(
+            !terminal.cursor_blinking(),
+            "?12l 只关掉 DECSET 那一路，DECSCUSR 仍是稳定 ⇒ 不闪"
+        );
+    }
+
+    /// 跟踪器必须和主解析器一样跨字节边界有状态（PTY 按 4KB 投递）。
+    #[test]
+    fn blink_tracking_survives_split_sequences() {
+        let (tx, _rx) = channel();
+        let mut terminal = TerminalState::new(80, 24, GpuiEventProxy::new(tx));
+
+        terminal.process_bytes(b"\x1b[?1");
+        terminal.process_bytes(b"2l");
+        assert!(terminal.cursor_blinking(), "跨块 ?12l 不应误杀闪烁");
+
+        terminal.process_bytes(b"\x1b[1");
+        terminal.process_bytes(b" q");
+        assert!(terminal.cursor_blinking(), "跨块 CSI 1 q 应被识别为闪烁");
+
+        terminal.process_bytes(b"\x1b[");
+        terminal.process_bytes(b"2 q");
+        assert!(!terminal.cursor_blinking(), "跨块 CSI 2 q 应被识别为稳定");
     }
 
     #[test]

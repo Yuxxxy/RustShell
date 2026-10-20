@@ -25,7 +25,7 @@ use gpui_component::{
 };
 
 use rustshell_core::settings::StartupAction;
-use rustshell_core::theme::{default_terminal_font, ThemeMode};
+use rustshell_core::theme::default_terminal_font;
 
 use crate::theme::to_hsla as hex;
 
@@ -44,8 +44,6 @@ pub(super) struct SettingSnapshot {
 // 抽成常量而不是散落的字面量，好让`reset_defaults_match_settings_default`
 // 这条测试真正起到护栏作用（字面量散落时改了面板、测试仍是绿的）。
 const DEFAULT_FONT_SIZE: f64 = 12.0;
-const DEFAULT_SCROLLBACK: f64 = 10_000.0;
-const DEFAULT_SAMPLE_INTERVAL_MS: f64 = 1000.0;
 const DEFAULT_CONNECT_TIMEOUT_SECS: f64 = 20.0;
 const DEFAULT_RETRIES: f64 = 3.0;
 /// 重连首个间隔（秒）的默认值（F-4）。与 `core::reconnect::DEFAULT_INTERVAL_SECS`
@@ -68,24 +66,6 @@ fn page_title(zh: &'static str, en: &'static str) -> SharedString {
     SharedString::from(rustshell_core::i18n::tp(zh, en))
 }
 
-/// 主题下拉的稳定值（不随语言变化，仅用于`SettingField::dropdown`的取值比对）
-fn theme_key(mode: ThemeMode) -> SharedString {
-    match mode {
-        ThemeMode::Dark => "dark",
-        ThemeMode::Light => "light",
-        ThemeMode::System => "system",
-    }
-    .into()
-}
-
-fn theme_from_key(key: &str) -> ThemeMode {
-    match key {
-        "light" => ThemeMode::Light,
-        "system" => ThemeMode::System,
-        _ => ThemeMode::Dark,
-    }
-}
-
 impl MainView {
     /// 装配官方`Settings`组件。
     pub(super) fn render_settings_pages(
@@ -96,48 +76,15 @@ impl MainView {
         // 读写通道：官方闭包只拿得到`&App`/`&mut App`，故捕获自身实体
         let me = cx.entity();
 
-        // 外观
-        //
-        // 2026-09-17 运行反馈：① 移除「侧栏」组（侧栏宽度拖分隔线即可，设置里
-        // 再摆一个数字框是重复入口）；② 去掉大类下面的「组」—— 分组的标题与说明
-        // 既占版面，又会在设置侧栏里长出一层挂在分类下面的子条目。现在每页只有
-        // 一列带标签的条目，分组仅作为「一块卡片」存在，不再有名字。
-        let appearance = {
-            let me_get = me.clone();
-            let me_set = me.clone();
-            SettingPage::new(t("外观"))
-                .icon(IconName::Palette)
-                .description(t("界面主题与窗口背景。"))
-                .group(
-                    SettingGroup::new().item(
-                        SettingItem::new(
-                            t("主题模式"),
-                            SettingField::dropdown(
-                                vec![
-                                    (theme_key(ThemeMode::Dark), t("深色")),
-                                    (theme_key(ThemeMode::Light), t("浅色")),
-                                    (theme_key(ThemeMode::System), t("跟随系统")),
-                                ],
-                                move |cx: &App| theme_key(me_get.read(cx).settings.theme_mode),
-                                move |val: SharedString, cx: &mut App| {
-                                    // 与既有行为一致，切换即预览，保存才落盘
-                                    let mode = theme_from_key(val.as_ref());
-                                    me_set.update(cx, |m, cx| m.set_theme_mode(mode, cx));
-                                },
-                            )
-                            .default_value(theme_key(ThemeMode::Dark)),
-                        )
-                        .description(t("深色、浅色与跟随系统三态；切换立即生效。")),
-                    ),
-                )
-        };
+        // 「外观」页已于 2026-10-20 按用户要求整体撤下：主题仍在活动栏的
+        // 主题菜单里切换；背景图的既有设置值继续生效（含渲染），只是不再提供
+        // 应用内入口。`settings.json` 里的字段全部保留，老用户不会丢配置。
 
         // 终端
         //
-        // 2026-09-17 运行反馈「移除设置中光标闪烁、闪烁半周期配置，改为默认配置 json
-        // 中的默认设置」：这两项从面板上撤下，值与区间仍由 `core::settings` 决定并
-        // 落进 `settings.json` —— 想改的人直接改配置文件（`terminal_cursor_blink` /
-        // `terminal_cursor_blink_ms`），面板不再为绝大多数人摆两个用不上的控件。
+        // 2026-10-19 用户要求再次精简面板：光标闪烁 / 回滚行数 / 光标样式 /
+        // 多行粘贴行为 / 采样间隔全部撤下。值仍由 `core::settings` 决定并落进
+        // `settings.json`（现有用户的值继续生效），想改的人直接改配置文件。
         let terminal = {
             // 字体：候选下拉。若当前值不在候选内（用户手改过 settings.json），
             // 追加为额外选项，绝不静默改写用户值。
@@ -157,19 +104,10 @@ impl MainView {
             let me_font_set = me.clone();
             let me_size_get = me.clone();
             let me_size_set = me.clone();
-            let me_sb_get = me.clone();
-            let me_sb_set = me.clone();
-            let me_cs_get = me.clone();
-            let me_cs_set = me.clone();
-            let me_cb_get = me.clone();
-            let me_cb_set = me.clone();
             let me_enc_get = me.clone();
             let me_enc_set = me.clone();
             let me_scheme_get = me.clone();
             let me_scheme_set = me.clone();
-            // 粘贴行为：单一三态（原两个开关已合并）
-            let me_pb_get = me.clone();
-            let me_pb_set = me.clone();
             let me_log_get = me.clone();
             let me_log_set = me.clone();
             let me_log_dir = me.clone();
@@ -177,12 +115,55 @@ impl MainView {
             SettingPage::new(page_title("终端", "Terminal"))
                 .icon(IconName::SquareTerminal)
                 .description(t("字体、配色改动立即生效；编码改动对新建终端生效。"))
-                // 编码提到第一组（2026-09-28 用户要求）。
-                //
-                // 它此前排在「回滚行数」之后、第四位。挪到最前是因为它是本页唯一
-                // 一个**「中文乱码」的救火入口** —— 用户来这页多半就是刚看到满屏
-                // 乱码，此刻让他先滚过字体/字号/行高/光标/回滚五行才找到它，
-                // 是把最急的事放在最后。
+                // 配色方案置顶（2026-10-19 用户要求）：这是本页最常被打开的一项，
+                // 此前排在字体/字号/行高/光标之后，每次都要滚。
+                .group(
+                    SettingGroup::new()
+                        .item(
+                            SettingItem::new(
+                                t("配色方案"),
+                                SettingField::dropdown(
+                                    rustshell_core::theme::TERMINAL_SCHEMES
+                                        .iter()
+                                        .map(|(k, zh, en)| {
+                                            let name: SharedString =
+                                                if rustshell_core::i18n::is_en() {
+                                                    SharedString::from(*en)
+                                                } else {
+                                                    SharedString::from(*zh)
+                                                };
+                                            (SharedString::from(*k), name)
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    move |cx: &App| {
+                                        SharedString::from(
+                                            me_scheme_get
+                                                .read(cx)
+                                                .settings
+                                                .terminal_color_scheme
+                                                .clone(),
+                                        )
+                                    },
+                                    move |val: SharedString, cx: &mut App| {
+                                        me_scheme_set.update(cx, |m, cx| {
+                                            m.set_terminal_scheme(val.as_ref(), cx)
+                                        });
+                                    },
+                                )
+                                .default_value(SharedString::from(
+                                    rustshell_core::theme::SCHEME_FOLLOW_THEME,
+                                )),
+                            )
+                            .description(t("跟随主题随深浅色变化；预设与自定义为固定配色。")),
+                        )
+                        // 自定义配色子区（仅 scheme == custom 时展示）
+                        .item(SettingItem::render({
+                            let me = me.clone();
+                            move |_options, _w, cx| custom_palette_editor(&me, cx)
+                        })),
+                )
+                // 编码：本页唯一一个**「中文乱码」的救火入口** —— 用户来这页
+                // 多半就是刚看到满屏乱码，故紧随配色之后。
                 .group(
                     SettingGroup::new().item(
                         SettingItem::new(
@@ -279,180 +260,7 @@ impl MainView {
                         }),
                     )
                     .description(t("1.0–2.0；觉得行距挤就调大。")),
-                    // 光标形状（2026-09-28 新增）：此前用户对光标形状零控制权。
-                    SettingItem::new(
-                        t("光标样式"),
-                        SettingField::dropdown(
-                            rustshell_core::settings::CursorStyle::ALL
-                                .iter()
-                                .map(|s| {
-                                    let (zh, en) = s.labels();
-                                    let name: SharedString = if rustshell_core::i18n::is_en() {
-                                        SharedString::from(en)
-                                    } else {
-                                        SharedString::from(zh)
-                                    };
-                                    (SharedString::from(s.key()), name)
-                                })
-                                .collect::<Vec<_>>(),
-                            move |cx: &App| {
-                                SharedString::from(
-                                    me_cs_get.read(cx).settings.terminal_cursor_style.key(),
-                                )
-                            },
-                            move |val: SharedString, cx: &mut App| {
-                                me_cs_set.update(cx, |m, cx| {
-                                    m.settings.terminal_cursor_style =
-                                        rustshell_core::settings::CursorStyle::from_key(
-                                            val.as_ref(),
-                                        );
-                                    m.apply_terminal_palette(cx);
-                                });
-                            },
-                        )
-                        .default_value(SharedString::from(
-                            rustshell_core::settings::CursorStyle::Block.key(),
-                        )),
-                    )
-                    .description(t("远端程序发 DECSCUSR 时仍会临时覆盖。")),
-                    // 光标闪烁总开关（2026-09-28 回到面板）。
-                    //
-                    // 2026-09-17 曾把它与闪烁周期一起撤下，理由是「没人调的旋钮」。
-                    // 但「闪烁周期」（毫秒数）确实是没人调的算法细节，
-                    // 「要不要闪」不是 —— 嫌闪的用户想关掉却找不到入口，
-                    // 只能改 JSON，这违反可发现性。故开关回来，周期仍留配置文件。
-                    SettingItem::new(
-                        t("光标闪烁"),
-                        SettingField::switch(
-                            move |cx: &App| me_cb_get.read(cx).settings.terminal_cursor_blink,
-                            move |val: bool, cx: &mut App| {
-                                me_cb_set.update(cx, |m, cx| {
-                                    m.settings.terminal_cursor_blink = val;
-                                    m.apply_terminal_palette(cx);
-                                });
-                            },
-                        )
-                        .default_value(true),
-                    )
-                    .description(t("关闭后光标常亮；闪烁周期见配置文件。")),
                 ]))
-                .group(
-                    SettingGroup::new().item(
-                        SettingItem::new(
-                            t("回滚行数"),
-                            SettingField::number_input(
-                                NumberFieldOptions {
-                                    min: 100.0,
-                                    max: 1_000_000.0,
-                                    step: 1000.0,
-                                },
-                                move |cx: &App| me_sb_get.read(cx).settings.scrollback as f64,
-                                move |val: f64, cx: &mut App| {
-                                    me_sb_set.update(cx, |m, cx| {
-                                        m.settings.scrollback = val as usize;
-                                        cx.notify();
-                                    });
-                                },
-                            )
-                            .default_value(DEFAULT_SCROLLBACK),
-                        )
-                        .description(t("越大占用内存越多")),
-                    ),
-                )
-                .group(
-                    SettingGroup::new()
-                        .item(
-                            SettingItem::new(
-                                t("配色方案"),
-                                SettingField::dropdown(
-                                    rustshell_core::theme::TERMINAL_SCHEMES
-                                        .iter()
-                                        .map(|(k, zh, en)| {
-                                            let name: SharedString =
-                                                if rustshell_core::i18n::is_en() {
-                                                    SharedString::from(*en)
-                                                } else {
-                                                    SharedString::from(*zh)
-                                                };
-                                            (SharedString::from(*k), name)
-                                        })
-                                        .collect::<Vec<_>>(),
-                                    move |cx: &App| {
-                                        SharedString::from(
-                                            me_scheme_get
-                                                .read(cx)
-                                                .settings
-                                                .terminal_color_scheme
-                                                .clone(),
-                                        )
-                                    },
-                                    move |val: SharedString, cx: &mut App| {
-                                        me_scheme_set.update(cx, |m, cx| {
-                                            m.set_terminal_scheme(val.as_ref(), cx)
-                                        });
-                                    },
-                                )
-                                .default_value(SharedString::from(
-                                    rustshell_core::theme::SCHEME_FOLLOW_THEME,
-                                )),
-                            )
-                            .description(t("跟随主题随深浅色变化；预设与自定义为固定配色。")),
-                        )
-                        // 自定义配色子区（仅 scheme == custom 时展示）
-                        .item(SettingItem::render({
-                            let me = me.clone();
-                            move |_options, _w, cx| custom_palette_editor(&me, cx)
-                        })),
-                )
-                // 多行粘贴行为（2026-09-28 收敛为单一三态）。
-                //
-                // 此前是两个独立开关：「粘贴时换行转回车」与「多行粘贴确认」+ 阈值。
-                // 两者都作用于「粘贴多行」这一动作，却分属两个卡片、交互关系无处说明，
-                // 且能配出「先弹确认 + 逐行执行」这种自相矛盾又危险的组合
-                // —— 用户以为开了保护就安全，实际把确认框和逐行执行配成了一对。
-                // 现在「要不要逐行执行」与「要不要先问」变成同一个问题的一次回答，
-                // 结构上不可能再配错。
-                .group(
-                    SettingGroup::new().item(
-                        SettingItem::new(
-                            t("多行粘贴行为"),
-                            SettingField::dropdown(
-                                rustshell_core::settings::PasteBehavior::ALL
-                                    .iter()
-                                    .map(|b| {
-                                        let (zh, en) = b.labels();
-                                        let name: SharedString = if rustshell_core::i18n::is_en() {
-                                            SharedString::from(en)
-                                        } else {
-                                            SharedString::from(zh)
-                                        };
-                                        (SharedString::from(b.key()), name)
-                                    })
-                                    .collect::<Vec<_>>(),
-                                move |cx: &App| {
-                                    SharedString::from(
-                                        me_pb_get.read(cx).settings.terminal_paste_behavior.key(),
-                                    )
-                                },
-                                move |val: SharedString, cx: &mut App| {
-                                    me_pb_set.update(cx, |m, cx| {
-                                        m.settings.terminal_paste_behavior =
-                                            rustshell_core::settings::PasteBehavior::from_key(
-                                                val.as_ref(),
-                                            );
-                                        cx.notify();
-                                    });
-                                },
-                            )
-                            .default_value(SharedString::from(
-                                rustshell_core::settings::PasteBehavior::ConfirmMultiLine.key(),
-                            )),
-                        )
-                        .description(t(
-                            "决定粘贴多行文本时「要不要逐行执行」与「要不要先问」——两件事一次答完，不会再配出矛盾组合。",
-                        )),
-                    ),
-                )
                 // 会话日志（F-7）
                 //
                 // 两件事分两块：开关决定**新会话**记不记（已开的会话不回改，
@@ -865,33 +673,6 @@ impl MainView {
             g
         };
 
-        // 性能
-        let perf_group = {
-            let me_get = me.clone();
-            let me_set = me.clone();
-            SettingGroup::new().item(
-                SettingItem::new(
-                    t("采样间隔"),
-                    SettingField::number_input(
-                        NumberFieldOptions {
-                            min: 200.0,
-                            max: 60_000.0,
-                            step: 100.0,
-                        },
-                        move |cx: &App| me_get.read(cx).settings.sample_interval_ms as f64,
-                        move |val: f64, cx: &mut App| {
-                            me_set.update(cx, |m, cx| {
-                                m.settings.sample_interval_ms = val as u64;
-                                cx.notify();
-                            });
-                        },
-                    )
-                    .default_value(DEFAULT_SAMPLE_INTERVAL_MS),
-                )
-                .description(t("越小越实时，占用越高")),
-            )
-        };
-
         // AI 助手
         // 单一 Provider：2026-09-16 按用户要求移除备用端点，不再降级。
         // Key 密文不可逆故不回显，留空即沿用已保存的 Key；输入框本身**掩码显示**
@@ -1134,151 +915,6 @@ impl MainView {
                 )
         };
 
-        // 背景（窗口背景图 + 遮罩浓度 + 面板不透明度）
-        let bg_group = {
-            let me_img_get = me.clone();
-            let me_img_set = me.clone();
-            let me_dim_get = me.clone();
-            let me_dim_set = me.clone();
-            let me_op_get = me.clone();
-            let me_op_set = me.clone();
-            let me_refresh = me.clone();
-            let me_open_dir = me.clone();
-
-            let cur = self.settings.background_image.clone().unwrap_or_default();
-            // 候选：首项「无背景」，其余为 backgrounds/ 下的图片文件名。
-            // 当前值不在候选内（用户手改过 settings.json）时补进去，绝不静默改写用户值。
-            let mut opts: Vec<(SharedString, SharedString)> =
-                vec![(SharedString::from(""), t("无背景"))];
-            for name in &self.panel_ui.bg_candidates {
-                opts.push((
-                    SharedString::from(name.clone()),
-                    SharedString::from(name.clone()),
-                ));
-            }
-            if !cur.is_empty() && !self.panel_ui.bg_candidates.contains(&cur) {
-                opts.push((SharedString::from(cur.clone()), SharedString::from(cur)));
-            }
-            let n_candidates = self.panel_ui.bg_candidates.len();
-
-            SettingGroup::new()
-                .item(
-                    SettingItem::new(
-                        t("背景图片"),
-                        SettingField::dropdown(
-                            opts,
-                            move |cx: &App| {
-                                me_img_get
-                                    .read(cx)
-                                    .settings
-                                    .background_image
-                                    .clone()
-                                    .unwrap_or_default()
-                                    .into()
-                            },
-                            move |val: SharedString, cx: &mut App| {
-                                let name = val.as_ref().to_string();
-                                me_img_set.update(cx, |m, cx| {
-                                    m.set_background_image(
-                                        if name.is_empty() { None } else { Some(name) },
-                                        cx,
-                                    );
-                                });
-                            },
-                        )
-                        .default_value(SharedString::from("")),
-                    )
-                    .description(t("选「无背景」回到纯色面板。")),
-                )
-                .item(
-                    SettingItem::new(
-                        t("遮罩浓度"),
-                        SettingField::number_input(
-                            NumberFieldOptions {
-                                min: rustshell_core::settings::BACKGROUND_DIM_MIN as f64,
-                                max: rustshell_core::settings::BACKGROUND_DIM_MAX as f64,
-                                step: 5.0,
-                            },
-                            move |cx: &App| me_dim_get.read(cx).settings.background_dim as f64,
-                            move |val: f64, cx: &mut App| {
-                                me_dim_set.update(cx, |m, cx| {
-                                    m.settings.background_dim = val as u32;
-                                    cx.notify();
-                                });
-                            },
-                        )
-                        .default_value(rustshell_core::settings::DEFAULT_BACKGROUND_DIM as f64),
-                    )
-                    .description(t("0–70：数值越大图片越暗，面板文字越清晰。")),
-                )
-                .item(
-                    SettingItem::new(
-                        t("面板不透明度"),
-                        SettingField::number_input(
-                            NumberFieldOptions {
-                                min: rustshell_core::settings::PANEL_OPACITY_MIN as f64,
-                                max: rustshell_core::settings::PANEL_OPACITY_MAX as f64,
-                                step: 5.0,
-                            },
-                            move |cx: &App| me_op_get.read(cx).settings.panel_opacity as f64,
-                            move |val: f64, cx: &mut App| {
-                                me_op_set.update(cx, |m, cx| {
-                                    m.settings.panel_opacity = val as u32;
-                                    // 终端底色 alpha 跟着走，已打开的终端立即生效
-                                    m.apply_terminal_palette(cx);
-                                });
-                            },
-                        )
-                        .default_value(rustshell_core::settings::DEFAULT_PANEL_OPACITY as f64),
-                    )
-                    .description(t("60–100；仅在选用背景图时生效。")),
-                )
-                .item(
-                    SettingItem::render(move |_options, _w, cx| {
-                        let tok = crate::theme::current(cx);
-                        let count = rustshell_core::i18n::ts(
-                            format!("候选 {n_candidates} 张"),
-                            format!("{n_candidates} candidate(s)"),
-                        );
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                Button::new("bg-refresh")
-                                    .small()
-                                    .outline()
-                                    .label(rustshell_core::i18n::t("刷新列表"))
-                                    .on_click({
-                                        let me = me_refresh.clone();
-                                        move |_e, _w, cx: &mut App| {
-                                            me.update(cx, |m, cx| m.refresh_background_list(cx));
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new("bg-open-dir")
-                                    .small()
-                                    .outline()
-                                    .label(rustshell_core::i18n::t("打开背景目录"))
-                                    .on_click({
-                                        let me = me_open_dir.clone();
-                                        move |_e, _w, cx: &mut App| {
-                                            me.update(cx, |m, cx| m.open_background_folder(cx));
-                                        }
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(hex(tok.fg_muted))
-                                    .child(SharedString::from(count)),
-                            )
-                            .into_any_element()
-                    })
-                    .keywords(["background", "wallpaper", "背景", "壁纸"]),
-                )
-        };
-
         // 连接：导入导出 + 会话参数。
         //
         // 2026-09-15 用户要求「设置导入和导出都要自己选择目录和文件进行」，
@@ -1309,7 +945,7 @@ impl MainView {
                                             Button::new("conn-export")
                                                 .small()
                                                 .primary()
-                                                .label(rustshell_core::i18n::t("导出连接…"))
+                                                .label(rustshell_core::i18n::t("导出连接"))
                                                 .on_click({
                                                     let me = me_export.clone();
                                                     move |_e, _w, cx| {
@@ -1323,7 +959,7 @@ impl MainView {
                                             Button::new("conn-import")
                                                 .small()
                                                 .primary()
-                                                .label(rustshell_core::i18n::t("导入连接…"))
+                                                .label(rustshell_core::i18n::t("导入连接"))
                                                 .on_click({
                                                     let me = me_import.clone();
                                                     move |_e, _w, cx| {
@@ -1339,7 +975,7 @@ impl MainView {
                                                 .small()
                                                 .outline()
                                                 .label(rustshell_core::i18n::t(
-                                                    "从 OpenSSH 配置导入…",
+                                                    "从 OpenSSH 配置导入",
                                                 ))
                                                 .on_click({
                                                     let me = me_openssh.clone();
@@ -1719,43 +1355,10 @@ impl MainView {
                 )
         };
 
-        // 窗口（F-8）：关闭按钮的语义 + 托盘可用性。
-        //
-        // 托盘状态**只读**：它由运行环境决定（平台 / 系统策略），用户改不了。
-        // 但必须显示 —— 规格 §1.8 的边界态要求「托盘不可用时降级为普通关闭并标注」；
-        // 不标注的话，用户在非 Windows 上勾了开关却毫无反应，只能自己猜。
-        // 本函数每帧重跑（`render_settings_pages` 由对话框每帧调用），
-        // 所以这里直接现查 `availability()`，不需要缓存也不需要通知。
+        // 窗口（F-8）：启动行为。
         let window_page = {
-            let me_get = me.clone();
-            let me_set = me.clone();
-            use rustshell_platform::tray::{availability, TrayAvailability, TrayUnavailable};
-            let tray_gap: Option<TrayUnavailable> = match availability() {
-                TrayAvailability::Ready => None,
-                TrayAvailability::Unavailable(reason) => Some(reason),
-            };
-            // 先凑成 `String` 再一次性转 `SharedString`：`SharedString::from(&'static str)`
-            // 会被 clippy 的 `useless_conversion` 判成同型转换（本仓 -D warnings 下即红）。
-            let tray_text: SharedString = match tray_gap {
-                None => t("系统托盘已就绪").to_string(),
-                Some(TrayUnavailable::Platform) => {
-                    format!("{}：{}", t("系统托盘不可用"), t("当前平台暂不支持"))
-                }
-                Some(TrayUnavailable::System) => {
-                    format!("{}：{}", t("系统托盘不可用"), t("系统拒绝创建托盘图标"))
-                }
-            }
-            .into();
-            // 只有托盘真的可用时，「菜单里有哪几项」才是有意义的信息。
-            // 菜单口径以 platform 的 `action_of` 为准（2026-10-10 撤掉「新建终端」，
-            // 这里同步：这句提示是把托盘菜单背给用户听的，写多一项就是骗人）。
-            let tray_hint = if rustshell_platform::tray::is_ready() {
-                t("托盘菜单：显示主窗口 / 退出。")
-            } else {
-                t("托盘不可用时本项不生效，关闭窗口仍然是退出。")
-            };
             SettingPage::new(page_title("窗口", "Window"))
-                // 页图标：设置侧栏里每页都有一枚（外观/终端/AI/Agent/快捷键/连接/通知），
+                // 页图标：设置侧栏里每页都有一枚（终端/AI/Agent/快捷键/连接/通知），
                 // 窗口页此前是唯一的例外 —— 侧栏里独它一行没有图标，看着像少画了什么。
                 //
                 // 取的是全量目录 `gpui_kit_assets::IconName`（`gpui_component::IconName`
@@ -1767,46 +1370,7 @@ impl MainView {
                 // 正是为这一课立的）。`app-window.svg` 本仓没有，所以取
                 // `window-restore`（一个带框的窗口，本仓已随包）。
                 .icon(gpui_kit_assets::IconName::WindowRestore)
-                .description(t("关闭按钮的行为；程序是否常驻托盘。"))
-                .group(
-                    SettingGroup::new()
-                        .item(
-                            SettingItem::new(
-                                t("关闭窗口时最小化到托盘"),
-                                SettingField::switch(
-                                    move |cx: &App| me_get.read(cx).settings.close_to_tray,
-                                    move |val: bool, cx: &mut App| {
-                                        me_set.update(cx, |m, cx| {
-                                            m.settings.close_to_tray = val;
-                                            // 立即推给 platform：关窗守卫读的是那一位，
-                                            // 等「保存」再同步的话，勾上之后当场点关闭仍然会退出。
-                                            m.sync_close_to_tray();
-                                            cx.notify();
-                                        });
-                                    },
-                                )
-                                .default_value(false),
-                            )
-                            .description(t(
-                                "开启后点关闭只把窗口收进托盘，程序继续在后台运行；要真正结束请用托盘菜单的「退出」。",
-                            )),
-                        )
-                        .item(
-                            SettingItem::new(
-                                t("系统托盘"),
-                                SettingField::render(move |_options, _w, cx| {
-                                    let tok = crate::theme::current(cx);
-                                    let color = if tray_gap.is_none() { tok.success } else { tok.warning };
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(hex(color))
-                                        .child(tray_text.clone())
-                                        .into_any_element()
-                                }),
-                            )
-                            .description(tray_hint),
-                        ),
-                )
+                .description(t("启动程序时的行为。"))
                 // 启动动作（2026-09-28 新增参数 + 面板控件）。
                 //
                 // 此前启动路径**写死**为打开命令面板：这不是「终端软件」，而是
@@ -1871,30 +1435,18 @@ impl MainView {
             //（反序列化丢值 → 下次启动静默变成默认的「询问」）。
         };
 
-        // 页装配（2026-09-15 用户调整）：背景并入「外观」、性能并入「终端设置」、
-        // 并把「连接管理」提到第一位。
-        let appearance = appearance.group(bg_group);
-        // R-1（2026-09-28 审查）：`sample_interval_ms` 挂在**连接页**，与连接/重连/代理
-        // 三项毫无关系 —— 采样间隔管的是终端里那枚实时指标（CPU/内存曲线）的刷新节奏。
-        // 上面的装配注释（2026-09-15）本就写着「性能并入终端设置」，但实现里挂错了页，
-        // 于是「性能」在某处看起来像个独立的重要页面。
-        //
-        // 现按注释里本来的承诺，把采样间隔并入**终端页**；连接页从此只留
-        // 「会话 / 文件传输 / 代理」三组，全是「跟远端打交道」的事。
-        let terminal = terminal.group(perf_group);
-
+        // 页装配：连接提到第一位；性能并入「终端设置」。
         Settings::new("settings-panel")
             // 对话框 940px 宽，侧栏收到 180px 起，字段列才有余量
             .sidebar_width(px(180.))
             .sidebar_size_range(px(150.)..px(262.))
-            // 页序：连接 → 外观 → 窗口 → 终端 → AI 助手 → Agent → 通知 → 快捷键。
-            // 窗口紧挨外观：两者都是「这台机器上长什么样」，与连接/终端这类
+            // 页序：连接 → 窗口 → 终端 → AI 助手 → Agent → 通知 → 快捷键。
+            // 窗口在前：它是「这台机器上长什么样」，与连接/终端这类
             // 「跟远端打交道」的页分开。
             // Agent 紧挨 AI 助手：两者读的是同一份 `ai_cfg`，agent 页只是把
             // 「AI 能不能动这台机器」的那几项独立出来（2026-09-22 用户要求归并）。
             .pages(vec![
                 connections_io,
-                appearance,
                 window_page,
                 terminal,
                 ai,
@@ -1942,12 +1494,11 @@ fn custom_palette_editor(me: &Entity<MainView>, cx: &mut App) -> AnyElement {
     }
 
     // 未初始化自定义数据时，以当前主题解析出的配色为初值（与`resolve_terminal_palette`同源）
-    let system_dark = settings.theme_mode != ThemeMode::Light;
     let cur = settings
         .terminal_custom_palette
         .clone()
         .map(|c| c.to_palette())
-        .unwrap_or_else(|| settings.resolve_terminal_palette(system_dark));
+        .unwrap_or_else(|| settings.resolve_terminal_palette());
 
     let muted = tok.fg_muted;
     let border = tok.border_subtle;
@@ -2193,21 +1744,6 @@ mod tests {
     use super::*;
     use crate::test_support::prod;
 
-    /// 主题下拉的取值必须与`ThemeMode`一一对应，否则下拉会显示成空项/错项。
-    #[test]
-    fn theme_key_round_trips() {
-        for mode in [ThemeMode::Dark, ThemeMode::Light, ThemeMode::System] {
-            assert_eq!(theme_from_key(theme_key(mode).as_ref()), mode);
-        }
-    }
-
-    /// 未知取值回退深色（与`Settings::default`一致），避免下拉出现空白项。
-    #[test]
-    fn unknown_theme_key_falls_back_to_dark() {
-        assert_eq!(theme_from_key("nope"), ThemeMode::Dark);
-        assert_eq!(theme_from_key(""), ThemeMode::Dark);
-    }
-
     /// 回归（2026-09-28 用户要求）：窗口页**不再**摆「启动时会话恢复」下拉。
     ///
     /// 2026-09-29 更新：用户进一步要求「取消恢复上次会话功能」，启动**不再自动**
@@ -2276,8 +1812,6 @@ mod tests {
     fn reset_defaults_match_settings_default() {
         let d = rustshell_core::settings::Settings::default();
         assert_eq!(DEFAULT_FONT_SIZE, d.terminal_font_size as f64);
-        assert_eq!(DEFAULT_SCROLLBACK, d.scrollback as f64);
-        assert_eq!(DEFAULT_SAMPLE_INTERVAL_MS, d.sample_interval_ms as f64);
         assert_eq!(DEFAULT_CONNECT_TIMEOUT_SECS, d.connect_timeout_secs as f64);
         assert_eq!(DEFAULT_RETRIES, d.reconnect_max_retries as f64);
         assert!(!d.auto_reconnect);
@@ -2287,28 +1821,11 @@ mod tests {
             DEFAULT_RETRY_INTERVAL_SECS,
             d.reconnect_interval_secs as f64
         );
-        // 主题默认深色（下拉的 default_value 也是 Dark）
-        assert_eq!(theme_key(d.theme_mode), theme_key(ThemeMode::Dark));
-        // 光标闪烁（2026-09-28 回到面板）：开关的 `default_value` 与设置默认值同源
-        assert!(d.terminal_cursor_blink);
-        assert_eq!(
-            d.terminal_cursor_blink_ms,
-            rustshell_core::settings::DEFAULT_CURSOR_BLINK_MS
-        );
         // 行高（2026-09-28 新增）：滑块默认值必须等于设置默认值，否则点「重置」
         // 会把行高拨到一个与全新安装不一致的位置
         assert_eq!(
             d.terminal_line_height,
             rustshell_core::settings::DEFAULT_TERMINAL_LINE_HEIGHT
-        );
-        // F-5 粘贴保护（2026-09-28 收敛为单一 `PasteBehavior`）：默认档必须是
-        // 「多行时先确认」—— 它同时决定了「逐行执行」与「先问一句」两件事，
-        // 面板那个下拉的 `default_value` 必须与这里同源，否则点「重置」会把用户
-        // 放进一个与全新安装不一致的（更松的）粘贴状态。
-        assert_eq!(
-            d.terminal_paste_behavior,
-            rustshell_core::settings::PasteBehavior::ConfirmMultiLine,
-            "粘贴默认档必须是最安全的「多行时先确认」"
         );
         // 启动动作（2026-09-28 新增）：默认打开本地终端
         assert_eq!(
@@ -2339,11 +1856,9 @@ mod tests {
     ///
     /// 这些条目既是「改了什么」的说明，也是防止改回去的护栏。
     ///
-    /// 2026-09-28 修订：**「光标闪烁」重新回到面板**（修订原先「一律留在
-    /// settings.json」的判定）。理由见 `main_view.rs` 的
-    /// `terminal_settings_are_panel_owned_and_forwarded`：闪烁是终端最常识的
-    /// 外观开关，「要不要闪」必须伸手可调；只有毫秒级的**闪烁周期**仍留在
-    /// 配置文件里（那是没人挑的算法细节）。
+    /// 2026-10-19 修订：光标闪烁 / 回滚行数 / 光标样式 / 多行粘贴行为 / 采样间隔
+    /// 全部从面板撤下（值仍保留在 `settings.json` 里继续生效）。与 2026-09-28
+    /// 「闪烁回到面板」的判定相反，这一次是用户明确要求精简面板入口。
     #[test]
     fn settings_pages_follow_the_2026_09_17_rework() {
         let code = production_source();
@@ -2354,17 +1869,38 @@ mod tests {
                 "设置面板仍残留已移除的条目：{needle}"
             );
         }
-        // 闪烁**周期**仍不给控件（毫秒级算法细节），而「光标闪烁」开关本身
-        // 已按 2026-09-28 的修订回到面板 —— 见下方正向断言。
-        let period = t_call("闪烁半周期（毫秒）");
-        assert!(
-            !code.contains(&period),
-            "设置面板仍残留已移除的条目：{period}"
-        );
-        assert!(
-            code.contains(&t_call("光标闪烁")),
-            "「光标闪烁」必须回到终端页（2026-09-28 修订）：这是最常识的外观开关。"
-        );
+        // 2026-10-19：这五项已撤下，面板不得再摆控件。
+        for gone in [
+            "光标闪烁",
+            "回滚行数",
+            "光标样式",
+            "多行粘贴行为",
+            "采样间隔",
+            "闪烁半周期（毫秒）",
+        ] {
+            let needle = t_call(gone);
+            assert!(
+                !code.contains(&needle),
+                "设置面板仍残留已移除的条目：{needle}"
+            );
+        }
+        // 2026-10-20 用户要求：整个「外观」页撤下（主题改由活动栏主题菜单切换，
+        // 背景图不再提供应用内入口）。页面名与页内所有条目都不得回归。
+        for gone in [
+            "外观",
+            "主题模式",
+            "背景图片",
+            "遮罩浓度",
+            "面板不透明度",
+            "打开背景目录",
+            "刷新列表",
+        ] {
+            let needle = t_call(gone);
+            assert!(
+                !code.contains(&needle),
+                "设置面板仍残留已移除的「外观」页条目：{needle}"
+            );
+        }
         // 分组标题（大类下面的「组」）已全部撤下。
         // 断言串用 `concat!` 拼：若直接写成字面量 `.title(t("`，其中一段
         // `t("` 会被 `core::i18n` 的 g1 护栏当成一次真实的 `t()` 调用，
@@ -2389,26 +1925,30 @@ mod tests {
         );
     }
 
-    /// R-1（2026-09-28 审查）：「采样间隔」必须挂在**终端页**，不能再回到连接页。
-    ///
-    /// 采样间隔管的是终端里那枚实时指标（CPU/内存曲线）的刷新节奏，与
-    /// 「远端连接 / 重连 / 代理」毫无关系。它此前被误挂在连接页，是「性能像
-    /// 一个独立重要页面」的源头。这条断言把「页装配那一行」钉死，防止有人
-    /// 顺手把 `perf_group` 又拼回 `connections_io`。
-    ///
-    /// 断言直接针对装配行，而不是「采样间隔字符串在哪个 region 里」—— 后者
-    /// 会随分组变量的移动而误判（`perf_group` 在函数中部定义，离页装配很远）。
+    /// 2026-10-19 用户要求：终端页「配色方案」置顶；连接页三个导入导出按钮
+    /// 的文案去掉末尾省略号（它们直接执行动作，不是「打开对话框」）。
     #[test]
-    fn sample_interval_group_is_owned_by_the_terminal_page() {
+    fn terminal_page_starts_with_scheme_and_import_labels_have_no_ellipsis() {
         let code = production_source();
-        assert!(
-            code.contains("let terminal = terminal.group(perf_group);"),
-            "「采样间隔」的分组必须并进终端页：`let terminal = terminal.group(perf_group);`"
-        );
-        assert!(
-            !code.contains("connections_io.group(perf_group)"),
-            "「采样间隔」不得再回到连接页 —— 它与远端连接无关。"
-        );
+        let at = code.find("let terminal = {").expect("找不到终端页装配");
+        let end = code
+            .find("let session_group = {")
+            .expect("找不到连接会话组");
+        let terminal = &code[at..end];
+        let scheme = terminal
+            .find(&t_call("配色方案"))
+            .expect("终端页缺配色方案");
+        for after in ["编码", "字体", "记录会话日志"] {
+            let pos = terminal.find(&t_call(after)).expect("终端页缺条目");
+            assert!(
+                scheme < pos,
+                "「配色方案」必须排在「{after}」之前（2026-10-19 用户要求置顶）"
+            );
+        }
+        for gone in ["导出连接…", "导入连接…", "从 OpenSSH 配置导入…"] {
+            let needle = t_call(gone);
+            assert!(!code.contains(&needle), "按钮文案不得再带省略号：{needle}");
+        }
     }
 
     /// 文件传输两项必须**直接绑定** `settings` 的对应字段（F-13）。
@@ -2532,7 +2072,7 @@ mod tests {
         let list = &list_tail[..list_tail.find("])").expect("页列表必须有结尾")];
         for name in [
             "connections_io",
-            "appearance",
+            "window_page",
             "terminal",
             "ai",
             "agent",

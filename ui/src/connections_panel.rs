@@ -951,7 +951,7 @@ mod tests {
         );
     }
 
-    /// 回归（2026-09-28 用户要求）：连接树**空白处右键**不再挂「从 OpenSSH 配置导入…」。
+    /// 回归（2026-09-28 用户要求）：连接树**空白处右键**不再挂「从 OpenSSH 配置导入」。
     ///
     /// 功能没删（设置 → 导入导出 里那枚按钮仍是入口，`MainView::import_openssh_config`），
     /// 撤的只是右键空白菜单里那一条。判据分两半，缺一不可：
@@ -968,7 +968,7 @@ mod tests {
         let body = &code[at..at + end];
         assert!(
             !body.contains("从 OpenSSH 配置导入"),
-            "空白右键菜单里又出现了「从 OpenSSH 配置导入…」：用户已要求撤下这一条。"
+            "空白右键菜单里又出现了「从 OpenSSH 配置导入」：用户已要求撤下这一条。"
         );
         assert!(
             body.contains("新建连接") && body.contains("新建分组"),
@@ -978,8 +978,8 @@ mod tests {
         // 另一半：设置面板那枚按钮必须还在（功能本身不许被顺手删掉）。
         let settings = prod(include_str!("main_view/settings_panel.rs"));
         assert!(
-            settings.contains("从 OpenSSH 配置导入…"),
-            "设置面板里的「从 OpenSSH 配置导入…」不见了：用户只要求撤右键那一项，\n             功能本身要保留（否则就是偷偷删了功能）。"
+            settings.contains("从 OpenSSH 配置导入"),
+            "设置面板里的「从 OpenSSH 配置导入」不见了：用户只要求撤右键那一项，\n             功能本身要保留（否则就是偷偷删了功能）。"
         );
     }
 

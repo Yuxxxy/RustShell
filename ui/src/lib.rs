@@ -27,10 +27,6 @@ pub mod test_support;
 #[cfg(test)]
 mod dead_session;
 
-/// F-8 系统托盘的护栏（关窗守卫 / 唯一消费点 / 退出直连 / 悬停提示），仅测试构建编译。
-#[cfg(test)]
-mod tray_wiring;
-
 /// F-6 输入法（IME）通路的护栏（契约 / 行为 / 接线三层），仅测试构建编译。
 #[cfg(test)]
 mod ime_wiring;

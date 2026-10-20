@@ -65,11 +65,10 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     let tk = crate::theme::current(cx);
     let active = m.panel_ui.panel;
 
-    // / 主题图标随模式变化（：System 用 Eye 代意"跟随系统"）
+    // 主题图标随模式变化
     let (theme_icon, theme_label) = match m.settings.theme_mode {
         ThemeMode::Dark => (IconName::Moon, i18n::t("深色主题")),
         ThemeMode::Light => (IconName::Sun, i18n::t("浅色主题")),
-        ThemeMode::System => (IconName::Eye, i18n::t("跟随系统")),
     };
     let theme_tooltip = if i18n::lang() == Lang::Zh {
         rustshell_core::i18n::ts(
@@ -152,7 +151,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 })),
         )
         .child(
-            // 主题按钮：单击循环 Dark 到 Light 到 System；右键菜单三模式单选
+            // 主题按钮：单击在 Dark / Light 间切换；右键菜单两模式单选
             div()
                 .id("rail-theme-wrap")
                 .context_menu({
@@ -176,17 +175,6 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                                 .on_click(|_, _w, cx| {
                                     super::main_view::ui_call_set_theme(
                                         rustshell_core::theme::ThemeMode::Light,
-                                        cx,
-                                    )
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new(rustshell_core::i18n::t("跟随系统"))
-                                .icon(IconName::Eye)
-                                .checked(cur == rustshell_core::theme::ThemeMode::System)
-                                .on_click(|_, _w, cx| {
-                                    super::main_view::ui_call_set_theme(
-                                        rustshell_core::theme::ThemeMode::System,
                                         cx,
                                     )
                                 }),

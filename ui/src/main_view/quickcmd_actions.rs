@@ -89,6 +89,31 @@ impl MainView {
     /// 调整：用户要求去掉「已发送到 xxx」的成功提示，命令直达终端、效果本身
     /// 就是反馈，再弹条提示属于噪音。仅保留失败 / 无目标这类必须让用户知道的情况。
     pub fn execute_quick_cmd(&mut self, cmd_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (targets, _degraded) = self.resolve_targets(cmd_id);
+        self.execute_quick_cmd_on(cmd_id, targets, window, cx);
+    }
+
+    /// 右键菜单「发送到全部终端」：显式广播，**忽略目标记忆**。
+    ///
+    /// 与 `execute_quick_cmd` 的区别只在目标集合：左键仍按
+    /// 显式选择 到 记忆 到 当前 Tab 的阶梯解析；这条动作直接发给所有可投递 Tab。
+    pub fn execute_quick_cmd_all(
+        &mut self,
+        cmd_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let targets = self.all_sendable_ids();
+        self.execute_quick_cmd_on(cmd_id, targets, window, cx);
+    }
+
+    fn execute_quick_cmd_on(
+        &mut self,
+        cmd_id: &str,
+        targets: Vec<SessionId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(cmd) = self.quick_store.find_cmd(cmd_id).cloned() else {
             // 命令已被并发删除
             log::warn!("quick-cmd: 命令 {cmd_id} 已不存在");
@@ -101,7 +126,6 @@ impl MainView {
             return;
         };
 
-        let (targets, _degraded) = self.resolve_targets(cmd_id);
         if targets.is_empty() {
             // 无激活会话：绝不无声失败。2026-09-17 运行反馈「提示要显示在主窗口中间」，
             // 2026-09-18 再改一条「不需要确认」⇒ 走唯一入口 `show_no_session_alert`
@@ -136,29 +160,6 @@ impl MainView {
             let msg = format!("{} · {detail}", rustshell_core::i18n::t("未执行"));
             self.set_quick_toast(crate::notice::NoticeKind::Error, &msg, window, cx);
         }
-    }
-
-    /// 「发送到…」（右键菜单第 2 项）：把命令的目标设为本次会话的显式选择并立即执行。
-    ///
-    /// 与栏上选择器的区别：这条路径直接执行，不再要求用户二次点命令，
-    /// 语义是「这条命令发往哪几个窗口（现在）」。选择结果记忆到该命令。
-    pub fn open_quick_send_to(
-        &mut self,
-        cmd_id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // 把命令当前生效的目标载入显式选择位，用户可在菜单里增删后再执行
-        let (mut cur, _) = self.resolve_targets(cmd_id);
-        if cur.is_empty() {
-            cur = self.tabs_state.active.clone().into_iter().collect();
-        }
-        if cur != self.ai_ui.quick_targets {
-            self.ai_ui.quick_targets = cur;
-            cx.notify();
-        }
-        // 该路径的服务语义：直接执行一次（菜单里的勾选会即时改变 targets 并重绘）
-        self.execute_quick_cmd(cmd_id, window, cx);
     }
 
     /// 切换某个 Tab 的勾选

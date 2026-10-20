@@ -1111,18 +1111,13 @@ impl MainView {
         let sink = session.resize.clone();
         // T4-P3：配色不再硬绑主题，由「配色方案」设置解析
         // （follow-theme / 预设 / 自定义三态，见 Settings::resolve_terminal_palette）。
-        // System 模式必须经 resolved 探测系统深浅色。
-        let system_dark = matches!(
-            cx.window_appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
         let pane_cfg = TerminalPaneConfig {
             font_family: self.settings.terminal_font_family.clone(),
             font_size: self.settings.terminal_font_size,
             // 行高（2026-09-28 新增设置项；越界值在读取侧钳制）
             line_height: self.settings.clamped_line_height(),
             scrollback: self.settings.scrollback,
-            palette: self.settings.resolve_terminal_palette(system_dark),
+            palette: self.settings.resolve_terminal_palette(),
             // T4-E1：字符编码（保存后新终端生效）
             encoding: self.settings.terminal_encoding.clone(),
             // 背景图启用时终端底色半透明，让图片透出到终端区域

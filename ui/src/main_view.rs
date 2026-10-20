@@ -640,33 +640,6 @@ pub fn ui_call_new_local_shell(cx: &mut App) {
     let _ = main.update(cx, |m, cx| m.open_local_shell(cx));
 }
 
-/// 托盘悬停提示（F-8）：把「几个会话活着、几个掉线了」放在最容易被看到的地方。
-///
-/// 纯函数（数字由调用方给），于是「断线状态确实进了提示」这件事可以直接单测，
-/// 不必去问系统通知区。基名取 `rustshell_core::APP_NAME`（产品名不翻译，
-/// 也不进 i18n 词条表 —— `t()` 的 key 必须有词条，否则 g1 门禁会报缺口）。
-///
-/// `pub(crate)` 只是为了 `crate::tray_wiring` 那条护栏能直接调它。
-pub(crate) fn tray_tooltip(live: usize, dead: usize) -> String {
-    use rustshell_core::i18n::ts;
-    let sessions_en = if live == 1 {
-        "1 session".to_string()
-    } else {
-        format!("{live} sessions")
-    };
-    let tail = if live == 0 && dead == 0 {
-        ts("无会话".to_string(), "No sessions".to_string())
-    } else if dead == 0 {
-        ts(format!("{live} 个会话"), sessions_en)
-    } else {
-        ts(
-            format!("{live} 个会话 · {dead} 个已断线"),
-            format!("{sessions_en} · {dead} disconnected"),
-        )
-    };
-    format!("{} · {tail}", rustshell_core::APP_NAME)
-}
-
 /// 启动入口：请求首帧打开命令窗口（App 上下文，见 `MainView::pending_palette`）。
 ///
 /// 2026-09-17 运行反馈「打开软件默认不打开本地 shell，打开命令窗口」：启动路径没有
@@ -685,8 +658,8 @@ pub fn ui_call_request_command_palette(cx: &mut App) {
 /// 于是启动被**硬编码**成永远只开命令面板 —— 但那是用一个人的偏好覆盖所有人。
 /// 一个**终端软件**启动后给一个终端，是最不需要解释的行为；power user 的第一诉求
 /// 也正是「给我一个 shell」。现在按 [`StartupAction`] 分派，默认开本地终端，
-/// 想要命令面板/什么都不做的人在设置里改一次（与 `close_to_tray`、
-/// `session_restore` 同一条「改默认必须由用户按下」的口径）。
+/// 想要命令面板/什么都不做的人在设置里改一次（与 `session_restore` 同一条
+/// 「改默认必须由用户按下」的口径）。
 ///
 /// 启动路径拿不到 `Window`（开浮层要 `window.focus`），所以这里只置标记 / 发起
 /// 无需窗口的动作，真正的打开落在各处的 `render` / 后台任务里。
@@ -1682,12 +1655,9 @@ impl MainView {
                 view_epoch: ViewEpoch::default(),
                 sidebar_collapsed: false,
                 bg_source: None,
-                bg_candidates: Vec::new(),
                 metrics_interval,
                 palette_state: None,
                 pending_palette: false,
-                tray_status: None,
-                tray_show_pending: false,
                 palette_cmds: Vec::new(),
                 // 启动就建一份键位快照：空窗格的「快捷键提示」表要显示**生效**键位
                 // （含用户在设置里改过的绑定），而空态是应用刚起来、最可能被看到的画面，
@@ -2248,69 +2218,6 @@ impl MainView {
         // 逐个把本地 Shell 排上队（那次 spawn 自己会 notify），且**一律不写快照**。
         self.layout_poll(cx);
 
-        // 5) F-8 系统托盘：消费菜单动作 + 刷新悬停提示。
-        //
-        // **这里是托盘动作的唯一消费点**（护栏 `tray_actions_are_consumed_in_exactly_one_place`
-        // 盯着这件事）：`muda` 把菜单点击投进一个进程级通道，谁都能读 ⇒ 不约定「只有
-        // 一处读」，将来多一处就会出现「同一次点击被消费两次」，而症状是随机的。
-        //
-        // 归属不标 `dirty`：两个动作分别改「窗口可见性 / 进程是否存活」，
-        // 都不改任何**子视图**读的数据（`ShowWindow` 那一步连 `Window` 都碰不到）。
-        // 拿不准就不标 —— 空掩码退化成「三个子视图都重绘」，即改造前的行为，不会出错。
-        //
-        // 2026-10-10：撤掉「新建终端」（用户要求）。它原先在这里走
-        // `open_local_shell`，而窗口多半正藏在托盘里 —— 标签开在看不见的地方，
-        // 点了没有反馈。终端入口在快捷键与工具栏上，托盘不再重复一个。
-        for action in rustshell_platform::tray::drain_actions() {
-            changed = true;
-            match action {
-                rustshell_platform::tray::TrayAction::ShowWindow => {
-                    // ① 把窗口从托盘放回来（platform 侧，**异步**投递）。
-                    //
-                    // 这里**绝对不能**出现同步的 `ShowWindow`：本函数跑在
-                    // `Entity::update` 的借用里，同步版会就地派发 `WM_SHOWWINDOW`，
-                    // 而 gpui 的处理会回调进 gpui 自己的状态 ⇒ 重入借用 ⇒ 它直接
-                    // panic，`ShowWindow` 中途夭折、菜单点了毫无反应（2026-10-10
-                    // 运行反馈，日志里是 `ERROR [] RefCell already borrowed`）。
-                    // 细节与证据在 `platform/src/window_ctl.rs` 的模块文档里。
-                    if !rustshell_platform::window_ctl::set_visible(true) {
-                        // 失败只可能是「句柄没登记 / 已失效」或系统拒绝投递
-                        // （都已如实返回）。点完菜单窗口不出现，日志里必须留下线索。
-                        log::warn!("托盘「显示主窗口」失败：主窗口句柄未登记、已失效或系统拒绝");
-                    }
-                    // ② 抢前台与「已经显示了但被别的窗口盖住」这两种情况，
-                    // 需要 `Window`（`Window::activate_window`），而 `poll` 拿不到
-                    // ⇒ 置旗，由本帧 `render` 兑现（铁律 #28 的两段式）。
-                    self.panel_ui.tray_show_pending = true;
-                }
-                // 直接退出，没有确认框（2026-09-29 用户反馈「托盘右键退出失效，
-                // 应该直接关掉进程，而不是界面提示」）。
-                //
-                // 这条路就是这里最合适的原因：`App::quit` 只 `PostQuitMessage`，
-                // 不需要 `Window`；且它**不经过**关窗守卫（`on_window_should_close`）
-                // —— 「关闭窗口时最小化到托盘」开着时，这条路照样能真正退出。
-                // 退出钩子（AI 会话 / 布局落盘）照常触发。
-                rustshell_platform::tray::TrayAction::Quit => cx.quit(),
-            }
-        }
-        // 悬停提示反映会话数与断线数（规格 §1.8「托盘提示断线状态」）。
-        //
-        // 刻意**不参与 `changed`**：提示画在系统通知区、不是我们的窗口，
-        // 为它重绘整棵树等于把「空闲时真正静止」又放开了。
-        // 也刻意**只在两个数真的变了时**才推 —— `set_tooltip` 每次都会往
-        // Shell_NotifyIcon 发一条消息，每 300ms 一轮无条件推等于让通知区
-        // 跟着我们一直重画。
-        let status = (
-            self.tabs_state.tabs.iter().filter(|t| t.is_live()).count(),
-            self.tabs_state.tabs.iter().filter(|t| t.is_dead()).count(),
-        );
-        if self.panel_ui.tray_status != Some(status) {
-            self.panel_ui.tray_status = Some(status);
-            if rustshell_platform::tray::is_ready() {
-                rustshell_platform::tray::set_tooltip(&tray_tooltip(status.0, status.1));
-            }
-        }
-
         // 卡顿观测：单次 poll 超过 100ms 记入运行日志（M4 诊断）
         let elapsed = poll_start.elapsed();
         if elapsed > std::time::Duration::from_millis(100) {
@@ -2458,8 +2365,12 @@ impl Render for MainView {
             self.load_openssh_config(config, ssh_dir, home, window, cx);
         }
 
-        // 焦点收敛：Tab 切换/新建后把键盘焦点交给激活终端
-        if self.tabs_state.pending_focus {
+        // 焦点收敛：Tab 切换/新建后把键盘焦点交给激活终端。
+        // 对话框开着时不许收：弹框期间到达的异步事件（命令面板关闭、SSH 连上、
+        // 标签页操作）都会置这个旗，若照常执行，焦点会被拽出模态框、落到背后的
+        // 终端上 —— 表现为「设置面板里打字，字却进了终端」。旗子不消费，等框关掉
+        // 后的下一帧再收敛。
+        if self.tabs_state.pending_focus && !window.has_active_dialog(cx) {
             match self.active_tab().and_then(|t| t.terminal.as_ref()) {
                 Some(term) => {
                     let h = term.read(cx).focus_handle().clone();
@@ -2473,19 +2384,6 @@ impl Render for MainView {
                 None => window.focus(&self.panel_ui.focus, cx),
             }
             self.tabs_state.pending_focus = false;
-        }
-
-        // 托盘「显示主窗口」的后半段（F-8，2026-10-10）：platform 侧已经把窗口
-        // 从托盘放回来了（异步投递），这里补上「提到最前」——
-        // `Window::activate_window()` 内部 spawn 到 executor（原生调用不在本帧的
-        // 借用里发生），所以哪怕它内部要 `SetActiveWindow` / 模拟按键也不重入。
-        //
-        // 位置在这里、不在 `poll`：`poll` 没有 `Window`（铁律 #28）。
-        // 顺序也讲究：窗口若刚被 `SW_SHOW` 放回来，本帧是它可见后的第一帧，
-        // `activate_window` 正好作用在一个已存在的窗口上。
-        if self.panel_ui.tray_show_pending {
-            self.panel_ui.tray_show_pending = false;
-            window.activate_window();
         }
 
         // F-9 会话恢复询问框：`MainView::new` 只置了旗（那一刻窗口根视图还不是
@@ -4025,46 +3923,31 @@ mod tests {
         );
     }
 
-    /// 设置面板与「终端字段」的消费边界（2026-09-28 改写）。
+    /// 设置面板与「终端字段」的消费边界（2026-10-19 改写）。
     ///
-    /// 2026-09-28 起三条口径都变了，本护栏随之重写：
-    ///   1. **光标闪烁回到面板**（原先「刻意移出面板」的理由是「没人调的旋钮」，
-    ///      但「要不要闪」恰恰有人管）；闪烁**周期**仍只在配置文件里。
-    ///   2. **粘贴行为收敛成单一 `PasteBehavior`**：原先三个字段拆在两个卡片，
-    ///      能配出「先确认 + 逐行执行」这种自相矛盾又危险的组合。
-    ///   3. 新增**行高**与**光标样式**两项（此前行高硬编码、光标形状无设置）。
+    /// 2026-10-19 用户要求精简面板：光标闪烁 / 回滚行数 / 光标样式 /
+    /// 多行粘贴行为 / 采样间隔的**控件**撤下，但设置字段与运行时行为全部保留
+    /// （老配置里的值继续生效）。于是本护栏分两层：
+    ///   1. 面板**不再**提供这些控件；
+    ///   2. 开终端 / 热更新 / 适配层仍把字段透传进引擎 —— 否则字段就真的死了。
     ///
-    /// 面板摆了控件还不够 —— 开终端与热更新的路径必须真的把它们透传进引擎，
-    /// 否则只是把「死配置」换成了「死字段」。
+    /// 行高仍留在面板（用户没有点名撤它），且必须绑在持久滑块上。
     #[test]
     fn terminal_settings_are_panel_owned_and_forwarded() {
         let panel = prod(include_str!("main_view/settings_panel.rs"));
 
-        // ① 面板必须消费这些字段（否则是死配置）
-        for owned in [
+        // ① 2026-10-19 撤下的控件不得再出现在面板里（字段本身保留在 settings.json）
+        for gone in [
             "settings.terminal_cursor_blink",
             "settings.terminal_cursor_style",
             "settings.terminal_paste_behavior",
-        ] {
-            assert!(
-                panel.contains(owned),
-                "设置项 {owned} 没有任何控件消费（死配置）。"
-            );
-        }
-        // 闪烁**周期**仍刻意不给控件：它是没人调的算法细节（秒后半周期）。
-        assert!(
-            !panel.contains("settings.terminal_cursor_blink_ms"),
-            "光标闪烁周期不该回到面板：它是毫秒级的算法细节，不是用户该挑的东西。"
-        );
-        // 粘贴的三个旧字段不得再出现在面板里（已收敛为一个下拉）
-        for gone in [
-            "settings.terminal_paste_normalize_newlines",
-            "settings.terminal_paste_protect = val",
-            "settings.terminal_paste_protect_lines = val",
+            "settings.scrollback",
+            "settings.sample_interval_ms",
         ] {
             assert!(
                 !panel.contains(gone),
-                "粘贴行为已收敛为单一 `PasteBehavior`，面板不得再摆旧控件：{gone}"
+                "设置面板不得再摆 `{gone}` 的控件（2026-10-19 用户要求撤下）；\
+                 字段仍保留在配置文件里继续驱动终端。"
             );
         }
         // 行高用的是持久滑块实体（不是每帧新建的数字框）
@@ -4127,7 +4010,7 @@ mod tests {
         );
         assert!(
             adapter.contains("default_cursor_shape: to_cursor_shape(cfg.cursor_style)"),
-            "适配层没有把光标形状写进引擎 config（设置里的光标样式不会生效）。"
+            "适配层没有把光标形状写进引擎 config（配置文件里的光标样式不会生效）。"
         );
     }
 
@@ -5099,15 +4982,20 @@ mod tests {
         });
 
         // 真终端：与宿主 `create_terminal_view` 同口径（80×24 起、字号 12、行高 1.2、
-        // 内边距 8）—— 用真终端而不是占位卡，是为了连「终端卡片高度是否受内容影响」
-        // 一起钉住（占位卡不参与 flex 撑高，测不出这一类回归）。
+        // 内边距顶 4 / 其余 8）—— 用真终端而不是占位卡，是为了连「终端卡片高度是否受
+        // 内容影响」一起钉住（占位卡不参与 flex 撑高，测不出这一类回归）。
         let term = cx.update(|cx| {
             let cfg = rustshell_terminal::TerminalConfig {
                 cols: 80,
                 rows: 24,
                 font_size: gpui::px(12.),
                 line_height_multiplier: 1.2,
-                padding: gpui::Edges::all(gpui::px(8.)),
+                padding: gpui::Edges {
+                    top: gpui::px(4.),
+                    right: gpui::px(8.),
+                    bottom: gpui::px(8.),
+                    left: gpui::px(8.),
+                },
                 ..rustshell_terminal::TerminalConfig::default()
             };
             cx.new(|cx| {

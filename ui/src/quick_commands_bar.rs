@@ -94,7 +94,7 @@ struct QcSnapshot {
     group_pos: (usize, usize),
     /// 除当前分组外的其它分组（「移动到 」子菜单）
     other_folders: Vec<(String, String)>,
-    /// 当前可投递 Tab 数（右键「发送到...」的启用条件：>=2 才显示）
+    /// 当前可投递 Tab 数（右键「发送到全部终端」的显示条件：>=2 才有广播意义）
     sendable: usize,
 }
 
@@ -134,7 +134,7 @@ fn snapshot_for_folder(m: &MainView, folder_id: &str) -> QcSnapshot {
     }
 }
 
-/// 当前可投递 Tab 数（供右键菜单判定「发送到...」是否显示）
+/// 当前可投递 Tab 数（供右键菜单判定「发送到全部终端」是否显示）
 fn quick_sendable_count(m: &MainView) -> usize {
     m.quick_target_labels()
         .iter()
@@ -697,16 +697,16 @@ fn command_menu(
             }),
     );
 
-    // 2. 发送到...（仅当存在 >=2 个可投递 Tab，需求文档 6.1 节）
+    // 2. 发送到全部终端（仅当存在 >=2 个可投递 Tab：只有一个时与「执行」等价）
     let multi = snap.sendable;
     if multi >= 2 {
         let cid_send = cid.clone();
         menu = menu.item(
-            PopupMenuItem::new(rustshell_core::i18n::t("发送到…"))
+            PopupMenuItem::new(rustshell_core::i18n::t("发送到全部终端"))
                 .icon(IconName::Globe)
                 .on_click(move |_, w, cx| {
                     let cid = cid_send.clone();
-                    with_main(w, cx, move |m, w, cx| m.open_quick_send_to(&cid, w, cx));
+                    with_main(w, cx, move |m, w, cx| m.execute_quick_cmd_all(&cid, w, cx));
                 }),
         );
     }
@@ -934,6 +934,28 @@ mod tests {
             code.contains("+{hidden}"),
             "折叠态「还有 N 条没显示」的提示被一起删掉了：那不是 Tab 徽标，\
              撤掉它用户会以为命令丢了。"
+        );
+    }
+
+    /// 2026-10-20 用户要求「命令按钮右键-发送到xxx改为【发送到全部终端】」：
+    /// 右键的发送项必须直接广播给所有可投递 Tab，不能再走按目标解析的旧入口。
+    #[test]
+    fn command_context_menu_broadcasts_to_every_terminal() {
+        let code = prod(include_str!("quick_commands_bar.rs"));
+        let start = code.find("fn command_menu(").expect("找不到命令右键菜单");
+        let end = code[start..]
+            .find("fn folder_menu(")
+            .map(|i| start + i)
+            .expect("找不到分组右键菜单（命令菜单的结束锚点）");
+        let seg = &code[start..end];
+        assert!(
+            seg.contains("发送到全部终端") && seg.contains("execute_quick_cmd_all"),
+            "命令右键的发送项必须是「发送到全部终端」，并调用广播入口 `execute_quick_cmd_all`。"
+        );
+        assert!(
+            !seg.contains("open_quick_send_to") && !seg.contains("发送到…"),
+            "按目标记忆/当前 Tab 解析的旧「发送到…」入口必须撤掉 —— \
+             用户要的是一键发给全部终端。"
         );
     }
 }

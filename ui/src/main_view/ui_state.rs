@@ -175,9 +175,6 @@ pub struct PanelUiState {
     /// 渲染只读它，不在每帧做文件系统检查。
     pub bg_source: Option<PathBuf>,
 
-    /// 背景图候选文件名缓存（渲染不扫目录，只在下述时机重扫）
-    pub bg_candidates: Vec<String>,
-
     /// 本机指标采样间隔（ms，设置面板动态调频）
     pub metrics_interval: std::sync::Arc<std::sync::atomic::AtomicU64>,
 
@@ -189,23 +186,6 @@ pub struct PanelUiState {
     /// 启动路径（`shell/src/app.rs`）拿不到 `Window`，而开浮层要 `window.focus` ——
     /// 于是那里只置这个标记，真正的打开动作落在 `render` 里（与 `pending_focus` 同一手法）。
     pub pending_palette: bool,
-
-    /// 上一次推给托盘提示的「(活跃会话数, 断线会话数)」（F-8）。
-    ///
-    /// `set_tooltip` 会往 Shell_NotifyIcon 发一次消息，每 300ms 一轮无条件推
-    /// 等于让系统通知区一直跟着我们重画。只在**这两个数真的变了**时才推。
-    pub tray_status: Option<(usize, usize)>,
-
-    /// 托盘「显示主窗口」的**后半段**（F-8，2026-10-10）。
-    ///
-    /// `poll` 里只能做前半段（platform 侧把窗口放回来），因为「抢前台 / 把被别的
-    /// 窗口盖住的窗口提到最前」要 `Window::activate_window()`，而 `poll` 拿不到
-    /// `Window`。于是那里置这个旗，本帧 `render` 兑现（与 `pending_focus` /
-    /// `pending_palette` 同一手法，铁律 #28）。
-    ///
-    /// 只由托盘动作置位，别处不许碰：它是「用户明确要求把窗口调出来」这一件事的
-    /// 一次性凭据，顺手复用会变成「莫名其妙抢前台」。
-    pub tray_show_pending: bool,
 
     /// 面板打开时的命令快照（内置命令 + 快速连接，两段拼接）。
     ///

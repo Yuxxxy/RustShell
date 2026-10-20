@@ -137,24 +137,18 @@ fn translate(zh: &'static str) -> &'static str {
         "设置" => "Settings",
         "深色主题" => "Dark Theme",
         "浅色主题" => "Light Theme",
-        "跟随系统" => "System",
         "深色" => "Dark",
         "浅色" => "Light",
         "服务器" => "Servers",
         "传输队列" => "Transfers",
 
         // 设置对话框
-        "外观" => "Appearance",
         "字号" => "Font Size",
-        "回滚行数" => "Scrollback",
-        "采样间隔" => "Sample Interval",
         "快捷键" => "Keyboard Shortcuts",
 
         // 设置面板（Settings 组件重构）
         // 页面名刻意与既有「终端」(Terminals 面板) / 「连接」(Connect 按钮) 区分开
-        // （`主题` 随「配置-关于」页一并撤下：外观页的页名是「外观」，
-        //   `主题模式` 才是那个下拉的标签，`主题` 单独一个词已无人引用）
-        "主题模式" => "Theme Mode",
+        // （「外观」页已撤下，`外观` / `主题模式` 两条词条随之删除）
         // 终端交互与设置增强相关文案
         "字体" => "Font",
         "编码" => "Encoding",
@@ -167,9 +161,6 @@ fn translate(zh: &'static str) -> &'static str {
         "恢复默认" => "Restore Defaults",
         "选择「自定义」配色方案后可编辑 16 色。" => {
             "Pick the “Custom” scheme to edit the 16 colors."
-        }
-        "深色、浅色与跟随系统三态；切换立即生效。" => {
-            "Dark, Light or Follow system; switching takes effect immediately."
         }
         "等宽字体候选；选择后即应用到已打开的终端。" => {
             "Monospace candidates; applies to open terminals immediately."
@@ -208,7 +199,6 @@ fn translate(zh: &'static str) -> &'static str {
         "API Key" => "API Key",
         "采样温度" => "Temperature",
         "8–32，支持 0.5 步进。" => "8–32, 0.5 step.",
-        "越大占用内存越多" => "Larger uses more memory",
         "握手、认证、建链各阶段上限" => {
             "Upper bound for handshake, auth and channel setup"
         }
@@ -218,7 +208,6 @@ fn translate(zh: &'static str) -> &'static str {
         "达到该次数后不再重试，等待手动连接。" => {
             "Stop retrying after this many attempts; wait for a manual connect."
         }
-        "越小越实时，占用越高" => "Smaller is more responsive; uses more CPU",
         "OpenAI 兼容端点；请求失败直接报错，不自动降级。" => {
             "OpenAI-compatible endpoint; failures surface directly, no fallback."
         }
@@ -337,7 +326,6 @@ fn translate(zh: &'static str) -> &'static str {
         "下移" => "Move Down",
         "移动到" => "Move To",
         "删除分组" => "Delete Group",
-        "发送到…" => "Send to…",
         "尚未新建分组" => "No groups yet",
         // 投递目标
         "无 PTY" => "no PTY",
@@ -419,30 +407,14 @@ fn translate(zh: &'static str) -> &'static str {
         // 一并删除 —— g2 护栏会盯着「表里有、代码里没人引用」，留着就是红。
 
         // 导入 / 导出连接（设置页「连接管理」）
-        "刷新列表" => "Refresh list",
         "搜索连接…" => "Search connections…",
         "未找到匹配的连接" => "No matching connections",
         "导出文件写入失败" => "Failed to write the export file",
         "读取导入文件失败" => "Failed to read the import file",
         "该文件里没有新的连接" => "No new connection in that file",
 
-        // 背景图片
-        "背景图片" => "Background image",
-        "无背景" => "None",
-        "遮罩浓度" => "Overlay strength",
-        "面板不透明度" => "Panel opacity",
-        "打开背景目录" => "Open background folder",
-        "背景图目录创建失败" => "Failed to create the background folder",
-        "背景图文件不存在（已回退纯色背景）" => {
-            "Background image missing (falling back to solid color)"
-        }
-        "选「无背景」回到纯色面板。" => "Pick \"None\" to go back to a solid panel.",
-        "0–70：数值越大图片越暗，面板文字越清晰。" => {
-            "0-70: higher values darken the image and keep panel text legible."
-        }
-        "60–100；仅在选用背景图时生效。" => {
-            "60-100; only applies when a background image is set."
-        }
+        // 背景图的**设置页控件**已随「外观」页撤下（2026-10-20），
+        // 既有配置值仍由渲染路径消费；相关文案条目一并删除。
 
         // 标签分屏
         "向右拆分" => "Split Right",
@@ -536,32 +508,16 @@ fn translate(zh: &'static str) -> &'static str {
             "The saved connection of this session was deleted; cannot reconnect"
         }
         "这是一个目录，请选择 json 文件" => "That is a folder; pick a JSON file",
-        "导出连接…" => "Export Connections…",
-        "导入连接…" => "Import Connections…",
+        "导出连接" => "Export Connections",
+        "导入连接" => "Import Connections",
         "导出或导入连接配置；文件不含任何口令。" => {
             "Export or import connections; files never contain credentials."
         }
-        // 粘贴行为（2026-09-28 收敛为单一 `PasteBehavior`）：
-        // 面板上一只下拉 + 行高 / 光标样式 / 光标闪烁三行。
-        // 「粘贴时换行转回车」/「粘贴多行文本时逐行执行」随旧下拉一起删了 ——
-        // 它们是「逐行执行」这半边语义的旧文案，现在由档位标签自己说清。
-        "多行粘贴行为" => "Multi-line paste behavior",
-        // 与 `settings_panel.rs` 里同名调用是**同一个 key**，两边写成同一个
-        // 单行字面量（不折行），逐字节相同 g1/g2 才认得上。
-        "决定粘贴多行文本时「要不要逐行执行」与「要不要先问」——两件事一次答完，不会再配出矛盾组合。" => {
-            "Decides both whether multi-line paste runs line by line and whether to ask first; \
-             answered in one place, so no contradictory combination is possible."
-        }
+        // 行高（2026-09-28）：面板上仅存的一项终端外观细调。
+        // 2026-10-19 起光标样式 / 光标闪烁 / 回滚行数 / 多行粘贴行为 / 采样间隔
+        // 的控件已撤下（值仍在 `settings.json` 里继续生效），对应词条一并删除。
         "行高" => "Line height",
         "1.0–2.0；觉得行距挤就调大。" => "1.0-2.0; increase it if lines feel cramped.",
-        "光标样式" => "Cursor style",
-        "远端程序发 DECSCUSR 时仍会临时覆盖。" => {
-            "A remote program can still override it temporarily via DECSCUSR."
-        }
-        "光标闪烁" => "Blinking cursor",
-        "关闭后光标常亮；闪烁周期见配置文件。" => {
-            "When off, the cursor stays solid; the blink period lives in the config file."
-        }
         // 粘贴保护（F-5）：确认框 + 设置面板两行
         "确认粘贴" => "Confirm Paste",
         "含换行的内容会被逐行发送，命令会立即执行。" => {
@@ -575,7 +531,6 @@ fn translate(zh: &'static str) -> &'static str {
             "What opens when the app starts. The default starts a local shell; \
              choose the command palette or nothing if you do not need a terminal."
         }
-        "界面主题与窗口背景。" => "UI theme and window background.",
         "未分组" => "Ungrouped",
         // 连接分组：新建与改名共用同一个「分组名」对话框，入口都在连接树的右键菜单里
         //（连接对话框里的自由文本分组名已取消）。
@@ -603,8 +558,6 @@ fn translate(zh: &'static str) -> &'static str {
         "密码将使用系统凭据加密保存，仅本机可解" => {
             "The password is saved encrypted with system credentials; only this device can decrypt it"
         }
-        // 设置面板可拖动（拖动把手就是标题栏）
-        "拖动标题栏可移动面板" => "Drag the title bar to move this panel",
         "命令内容，如 make -j4（支持多行）" => {
             "Command, e.g. make -j4 (multi-line supported)"
         }
@@ -805,7 +758,6 @@ fn translate(zh: &'static str) -> &'static str {
             "This task used a fixed interval; converted to the equivalent cron expression"
         }
         // ---- OpenSSH 配置导入（F-1）----
-        "从 OpenSSH 配置导入…" => "Import from OpenSSH config…",
         "从 OpenSSH 配置导入" => "Import from OpenSSH config",
         "全选" => "Select all",
         "全不选" => "Select none",
@@ -843,36 +795,11 @@ fn translate(zh: &'static str) -> &'static str {
         "把终端输出原样落盘；对新建会话生效，每条连接可单独覆盖。" => {
             "Writes raw terminal output to disk; applies to new sessions, and each connection can override it."
         }
-        // ---- 系统托盘（F-8，2026-09-24）----
-        //
-        // 2026-09-29：托盘「退出」改为直接退出进程（用户反馈「应该直接关掉进程，
-        // 而不是界面提示」），退出确认框整条撤掉，随之删掉两个**只在那个框里用**
-        // 的词条 ——「退出 RustShell」「确认退出？」。留着就是死条目，
-        // `g2_no_dead_entries` 必红。
-        "显示主窗口" => "Show main window",
-        // 2026-10-10：`"新建终端"` 随托盘那一项一起删掉（用户要求撤掉托盘的
-        // 「新建终端」）。它只有托盘菜单那一个引用点，留着就是死条目，
-        // `g2_no_dead_entries` 必红 —— 与上面「退出 RustShell / 确认退出？」同一条道理。
-        "退出" => "Quit",
-        "关闭窗口时最小化到托盘" => "Minimize to tray when closing the window",
-        "开启后点关闭只把窗口收进托盘，程序继续在后台运行；要真正结束请用托盘菜单的「退出」。" => {
-            "When on, closing the window only puts it into the tray and the app keeps running; use Quit from the tray menu to really exit."
-        }
-        "系统托盘已就绪" => "System tray is ready",
-        "系统托盘不可用" => "System tray is unavailable",
-        "当前平台暂不支持" => "not supported on this platform",
-        "系统拒绝创建托盘图标" => "the system refused to create the tray icon",
-        "托盘不可用时本项不生效，关闭窗口仍然是退出。" => {
-            "While the tray is unavailable this switch has no effect; closing the window still exits."
-        }
+        // ---- 窗口 ----
+        // 2026-10-19：系统托盘整体移除（用户要求），关闭窗口一律退出。
+        // 托盘相关词条（显示主窗口 / 退出 / 最小化到托盘 / 托盘状态……）随之删除。
         "窗口" => "Window",
-        "关闭按钮的行为；程序是否常驻托盘。" => {
-            "What the close button does, and whether the app stays in the tray."
-        }
-        "系统托盘" => "System tray",
-        "托盘菜单：显示主窗口 / 退出。" => {
-            "Tray menu: Show main window / Quit."
-        }
+        "启动程序时的行为。" => "What happens when the app starts.",
         // ---- 会话恢复（F-9，2026-09-24）----
         // 「恢复」与「不恢复」是提示框的两个按钮。
         //

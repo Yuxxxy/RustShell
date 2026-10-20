@@ -317,13 +317,12 @@ impl MainView {
         Some(paths::background_dir().join(name))
     }
 
-    /// 重扫背景图候选，并校验已选文件是否还在。
-    /// 渲染路径只读缓存，因此文件系统检查只发生在这里（启动、打开设置、切换背景、手动刷新）。
+    /// 校验已选背景图是否还在，并刷新渲染用的缓存路径。
+    /// 渲染路径只读缓存，因此文件系统检查只发生在这里（启动、打开设置）。
     pub(super) fn refresh_background(&mut self) {
         if !paths::ensure_dir(&paths::background_dir()) {
             log::warn!("背景图目录创建失败: {}", paths::background_dir().display());
         }
-        self.panel_ui.bg_candidates = paths::list_background_images();
         self.panel_ui.bg_source = match self.background_path() {
             Some(p) if p.is_file() => Some(p),
             Some(p) => {
@@ -345,21 +344,6 @@ impl MainView {
     /// 当前是否处于分屏态（供标签栏等外部视图决定按钮/菜单项可用性）。
     pub(crate) fn is_split(&self) -> bool {
         self.tabs_state.split.is_some()
-    }
-
-    /// 切换背景图：`None` = 关闭背景图（回纯色）。
-    pub fn set_background_image(&mut self, name: Option<String>, cx: &mut Context<Self>) {
-        self.settings.background_image = name;
-        self.refresh_background();
-        if self.settings.background_image.is_some() && self.panel_ui.bg_source.is_none() {
-            self.set_info(
-                rustshell_core::i18n::t("背景图文件不存在（已回退纯色背景）").to_string(),
-                false,
-            );
-        }
-        // 终端底色 alpha 随背景图开关变化（开了变半透明、关了恢复不透明），
-        // 已打开的终端要立刻跟上。
-        self.apply_terminal_palette(cx);
     }
 
     /// 设置面板的统一提示入口：`ok = true` 走信息色，`false` 走错误色。

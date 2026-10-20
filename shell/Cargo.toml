@@ -14,5 +14,3 @@ gpui-component.workspace = true
 anyhow.workspace = true
 log.workspace = true
 rust-embed = "8"
-# F-8：把主窗口的原生句柄取出交给 platform 层隐藏/显示（托盘最小化用）
-raw-window-handle.workspace = true

@@ -357,11 +357,12 @@ fn host_prompts_and_clears_on_every_exit() {
     );
 }
 
-/// 设置面板与配置链路必须消费粘贴行为设置（否则就是「死配置」）。
+/// 粘贴行为设置必须一路透传到引擎（否则就是「死配置」）。
 ///
-/// 与 `main_view.rs` 里那条「光标闪烁是配置项、面板为它摆控件」的护栏**互补**：
-/// 粘贴闸的行为是**面板管**的（「多行粘贴行为」是唯一旋钮，必须伸手可调），
-/// 且必须一路透传到引擎 —— 面板管了但没透传，就是换了个位置的死配置。
+/// 2026-10-19 起面板上的「多行粘贴行为」控件已撤下（用户要求精简面板）：
+/// 值仍保留在 `settings.json` 里继续生效，想改的人直接改配置文件。
+/// 因此本护栏改为：面板**不得**再摆这只下拉，但建会话 / 设置热更新的换算点
+/// 必须仍在 —— 字段没了换算点，老配置里的档位就真的死了。
 ///
 /// 2026-09-28 收敛：原先面板上摆着 `normalize_newlines` 与
 /// `paste_protect` / `paste_protect_lines` 三只控件，能配出「先确认 + 逐行执行」
@@ -374,10 +375,10 @@ fn host_prompts_and_clears_on_every_exit() {
 fn paste_behavior_settings_reach_the_engine() {
     let panel = prod(include_str!("main_view/settings_panel.rs"));
     assert!(
-        panel.contains("settings.terminal_paste_behavior"),
-        "设置面板没有消费 `terminal_paste_behavior`（下拉是死配置）"
+        !panel.contains("settings.terminal_paste_behavior"),
+        "「多行粘贴行为」控件已于 2026-10-19 撤下：字段只从 settings.json 读取"
     );
-    // 三个旧字段不得再回到面板：它们能各自取值，正是矛盾组合的来源
+    // 三个旧字段也不得回到面板：它们能各自取值，正是矛盾组合的来源
     for gone in [
         "settings.terminal_paste_normalize_newlines",
         "settings.terminal_paste_protect = val",

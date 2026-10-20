@@ -2,13 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 主题模式：本迭代仅 Dark 完整实现，枚举预留 Light/System
+/// 主题模式：深色 / 浅色两态。
+///
+/// 2026-10-20 用户要求「主题深色模式移除跟随系统」：`System` 变体已删除。
+/// 旧 `settings.json` 里的 `"System"` 仍按深色读取（`serde(alias)`），
+/// 否则整个 Settings 会反序列化失败、回退默认值，把用户其它配置一起清掉。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ThemeMode {
     #[default]
+    #[serde(alias = "System")]
     Dark,
     Light,
-    System,
 }
 
 /// 视觉 Token（Dark Token 表）
@@ -73,18 +77,11 @@ impl ThemeTokens {
         }
     }
 
-    /// 解析后的 Token：System 模式由 UI 层探测系统偏好后传入
-    pub fn resolved(mode: ThemeMode, system_prefers_dark: bool) -> Self {
+    /// 解析后的 Token
+    pub fn resolved(mode: ThemeMode) -> Self {
         match mode {
             ThemeMode::Dark => Self::dark(),
             ThemeMode::Light => Self::light(),
-            ThemeMode::System => {
-                if system_prefers_dark {
-                    Self::dark()
-                } else {
-                    Self::light()
-                }
-            }
         }
     }
 }
@@ -106,6 +103,7 @@ pub const SCHEME_CUSTOM: &str = "custom";
 /// 可选配色方案：(key, 中文名, 英文名)。顺序即下拉展示顺序。
 pub const TERMINAL_SCHEMES: &[(&str, &str, &str)] = &[
     (SCHEME_FOLLOW_THEME, "跟随主题", "Follow Theme"),
+    ("finalshell", "FinalShell", "FinalShell"),
     ("dracula", "Dracula", "Dracula"),
     ("one-dark", "One Dark", "One Dark"),
     ("solarized-dark", "Solarized Dark", "Solarized Dark"),
@@ -145,20 +143,11 @@ impl TerminalPalette {
         }
     }
 
-    // 已删除`of(mode)`：无调用点，且`of(System)`曾直接返回 light（潜伏 bug）。System 一律走`resolved(mode, system_prefers_dark)`显式解析。
-
-    /// 解析后的 Token：System 模式由 UI 层探测系统偏好后传入
-    pub fn resolved(mode: ThemeMode, system_prefers_dark: bool) -> Self {
+    /// 解析后的 Token
+    pub fn resolved(mode: ThemeMode) -> Self {
         match mode {
             ThemeMode::Dark => Self::dark(),
             ThemeMode::Light => Self::light(),
-            ThemeMode::System => {
-                if system_prefers_dark {
-                    Self::dark()
-                } else {
-                    Self::light()
-                }
-            }
         }
     }
 
@@ -179,6 +168,18 @@ impl TerminalPalette {
     /// 内置配色预设。未知 key /`custom`/`follow-theme`一律返回`None`，由调用方走`resolved()`或`CustomPalette`解析，不 panic。
     pub fn preset(key: &str) -> Option<Self> {
         let p = match key {
+            // FinalShell 自带默认主题（取自其安装包 resources/theme/Default.json）
+            "finalshell" => Self {
+                background: 0x002945,
+                foreground: 0xFFFFFF,
+                cursor: 0x00D05C,
+                normal: [
+                    0x555555, 0xFF2222, 0x38DE21, 0xFFE50A, 0x1460D2, 0xFF005D, 0x00BBBB, 0xBBBBBB,
+                ],
+                bright: [
+                    0x555555, 0xF40E17, 0x3BD01D, 0xEDC809, 0x5555FF, 0xFF99FF, 0x6AE3FA, 0xFFFFFF,
+                ],
+            },
             "dracula" => Self {
                 background: 0x282A36,
                 foreground: 0xF8F8F2,
@@ -368,6 +369,24 @@ mod tests {
                 "配色方案 {key} 在下拉中声明但无实现"
             );
         }
+    }
+
+    /// FinalShell 默认主题按官方安装包的 `Default.json` 落值：
+    /// 背景 #002945、光标 #00D05C、16 色一一对应（不是网上流传的另一套）。
+    #[test]
+    fn finalshell_preset_matches_official_default_theme() {
+        let p = TerminalPalette::preset("finalshell").expect("finalshell 预设必须存在");
+        assert_eq!(p.background, 0x002945);
+        assert_eq!(p.foreground, 0xFFFFFF);
+        assert_eq!(p.cursor, 0x00D05C);
+        assert_eq!(
+            p.normal,
+            [0x555555, 0xFF2222, 0x38DE21, 0xFFE50A, 0x1460D2, 0xFF005D, 0x00BBBB, 0xBBBBBB,]
+        );
+        assert_eq!(
+            p.bright,
+            [0x555555, 0xF40E17, 0x3BD01D, 0xEDC809, 0x5555FF, 0xFF99FF, 0x6AE3FA, 0xFFFFFF,]
+        );
     }
 
     /// 平台默认字体必须在候选列表里，否则下拉的选中项会是空。

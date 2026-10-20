@@ -20,14 +20,6 @@ dirs.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "sync-secret-service"] }
 
-# F-8 系统托盘：只在 Windows 上启用。
-# 非 Windows 目标连依赖都不解析 —— tray-icon 的 Linux 后端要 gtk3/libappindicator
-# 系统 dev 包，macOS 后端又要求「必须在主线程创建」，两者都不适合本仓的
-# 「gpui 主线程 + 独立消息循环」形态。非 Windows 上托盘模块退化为「不可用 + 原因」，
-# 由设置面板原样展示（见规格 §1.8 边界态：托盘不可用时降级为普通关闭并标注）。
-[target.'cfg(windows)'.dependencies]
-tray-icon.workspace = true
-
 # 集成测试要连真实 SSH 会话（tests/ssh_pump_no_spin.rs），需要直接引用 flume
 # 来拿连接结果通道。flume 本来就在整棵依赖树里，不引入新的下载。
 [dev-dependencies]

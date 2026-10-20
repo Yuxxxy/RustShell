@@ -1402,12 +1402,8 @@ impl MainView {
         self.panel_ui
             .metrics_interval
             .store(self.settings.sample_interval_ms, Ordering::Relaxed);
-        let system_dark = matches!(
-            cx.window_appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
         // T4-P3：配色不再只跟随主题，走「配色方案」解析（预设/自定义）
-        let palette = self.settings.resolve_terminal_palette(system_dark);
+        let palette = self.settings.resolve_terminal_palette();
         let new_cfg = TerminalPaneConfig {
             font_family: self.settings.terminal_font_family.clone(),
             font_size: self.settings.terminal_font_size,
@@ -1847,13 +1843,6 @@ impl MainView {
                     .text_size(px(14.))
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(rustshell_core::i18n::t("设置")),
-            )
-            // 可发现性：没有任何提示时用户不会去拖标题栏
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(hex(t.fg_muted))
-                    .child(rustshell_core::i18n::t("拖动标题栏可移动面板")),
             );
         // 抓手光标（本 fork 没有 `cursor_pointer()` 之类的 fluent 方法，
         // 直接写样式字段）
@@ -4411,5 +4400,150 @@ pub(in crate::main_view) mod tests {
             form.contains("这条任务不是 AI 巡检；保存只更新时间、目标与通知，原动作保持不变。"),
             "非 AI 巡检的既有任务缺少说明文案"
         );
+    }
+
+    /// 打开设置面板时**不**自动聚焦搜索框（2026-10-20 用户要求取消自动聚焦）；
+    /// 但用户主动进入搜索框之后，轮询心跳 / 视图通知 / Root 重建 / IME 上屏 /
+    /// 过滤重排都不许再把焦点抢走（此前修过的回归）。
+    #[gpui::test]
+    fn settings_search_keeps_focus_only_after_the_user_focuses_it(cx: &mut gpui::TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = build_main(cx);
+        main.update_in(vcx, |m, window, cx| {
+            m.present_dialog(DialogMode::Settings, window, cx);
+        });
+        vcx.run_until_parked();
+        // 测试没有平台帧循环：手动投递一次 `on_next_frame`（真实运行由平台帧驱动）
+        vcx.update(|w, cx| {
+            w.simulate_next_frame(cx);
+        });
+        vcx.run_until_parked();
+
+        vcx.update(|w, cx| {
+            assert!(
+                w.has_active_dialog(cx),
+                "设置面板没有打开，本用例会退化成空断言"
+            );
+            assert!(
+                w.focused_input(cx).is_none(),
+                "设置面板打开后自动聚焦了搜索框 —— 用户已要求取消自动聚焦"
+            );
+        });
+
+        // 用户主动进入搜索框（真实路径是点击 / Tab；这里用 focus_next 代劳）
+        vcx.update(|w, cx| {
+            w.focus_next(cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            vcx.update(|w, cx| w.focused_input(cx).map(|s| s.value(cx).to_string())),
+            Some("".to_string()),
+            "focus_next 没有落到搜索框上（第一个 tab stop）"
+        );
+
+        vcx.simulate_keystrokes("abc");
+        vcx.run_until_parked();
+        assert_eq!(
+            vcx.update(|w, cx| w.focused_input(cx).map(|s| s.value(cx).to_string())),
+            Some("abc".to_string()),
+            "搜索框获得焦点后打字没生效"
+        );
+
+        // 真实运行里有 300ms 的 poll 心跳：推进时钟让它在打字期间跑起来
+        for i in 0..6 {
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(300));
+            vcx.run_until_parked();
+            assert!(
+                vcx.update(|w, cx| w.focused_input(cx).is_some()),
+                "poll 心跳第 {i} 次把焦点从搜索框上抢走了"
+            );
+            vcx.simulate_keystrokes("d");
+            vcx.run_until_parked();
+        }
+
+        // 通知落地会通知 WindowState，触发 Root 重绘（对话框构建闭包重跑）
+        main.update_in(vcx, |_m, _w, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_some()),
+            "MainView 通知后搜索框丢了焦点"
+        );
+        vcx.update(|w, cx| {
+            w.push_notification(
+                gpui_component::notification::Notification::info("probe"),
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_some()),
+            "Root 重建后搜索框丢了焦点"
+        );
+
+        // IME 上屏 + 过滤后的侧栏重排：焦点都得留在同一个输入框上
+        vcx.simulate_input("主题");
+        vcx.run_until_parked();
+        let value = vcx.update(|w, cx| w.focused_input(cx).map(|s| s.value(cx).to_string()));
+        assert!(
+            value.as_deref().is_some_and(|v| v.contains("主题")),
+            "IME 上屏后焦点丢了或文字没进搜索框：{value:?}"
+        );
+        vcx.simulate_keystrokes("x");
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_some()),
+            "搜索过滤重排后焦点丢了"
+        );
+    }
+
+    /// 弹框期间到达的「焦点收敛」请求（命令面板关闭 / SSH 连上 / 标签操作）
+    /// 不许把焦点从对话框里拽走；请求要留到框关掉之后再兑现。
+    #[gpui::test]
+    fn pending_focus_waits_until_the_dialog_closes(cx: &mut gpui::TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = build_main(cx);
+        main.update_in(vcx, |m, window, cx| {
+            m.present_dialog(DialogMode::Settings, window, cx);
+        });
+        vcx.run_until_parked();
+        // 开框后焦点落在对话框外壳上；记下来，用来判断收敛请求有没有把焦点拽走。
+        let dialog_focus = vcx
+            .update(|w, cx| w.focused(cx))
+            .expect("设置面板打开后窗口没有焦点");
+
+        // 命令面板「设置」条目确认后就是这样：先开框，再关闭面板并置收敛旗
+        main.update_in(vcx, |m, _w, cx| {
+            m.tabs_state.pending_focus = true;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.update(|w, cx| {
+            assert!(w.has_active_dialog(cx), "设置面板被意外关掉了");
+            assert_eq!(
+                w.focused(cx),
+                Some(dialog_focus.clone()),
+                "弹框期间仍未消费的收敛请求把焦点从对话框里抢走了"
+            );
+            assert!(
+                main.read(cx).tabs_state.pending_focus,
+                "对话框还开着就把收敛请求消费掉了：关框后没人负责收焦点"
+            );
+        });
+
+        // 关框后照常兑现：没有终端可聚焦时收回视图级句柄
+        vcx.update(|w, cx| w.close_dialog(cx));
+        vcx.run_until_parked();
+        vcx.update(|w, cx| {
+            assert!(!w.has_active_dialog(cx));
+            assert!(
+                !main.read(cx).tabs_state.pending_focus,
+                "框关掉后收敛请求仍未执行"
+            );
+            assert!(
+                main.read(cx).panel_ui.focus.is_focused(w),
+                "没有终端时，关框后的收敛没有把焦点收回视图句柄"
+            );
+        });
     }
 }
