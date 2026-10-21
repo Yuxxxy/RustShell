@@ -321,33 +321,48 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     // 整条描边按钮（「+ 新建连接」）撤掉，改成一枚 `xsmall` ghost 图标按钮挂在栏右侧 ——
     // 面板底部不再被一条常驻按钮占位，树的可见高度多出一行。
     //
-    // 搜索框仍只在有连接时出现（没有可搜的东西，输入框只是噪音）；此时用一个
-    // `flex_1` 占位把图标顶到右边，保证「图标始终在栏右侧」这一条与连接数无关。
+    // 2026-10-21 运行反馈「连接栏搜索框消失」：搜索框原先只在 `profiles` 非空时渲染
+    // （「没有可搜的东西，输入框只是噪音」），于是新建/清空连接库之后整条搜索框凭空
+    // 消失，用户以为功能被砍了。现在**常显** —— 位置固定才认得出这是搜索框；
+    // 空库时它搜不到东西是自然的，但它的存在本身是「这里能搜」的唯一提示。
     let mut head = h_flex().items_center().gap_2().px_3().pt_2().pb_1();
-    head = if m.conn_store.profiles.is_empty() {
-        head.child(div().flex_1())
-    } else {
-        // 点框外失焦：与快捷命令栏 / 文件地址栏同一口径（见
-        // `main_view::blur_input_on_outside_click` 的说明）。
-        // 失焦只放掉焦点，**筛选词留在框里**（它决定显示哪些行，与焦点无关）。
-        //
-        // 宽度收在包装层（原先写在输入框自己的 `.flex_1()` 上），所以内层要 `w_full()`
-        // ——输入框的默认宽度是内容宽，不铺满就会在包装层里留出一段「点了没反应」的空白。
-        head.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
-                    super::main_view::blur_input_on_outside_click(&m.conn_ui.conn_search, w, cx)
-                }))
-                .child(
-                    Input::new(&m.conn_ui.conn_search)
-                        .small()
-                        .cleanable(true)
-                        .w_full(),
-                ),
-        )
-    };
+    // 点框外失焦：与快捷命令栏 / 文件地址栏同一口径（见
+    // `main_view::blur_input_on_outside_click` 的说明）。
+    // 失焦只放掉焦点，**筛选词留在框里**（它决定显示哪些行，与焦点无关）。
+    //
+    // 宽度收在包装层（原先写在输入框自己的 `.flex_1()` 上），所以内层要 `w_full()`
+    // ——输入框的默认宽度是内容宽，不铺满就会在包装层里留出一段「点了没反应」的空白。
+    head = head.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            // 量取钩子：回归用例靠它在**空库**下也要拿到搜索框的真实矩形。
+            .debug_selector(|| "conn-search-box".to_string())
+            .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                super::main_view::blur_input_on_outside_click(&m.conn_ui.conn_search, w, cx)
+            }))
+            .child(
+                Input::new(&m.conn_ui.conn_search)
+                    .small()
+                    .cleanable(true)
+                    // 左侧放大镜（2026-10-21 用户要求）：搜索框常显之后，
+                    // 「这是一只搜索框」应该由图标来提示 —— 占位符一旦被输入内容
+                    // 覆盖就消失了，图标则一直在。走官方 `prefix`，图标落在框内左侧、
+                    // 随输入框高度自动居中，不用自己算内边距。
+                    .prefix(
+                        // 外层 div 只为挂量取钩子（图标本身不带 `debug_selector`）：
+                        // 用例要证明这枚放大镜真的画出来了，而不是只写在链上。
+                        div()
+                            .debug_selector(|| "conn-search-icon".to_string())
+                            .child(
+                                Icon::new(IconName::Search)
+                                    .xsmall()
+                                    .text_color(hex(crate::theme::current(cx).fg_muted)),
+                            ),
+                    )
+                    .w_full(),
+            ),
+    );
     col = col.child(
         head.child(
             // 外层 `div` 只为挂 `debug_selector`（宽高由内容决定，不改变布局）——
@@ -516,9 +531,17 @@ fn render_tree_item(
                     // 「有子分组的行」与「空分组的行」的文件夹图标必须落在同一个 x 上，
                     // 由 `grp_folder_is_aligned_across_rows` 把关。
                     div().debug_selector(move || folder_sel.clone()).child(
-                        Icon::new(IconName::FolderClosed)
-                            .small()
-                            .text_color(hex(t.warning)),
+                        // 2026-10-21 用户要求「连接树文件夹增加展开关闭图标变化效果」：
+                        // 图标随展开状态换（打开 = `FolderOpen`，收起 = `FolderClosed`）。
+                        // 此前恒为 `FolderClosed`，只有左边那枚 chevron 在动 —— 一眼看不出
+                        // 「这个文件夹此刻是开着的」，尤其是分组里的连接很少时。
+                        Icon::new(if entry.is_expanded() {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::FolderClosed
+                        })
+                        .small()
+                        .text_color(hex(t.warning)),
                     ),
                 )
                 .child(
@@ -859,6 +882,40 @@ mod tests {
     use crate::test_support::prod;
     use rustshell_core::connections::{ConnectionGroup, ConnectionProfile, ConnectionStore};
 
+    /// 2026-10-21 用户要求「连接树文件夹增加展开关闭图标变化效果」：分组行的文件夹
+    /// 图标必须随展开状态在 `FolderOpen` / `FolderClosed` 之间切换。
+    ///
+    /// 来源断言而不是像素断言：图标是矢量绘制，无头环境里量不出「哪张图」；而这条
+    /// 契约要挡的正是「有人把它改回恒定的 `FolderClosed`」（此前就是这样，只有左边
+    /// 那枚 chevron 在动）。
+    #[test]
+    fn group_rows_swap_the_folder_icon_when_expanded() {
+        let code = prod(include_str!("connections_panel.rs"));
+        let at = code
+            .find("fn render_tree_item(")
+            .expect("找不到连接树行渲染函数");
+        let body = &code[at..];
+        let end = body.find("\n}").expect("找不到行渲染函数的结尾");
+        let body = &body[..end];
+
+        assert!(
+            body.contains("IconName::FolderOpen"),
+            "分组行没有「打开的文件夹」图标 —— 展开与否在界面上看不出来。"
+        );
+        assert!(
+            body.contains("IconName::FolderClosed"),
+            "分组行丢了「关闭的文件夹」图标（收起态）。"
+        );
+        assert!(
+            body.contains("entry.is_expanded()"),
+            "文件夹图标必须按 `entry.is_expanded()` 分支，否则不随展开状态变。"
+        );
+        assert!(
+            !body.contains("Icon::new(IconName::FolderClosed)"),
+            "文件夹图标又写成恒定的 `FolderClosed` 了 —— 展开时应当换成 `FolderOpen`。"
+        );
+    }
+
     /// 回归（2026-09-17 运行反馈「连接栏，新增按钮改为栏右侧一个图标」）：
     /// 新增连接入口只能是**顶部栏右侧的一枚图标按钮**。
     ///
@@ -952,6 +1009,78 @@ mod tests {
         );
     }
 
+    /// 回归（2026-10-21 运行反馈「连接栏搜索框消失」）：搜索框必须**常显**，
+    /// 与连接库空不空无关。
+    ///
+    /// 原先它被 `if profiles.is_empty() { 占位 } else { 搜索框 }` 挡着，于是
+    /// ① 首次启动（库是空的）、② 把连接全删掉 —— 两种情况下整条搜索框凭空消失，
+    /// 用户看到的是「这个功能被砍了」。判据是**几何**：空库下量得到、且高度 > 0。
+    /// 只看源码里的 `Input::new(&m.conn_ui.conn_search)` 无法证明它真进了渲染树。
+    #[gpui::test]
+    fn the_search_box_stays_visible_when_the_store_is_empty(cx: &mut gpui::TestAppContext) {
+        use crate::main_view::{AppShell, MainView, PanelKind};
+        use gpui::AppContext as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        // 前提：库里一条连接都没有（不给前提，这条用例会退化成「本来就非空」的假绿）
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| {
+                m.conn_store.profiles.clear();
+                m.panel_ui.sidebar_collapsed = false;
+                m.panel_ui.panel = PanelKind::Connections;
+                cx.notify();
+            });
+        });
+        vcx.run_until_parked();
+        assert!(
+            main.read_with(vcx, |m, _| m.conn_store.profiles.is_empty()),
+            "前提丢了：库里还有连接，测不到「空库下搜索框在不在」"
+        );
+
+        let bounds = vcx
+            .debug_bounds("conn-search-box")
+            .expect("空库下搜索框整个消失了 —— 这正是用户反馈的那个问题");
+        assert!(
+            f32::from(bounds.size.height) > 0.,
+            "搜索框在渲染树里但高度为 0（被压扁了，与消失无异）"
+        );
+
+        // 放大镜（2026-10-21 用户要求「搜索栏左侧增加放大镜图标」）：
+        // 必须在场、有尺寸、且落在外层搜索框的**左半边**（左右顺序即视觉顺序）。
+        let icon = vcx
+            .debug_bounds("conn-search-icon")
+            .expect("搜索框左侧的放大镜没渲染出来");
+        assert!(
+            f32::from(icon.size.width) > 0. && f32::from(icon.size.height) > 0.,
+            "放大镜图标尺寸为 0（不可见）"
+        );
+        let icon_mid = f32::from(icon.origin.x) + f32::from(icon.size.width) / 2.;
+        let box_mid = f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.;
+        assert!(
+            icon_mid < box_mid,
+            "放大镜落在了搜索框的右半边（x={icon_mid}，框中线={box_mid}）—— \
+             用户要的是**左侧**图标。"
+        );
+    }
+
     /// 真·端到端：**点击栏顶那枚「+ 新建连接」图标**必须打开新建连接对话框，且不得 panic。
     ///
     /// 这条补的是一个长期空档：此前所有对话框用例都直接调
@@ -1017,11 +1146,22 @@ mod tests {
                 "点了「+ 新建连接」图标却没打开对话框 —— 点击路径断了（闪退/无响应）。"
             );
         });
-        // 从图标进来必须默认未分组（与「栏顶 + 传 None」的既有口径一致）。
+        // 从图标进来没有「上下文归属」：库里恰好只有一个分组（初始化时的 `default`）
+        // 就落到它，多于一个则未分组（2026-10-21「默认 default 文件夹」）。
+        // 这里按**当时库里的实际分组数**断言，而不是写死某个 id ——
+        // 用例不该依赖本机 `connections.json` 长什么样。
+        let (got, expected) = main.read_with(vcx, |m, _| {
+            let got = m.io.dlg_group_id.clone();
+            let expected = if m.conn_store.groups.len() == 1 {
+                Some(m.conn_store.groups[0].id.clone())
+            } else {
+                None
+            };
+            (got, expected)
+        });
         assert_eq!(
-            main.read_with(vcx, |m, _| m.io.dlg_group_id.clone()),
-            None,
-            "从「+」图标进来的新建连接必须默认未分组（None）。"
+            got, expected,
+            "从「+」图标进来的新建连接：单分组时必须落到那个分组，多分组/无分组时未分组。"
         );
 
         // 关掉再点一次：这条「重复开合」路径最易暴露两类老问题 ——

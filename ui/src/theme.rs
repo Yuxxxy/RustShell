@@ -26,8 +26,8 @@ pub fn is_dark(cx: &App) -> bool {
     cx.try_global::<CurrentTheme>().map(|g| g.1).unwrap_or(true)
 }
 
-/// 面板底色：`alpha >= 1` 时就是主题原色，小于 1 时叠加透明度让窗口背景图透出来。
-/// 不做无意义合成：未启用背景图时调用方传 1.0，取色结果与改造前逐位一致。
+/// 面板底色：`alpha >= 1` 时就是主题原色，小于 1 时叠加透明度。
+/// 未启用背景图时调用方传 1.0，取色结果与改造前逐位一致。
 pub fn surface(alpha: f32, hex_color: u32) -> gpui::Hsla {
     let c = to_hsla(hex_color);
     if alpha >= 1.0 {
@@ -84,7 +84,7 @@ pub fn apply_theme_mode(cx: &mut App, mode: ThemeMode) {
     //
     // 2026-09-18 运行反馈「软件右上角缩小和放大在浅色模式上鼠标放上去看不出来效果」：
     // 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，而标题栏底色取的正是 `bg_base`
-    // （见 `MainView::render` 里 TitleBar 的 `.bg(self.panel_bg(t.bg_base))`）⇒
+    // （见 `MainView::render` 里 TitleBar 的 `.bg(crate::theme::surface(1.0, t.bg_base))`）⇒
     // 白底上盖白高亮，鼠标移上去逐像素不变。深色下 `bg_overlay(#1C2128)` 与
     // `bg_base(#0D1117)` 差一档灰阶，所以只有浅色露馅。
     //
@@ -620,7 +620,7 @@ mod tests {
     ///
     /// 取色链路：`gpui-component/src/title_bar.rs` 的 `ControlIcon::hover_bg()` 读
     /// `theme.secondary_hover`；而本应用的标题栏底色是 `bg_base`
-    /// （`MainView::render` 里 `TitleBar` 的 `.bg(self.panel_bg(t.bg_base))`）。
+    /// （`MainView::render` 里 `TitleBar` 的 `.bg(crate::theme::surface(1.0, t.bg_base))`）。
     /// 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，于是旧实现是「白底白高亮」，
     /// 深色主题恰好差一档灰阶才没暴露 —— 这正是「只有浅色模式看不出来」的原因。
     ///

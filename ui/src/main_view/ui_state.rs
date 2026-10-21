@@ -153,7 +153,7 @@ pub struct ConnUiState {
 // `PanelUiState`：窗口框架与各面板外壳的状态。
 
 // 包括侧栏当前显示哪个面板、侧栏是否折叠、焦点句柄、脏传播版本号，
-// 以及浮层类状态（终端搜索 / 命令补全 / 命令面板 / 键位录制 / 托盘旗 / 背景图）。
+// 以及浮层类状态（终端搜索 / 命令补全 / 命令面板 / 键位录制 / 托盘旗）。
 
 pub struct PanelUiState {
     pub focus: FocusHandle,
@@ -170,10 +170,6 @@ pub struct PanelUiState {
     pub(crate) view_epoch: ViewEpoch,
 
     pub sidebar_collapsed: bool,
-
-    /// 背景图缓存：已校验存在的绝对路径（None = 无背景或文件已失效）。
-    /// 渲染只读它，不在每帧做文件系统检查。
-    pub bg_source: Option<PathBuf>,
 
     /// 本机指标采样间隔（ms，设置面板动态调频）
     pub metrics_interval: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -467,6 +463,35 @@ pub struct AiUiState {
 
 // `DialogIoState`：对话框表单、文件面板、定时任务与外部 IO 的状态。
 
+/// 连接对话框里选中的**认证方式**（2026-10-21 用户要求：默认密码认证）。
+///
+/// 它是「草稿」而不是落盘字段：`ConnectionProfile` 只存凭据本身
+/// （`password` / `stored_password` / `key_path`），「用哪一种」由**保存时只写一侧**
+/// 来表达 —— 选中密码就清掉私钥路径、选中私钥就清掉密码与已存密文。
+/// 这样 `core::ssh::connect_only` 那条「密码优先，其次私钥」的顺序永远只会命中一支，
+/// 用户的选择就是最终行为，不会出现「我明明选了私钥，它却用密码登」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// 密码认证（默认）
+    Password,
+    /// 私钥认证
+    Key,
+}
+
+impl AuthMode {
+    /// 从已落盘的连接反推：**有私钥且没有密码** = 私钥认证，其余 = 密码认证。
+    ///
+    /// 两者都有的老数据按 core 的判定顺序显示成「密码认证」（密码确实会先被试），
+    /// 保存时会把那条不被使用的私钥路径清掉 —— 界面上看到的就是最终落盘的。
+    pub fn of_profile(p: &rustshell_core::connections::ConnectionProfile) -> Self {
+        if p.key_path.is_some() && p.password.is_none() {
+            Self::Key
+        } else {
+            Self::Password
+        }
+    }
+}
+
 // 这一组最大（66 个字段），但内聚性反而最强：它们**几乎全是 `InputState` /
 // `TextareaState` 句柄与「对话框当前在填什么」的枚举**，只有 `dialogs`、
 // `settings_panel`、`files_panel`、`task_actions` 这四组代码碰它们。
@@ -484,11 +509,17 @@ pub struct DialogIoState {
     /// 密码输入。非空即加密记住（「记住密码」开关已取消，见 `dialog_save`）
     pub dlg_pass: Entity<InputState>,
 
+    /// 认证方式草稿（单选框；默认 [`AuthMode::Password`]）。
+    ///
+    /// 决定对话框里渲染哪一个凭据字段（密码框 / 私钥路径），也决定保存时
+    /// **保留哪一侧、清掉哪一侧** —— 见 [`AuthMode`] 的说明。
+    pub dlg_auth: AuthMode,
+
     /// 私钥路径输入（2026-09-22 用户要求「支持私钥连接」）。
     ///
-    /// 语义与 core 的认证顺序一致（`core/src/ssh.rs::connect_only`）：**密码优先，
-    /// 其次私钥**，两者都没有才报「未提供密码或私钥」。所以这里不是一个「认证方式」
-    /// 单选框 —— 它只是「没填密码时用哪把钥匙」。
+    /// 2026-10-21 起它只在认证方式选「私钥认证」时出现：core 的认证顺序仍是
+    /// 「密码优先，其次私钥」（`core/src/ssh.rs::connect_only`），但保存时只会
+    /// 留下被选中那一侧的凭据，顺序在单侧有值时不可能产生歧义。
     pub dlg_key_path: Entity<InputState>,
 
     /// 系统「打开」对话框选中的私钥路径（一次性暂存）。

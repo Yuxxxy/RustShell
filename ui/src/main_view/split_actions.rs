@@ -1,4 +1,4 @@
-//! 分屏域：标签拆分/取消拆分、窗格焦点与槽位修正，以及「窗口背景图」的缓存刷新。
+//! 分屏域：标签拆分/取消拆分、窗格焦点与槽位修正。
 //! 本模块为 `main_view` 的子模块，可直接访问 `MainView` 的私有字段。
 
 use gpui::{
@@ -15,7 +15,6 @@ use gpui_component::{
 
 use rustshell_core::session::SessionKind;
 use rustshell_core::split::{SplitAxis, SplitFix, SplitPlan};
-use rustshell_platform::paths;
 
 use super::{MainView, PaneSide, SplitPane};
 
@@ -306,41 +305,6 @@ impl MainView {
         cx.notify();
     }
 
-    // 背景图缓存
-
-    /// 背景图绝对路径（文件名来自设置，目录固定为配置目录下的 backgrounds）。
-    pub(super) fn background_path(&self) -> Option<std::path::PathBuf> {
-        let name = self.settings.background_image.clone()?;
-        if name.trim().is_empty() {
-            return None;
-        }
-        Some(paths::background_dir().join(name))
-    }
-
-    /// 校验已选背景图是否还在，并刷新渲染用的缓存路径。
-    /// 渲染路径只读缓存，因此文件系统检查只发生在这里（启动、打开设置）。
-    pub(super) fn refresh_background(&mut self) {
-        if !paths::ensure_dir(&paths::background_dir()) {
-            log::warn!("背景图目录创建失败: {}", paths::background_dir().display());
-        }
-        self.panel_ui.bg_source = match self.background_path() {
-            Some(p) if p.is_file() => Some(p),
-            Some(p) => {
-                log::warn!("背景图不存在，回退纯色背景: {}", p.display());
-                None
-            }
-            None => None,
-        };
-    }
-
-    /// 面板底色：未启用背景图时返回原色（alpha = 1.0，与改动前逐像素一致）；
-    /// 启用后按 `panel_opacity` 透出窗口背景图。
-    /// 面板一律走这个入口取底色，背景图功能才不会「只在个别区域生效」。
-    /// `pub(crate)`：状态栏 / 快捷命令栏 / 活动栏等兄弟模块也要用它取底色。
-    pub(crate) fn panel_bg(&self, hex_color: u32) -> gpui::Hsla {
-        crate::theme::surface(self.settings.panel_alpha(), hex_color)
-    }
-
     /// 当前是否处于分屏态（供标签栏等外部视图决定按钮/菜单项可用性）。
     pub(crate) fn is_split(&self) -> bool {
         self.tabs_state.split.is_some()
@@ -547,8 +511,8 @@ impl MainView {
 
         let click_id = session_id.to_string();
         let right_id = click_id.clone();
-        // 占位卡底色：经 `panel_bg` 透出背景图（未启用时 alpha=1.0 与纯色一致）
-        let placeholder_bg = self.panel_bg(tok.bg_base);
+        // 占位卡底色：主题纯色（alpha=1.0）
+        let placeholder_bg = crate::theme::surface(1.0, tok.bg_base);
         let mut pane = div()
             .debug_selector(|| "term-pane".to_string())
             .relative()
@@ -739,9 +703,9 @@ impl MainView {
         // 焦点态就只剩「底色提亮 + 底部 2px 横条」这两处硬标记；
         // 横条只占 2px 高度，不引起终端列数变化。
         let focused = side == focused_side;
-        // 底色经 `panel_bg` 透出背景图（2026-09-18 反馈「背景图只替换了连接栏」）
-        let focused_bg = self.panel_bg(tok.bg_elevated);
-        let unfocused_bg = self.panel_bg(tok.bg_overlay);
+        // 底色：主题纯色（alpha=1.0）
+        let focused_bg = crate::theme::surface(1.0, tok.bg_elevated);
+        let unfocused_bg = crate::theme::surface(1.0, tok.bg_overlay);
 
         let mut bar = h_flex()
             .relative()
@@ -805,9 +769,8 @@ impl MainView {
 
     /// 无任何会话时的空态。
     ///
-    /// 2026-09-18 反馈「背景图只替换了连接栏」：这里原是**不透明** `bg_base`，
-    /// 把根节点铺的背景图在主区域整个盖死 —— 改走 `panel_bg` 按 `panel_opacity`
-    /// 透出背景图（未启用背景图时 alpha=1.0，观感与之前逐像素一致）。
+    /// 2026-09-18 反馈「背景图只替换了连接栏」：这里原是不透明 `bg_base`。
+    /// 背景图功能已整体移除（2026-10-21），面板取主题纯色（alpha=1.0）。
     ///
     /// 2026-09-20 改版：原先的「图标 + 一句说明 + 一个按钮」换成
     /// 「动作名 …… 键帽」的快捷键表（对齐 VS Code 空窗格的做法）——
@@ -835,7 +798,7 @@ impl MainView {
             .size_full()
             .items_center()
             .justify_center()
-            .bg(self.panel_bg(tok.bg_base))
+            .bg(crate::theme::surface(1.0, tok.bg_base))
             .child(list)
             .into_any_element()
     }
@@ -876,10 +839,6 @@ fn no_session_hint_row(
         "CommandPalette" => {
             row.on_click(cx.listener(|m, _: &ClickEvent, w, cx| m.open_command_palette(w, cx)))
         }
-        "ToggleSidebar" => row.on_click(cx.listener(|m, _: &ClickEvent, _w, cx| {
-            m.panel_ui.sidebar_collapsed = !m.panel_ui.sidebar_collapsed;
-            cx.notify();
-        })),
         "OpenSettings" => {
             row.on_click(cx.listener(|m, _: &ClickEvent, w, cx| m.open_settings(w, cx)))
         }
@@ -911,7 +870,7 @@ fn hint_keycaps(display: &str, tok: rustshell_core::theme::ThemeTokens) -> AnyEl
 /// 一枚键帽。底色取 `bg_elevated`：深色主题下它比 `bg_base` 略亮、浅色主题下比
 /// `bg_base` 略暗，两种主题都是「比底纸浮起来一点」的正确方向（若用 `bg_overlay`，
 /// 浅色主题里它与 `bg_base` 同为 `#FFFFFF`，键帽会在白底上凭空消失）。
-/// 再加 `border_subtle` 描边，保证启用背景图后仍看得到轮廓。
+/// 再加 `border_subtle` 描边，保证键帽轮廓清晰。
 fn hint_keycap(label: String, tok: rustshell_core::theme::ThemeTokens) -> AnyElement {
     div()
         .flex()

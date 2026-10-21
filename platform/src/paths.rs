@@ -94,8 +94,9 @@ pub fn alerts_log_path() -> PathBuf {
 }
 
 /// 默认下载目录（定时下载任务与 agent 下载工具的落点）。
+/// 优先系统下载目录，无则回退到用户主目录 —— 不落进配置目录。
 pub fn default_download_dir() -> PathBuf {
-    dirs::download_dir().unwrap_or_else(|| config_dir().join("downloads"))
+    dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(config_dir)
 }
 
 /// 运行日志目录：`<config>/rustshell/logs/`
@@ -104,49 +105,14 @@ pub fn logs_dir() -> PathBuf {
 }
 
 /// 连接导出目录：导出对话框的初始位置，同时作为导入对话框的候选来源。
+/// 用用户主目录，不落进配置目录。
 pub fn connections_export_dir() -> PathBuf {
-    config_dir().join("exports")
-}
-
-/// 背景图目录：用户在设置里选择的背景图必须放在这里。
-pub fn background_dir() -> PathBuf {
-    config_dir().join(rustshell_core::settings::BACKGROUND_DIR_NAME)
+    dirs::home_dir().unwrap_or_else(config_dir)
 }
 
 /// 确保目录存在；成功（含已存在）返回 true，失败返回 false（调用方据此提示，不 panic）。
 pub fn ensure_dir(dir: &std::path::Path) -> bool {
     dir.is_dir() || std::fs::create_dir_all(dir).is_ok()
-}
-
-/// 列出目录下指定扩展名的文件名（按名称排序，稳定可预期）。
-/// 目录不存在或不可读时返回空列表 —— 调用方展示「没有候选文件」，而不是报错。
-pub fn list_files_with_ext(dir: &std::path::Path, exts: &[&str]) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            if exts.contains(&ext.as_str()) {
-                Some(name)
-            } else {
-                None
-            }
-        })
-        .collect();
-    names.sort();
-    names
-}
-
-/// 背景图候选：只认图片扩展名（gpui 的解码器支持这几种）。
-pub fn list_background_images() -> Vec<String> {
-    list_files_with_ext(
-        &background_dir(),
-        &["png", "jpg", "jpeg", "webp", "bmp", "gif"],
-    )
 }
 
 /// 列出目录内容：子目录在前、文件在后，各自按名称（不区分大小写）排序。
@@ -423,6 +389,33 @@ pub fn session_log_path_now(session_title: &str) -> PathBuf {
         time_prefix(now),
         sanitize_file_segment(session_title)
     ))
+}
+
+/// 全部落盘文件的统一清单：配置、数据、日志一次列全。
+///
+/// 给「备份/迁移/排查」一个单一入口 —— 各处拼路径的调用点太多，想打包带走或
+/// 检查落盘位置时不该逐个翻代码。返回的是**路径**不是文件内容；日志目录/会话日志
+/// 是**目录**（含按天子目录），清单里给的是它们的根目录。
+pub fn paths_inventory() -> Vec<(String, PathBuf)> {
+    vec![
+        ("settings".into(), settings_path()),
+        ("connections".into(), connections_path()),
+        ("quick_commands".into(), quick_commands_path()),
+        ("ai_config".into(), ai_config_path()),
+        ("ai_chats".into(), ai_chats_path()),
+        ("cmd_history".into(), cmd_history_path()),
+        ("session_layout".into(), session_layout_path()),
+        ("keymap".into(), keymap_path()),
+        ("tasks".into(), tasks_path()),
+        ("alert_rules".into(), alert_rules_path()),
+        ("smtp".into(), smtp_path()),
+        ("agent_audit_log".into(), agent_audit_path()),
+        ("alerts_log".into(), alerts_log_path()),
+        ("run_logs_dir".into(), logs_dir()),
+        ("session_logs_dir".into(), session_logs_dir()),
+        ("task_runs_dir".into(), task_runs_dir()),
+        ("export_dir".into(), connections_export_dir()),
+    ]
 }
 
 #[cfg(test)]

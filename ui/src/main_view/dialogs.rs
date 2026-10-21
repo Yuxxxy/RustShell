@@ -24,7 +24,7 @@ use gpui_component::{
 use rustshell_core::connections::ConnectionProfile;
 use rustshell_platform::paths;
 
-use super::{DialogMode, MainView};
+use super::{AuthMode, DialogMode, MainView};
 use crate::terminal_view::TerminalPaneConfig;
 use crate::theme::to_hsla as hex;
 
@@ -469,8 +469,8 @@ impl MainView {
         };
 
         // 多行字段列（备注）：与 `field` 同一版式，控件换成官方 `Textarea`。
-        // 高度不写死 —— `TextareaState` 建的时候用了 `auto_grow(3, 6)`，
-        // 由内容决定 3–6 行，这里再压一个高度只会和它打架。
+        // 高度不写死 —— `TextareaState` 建的时候用了 `auto_grow(2, 6)`（默认 2 行），
+        // 由内容决定 2–6 行，这里再压一个高度只会和它打架。
         let field_area = |label: &'static str, input: &Entity<TextareaState>| {
             v_flex()
                 .gap_1()
@@ -532,9 +532,153 @@ impl MainView {
         // 新建取默认。界面消失不等于把用户配过的隧道 / 代理静默清空
         // （清掉的话，用户要到「隧道怎么没了」那一刻才会发现）。
         //
+        // 2026-10-21 用户再压一版（「增加认证方式，默认密码认证，主要目的是减少界面内容」）：
+        // 版面按「目标 → 凭据」两段分组，中间用一块底色更暗的卡片隔开 ——
+        //
+        //   名称
+        //   主机 | 端口
+        //   ┌──────────── 凭据卡片（bg_base）────────────┐
+        //   │ 用户名                                      │
+        //   │ 认证方式：(•) 密码认证  ( ) 私钥认证        │
+        //   │ 密码   ← 只有密码认证时出现                 │
+        //   │ 私钥 + [选择…] ← 只有私钥认证时出现         │
+        //   └─────────────────────────────────────────────┘
+        //   备注（默认 2 行，可长到 6 行）
+        //
+        // 关键收益是**同时在场的东西变少**：密码与私钥不再各占一行（原先私钥那一块
+        // 常驻，哪怕这条连接只用密码），一屏之内不再需要滚动。
+        //
         // 分组归属同样不在表单里选（2026-09-23 用户要求默认不分组）：新建时取自
         // 上下文（分组右键「新建连接」），编辑时原样保留既有归属（改归属走连接树
         // 拖拽）。`dlg_group_id` 照旧是保存时的事实源，只是没有界面写它。
+        let auth = self.io.dlg_auth;
+        let key_now = self.io.dlg_key_path.read(cx).value().to_string();
+
+        // 认证方式的两个选项：裸 `Radio`（圆圈）+ 整行可点。
+        // 不用 `RadioGroup`：它是受控组，要额外维护下标状态；而这里只有两支，
+        // 选中值就是 `dlg_auth` 本身（本文件既有的 `radio_row` 也是这个理由）。
+        let auth_radio = |id: &'static str, label: &'static str, mode: AuthMode| {
+            gpui_component::radio::Radio::new(id)
+                .xsmall()
+                .label(rustshell_core::i18n::t(label))
+                .checked(auth == mode)
+                .on_click(cx.listener(move |m, _checked, _w, cx| {
+                    if m.io.dlg_auth != mode {
+                        m.io.dlg_auth = mode;
+                        // 切换方式**不清输入框**：用户可能只是想切过去看一眼再切回来，
+                        // 清掉等于让他重敲一遍。各自的框只在保存时按选中侧取舍。
+                        cx.notify();
+                    }
+                }))
+        };
+        let auth_row = v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(hex(t.fg_secondary))
+                    .child(rustshell_core::i18n::t("认证方式")),
+            )
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(auth_radio("dlg-auth-password", "密码认证", AuthMode::Password))
+                    .child(auth_radio("dlg-auth-key", "私钥认证", AuthMode::Key)),
+            );
+
+        // 私钥路径那一行：输入框 + [选择…]（+ 有值时 [清除]）。只在私钥认证下渲染。
+        let key_row = v_flex()
+            .gap_1()
+            .debug_selector(|| "dlg-key-row".to_string())
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(hex(t.fg_secondary))
+                    .child(rustshell_core::i18n::t("私钥文件")),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .w_full()
+                    .child(Input::new(&self.io.dlg_key_path).w_full())
+                    .child(
+                        Button::new("dlg-key-browse")
+                            .small()
+                            .outline()
+                            .flex_none()
+                            .label(rustshell_core::i18n::t("选择…"))
+                            .on_click(cx.listener(|_m, _e, _w, cx| {
+                                // 系统「打开」对话框：结果经 `dlg_key_pick` 暂存，
+                                // 由本函数开头兑现（异步回调里没有 `Window`）。
+                                let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+                                    files: true,
+                                    directories: false,
+                                    multiple: false,
+                                    prompt: Some(rustshell_core::i18n::t("选择私钥文件").into()),
+                                });
+                                cx.spawn(async move |this, cx| {
+                                    if let Ok(Ok(Some(paths))) = rx.await {
+                                        if let Some(p) = paths.into_iter().next() {
+                                            let _ = this.update(cx, |m, cx| {
+                                                m.io.dlg_key_pick =
+                                                    Some(p.to_string_lossy().to_string());
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                })
+                                .detach();
+                            })),
+                    )
+                    .when(!key_now.is_empty(), |d| {
+                        d.child(
+                            Button::new("dlg-key-clear")
+                                .small()
+                                .ghost()
+                                .flex_none()
+                                .label(rustshell_core::i18n::t("清除"))
+                                .on_click(cx.listener(|m, _e, w, cx| {
+                                    m.io.dlg_key_path.update(cx, |s, cx| s.set_value("", w, cx));
+                                })),
+                        )
+                    }),
+            );
+
+        // 凭据区（用户名 / 认证方式 / 只露被选中那一侧的凭据）。
+        //
+        // 2026-10-21 用户先要求「移除凭据卡片」，再要求「去掉分割线」：这块现在是
+        // **纯表单流** —— 无底色、无边框、无线，只靠父容器的 `gap_3` 与上面几行拉开
+        // 距离。别再加任何包裹（卡片 / 分隔线 / 分组框），用户已连续撤了两版。
+        let credentials = v_flex()
+            .gap_3()
+            .debug_selector(|| "dlg-connect-credentials".to_string())
+            .child(field(
+                rustshell_core::i18n::t("用户名"),
+                &self.io.dlg_user,
+                true,
+            ))
+            .child(auth_row)
+            .when(auth == AuthMode::Password, |d| {
+                // 整块包一层只为了挂量取钩子（`debug_bounds` 只认 debug_selector）：
+                // 「密码认证下私钥那一行确实不在场」这件事，只有量得出来才守得住。
+                d.child(
+                    v_flex()
+                        .gap_1()
+                        .debug_selector(|| "dlg-pass-row".to_string())
+                        // 口令一律记住，「密码已加密保存」那句灰字按用户要求撤掉了
+                        // （2026-10-21），保存行为本身不变。
+                        .child(field(
+                            rustshell_core::i18n::t("密码"),
+                            &self.io.dlg_pass,
+                            false,
+                        )),
+                )
+            })
+            .when(auth == AuthMode::Key, |d| d.child(key_row));
+
         let connection_page = v_flex()
             .pt_2()
             .gap_3()
@@ -561,105 +705,12 @@ impl MainView {
                         96.,
                     )),
             )
-            .child(
-                h_flex()
-                    .items_start()
-                    .gap_2()
-                    .child(field(
-                        rustshell_core::i18n::t("用户名"),
-                        &self.io.dlg_user,
-                        true,
-                    ))
-                    .child(field(
-                        rustshell_core::i18n::t("密码"),
-                        &self.io.dlg_pass,
-                        false,
-                    )),
-            )
-            // 私钥（2026-09-22 用户要求「支持私钥连接」）：与密码并列的第二种凭据。
-            // 不设「认证方式」单选框 —— core 的顺序就是「密码优先，其次私钥」，
-            // 界面照抄这个顺序（下面那句灰字把它讲明白），不引入第二套语义。
-            .child({
-                let key_now = self.io.dlg_key_path.read(cx).value().to_string();
-                // 灰字提示：core 的认证顺序就是「密码优先，其次私钥」。
-                // 先绑成变量再 `.child(..)` 是为了不让它把链式调用的行宽顶破。
-                let key_hint = rustshell_core::i18n::t("填了密码就用密码；密码留空时用私钥登录");
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(hex(t.fg_secondary))
-                            .child(rustshell_core::i18n::t("私钥")),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .w_full()
-                            .child(Input::new(&self.io.dlg_key_path).w_full())
-                            .child(
-                                Button::new("dlg-key-browse")
-                                    .small()
-                                    .outline()
-                                    .flex_none()
-                                    .label(rustshell_core::i18n::t("选择…"))
-                                    .on_click(cx.listener(|_m, _e, _w, cx| {
-                                        // 系统「打开」对话框：结果经 `dlg_key_pick` 暂存，
-                                        // 由本函数开头兑现（异步回调里没有 `Window`）。
-                                        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
-                                            files: true,
-                                            directories: false,
-                                            multiple: false,
-                                            prompt: Some(
-                                                rustshell_core::i18n::t("选择私钥文件").into(),
-                                            ),
-                                        });
-                                        cx.spawn(async move |this, cx| {
-                                            if let Ok(Ok(Some(paths))) = rx.await {
-                                                if let Some(p) = paths.into_iter().next() {
-                                                    let _ = this.update(cx, |m, cx| {
-                                                        m.io.dlg_key_pick =
-                                                            Some(p.to_string_lossy().to_string());
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            }
-                                        })
-                                        .detach();
-                                    })),
-                            )
-                            .when(!key_now.is_empty(), |d| {
-                                d.child(
-                                    Button::new("dlg-key-clear")
-                                        .small()
-                                        .ghost()
-                                        .flex_none()
-                                        .label(rustshell_core::i18n::t("清除"))
-                                        .on_click(cx.listener(|m, _e, w, cx| {
-                                            m.io.dlg_key_path
-                                                .update(cx, |s, cx| s.set_value("", w, cx));
-                                        })),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(hex(t.fg_muted))
-                            .child(key_hint),
-                    )
-            })
+            // 凭据整体成一块卡片：用户名 / 认证方式 / 只露被选中那一侧的凭据
+            .child(credentials)
             // 备注（2026-09-18 用户要求）：多行 textarea，可选。
             // 留在表单最后：它虽然不影响能不能连上，但它是**用户自己写给自己**
             // 的那句话（用途 / 跳板机 / 到期日），归在「这条连接是什么」一侧读得通。
-            .child(field_area("备注", &self.io.dlg_notes))
-            // 口令一律记住，不再有开关可关（用户要求：取消「记住密码」勾选、默认记住）。
-            // 但「已经存下来了」这件事必须让用户看见 —— 静默落盘系统凭据密文是安全上的失职。
-            .child(div().text_size(px(10.5)).text_color(hex(t.fg_muted)).child(
-                rustshell_core::i18n::t("密码将使用系统凭据加密保存，仅本机可解"),
-            ));
+            .child(field_area("备注", &self.io.dlg_notes));
 
         // 校验错误 / 连接测试结果：跟在表单下方。
         //
@@ -971,6 +1022,14 @@ impl MainView {
             cx.notify();
             return;
         }
+        // 认证方式（2026-10-21）：选了私钥就**必须**有路径 —— 否则落库一条
+        // 「两种凭据都没有」的连接，用户要到点连接时才被 `connect_only` 拒绝。
+        let auth = self.io.dlg_auth;
+        if auth == AuthMode::Key && key_path.is_empty() {
+            self.io.dlg_error = Some(rustshell_core::i18n::t("请选择私钥文件").to_string());
+            cx.notify();
+            return;
+        }
         self.io.dlg_error = None;
         // 归属分组不再是表单里选出来的：**新建**时它是打开对话框那一刻的上下文
         // （分组右键「新建连接」= 那个分组的 id，其余入口 = None），**编辑**时它是
@@ -1006,7 +1065,13 @@ impl MainView {
         // 编辑时留空 = **不改口令**（保留原密文），而不是「清除口令」：留空可能只是
         // 因为系统凭据解不开（换机 / DPAPI 失效），此时抹掉原密文等于悄悄毁掉
         // 用户当初存下的口令。要让用户能主动清除，得另加入口，不该靠「留空」暗示。
-        let stored = if pass.is_empty() {
+        //
+        // 私钥认证下**不加密、也不保留**任何口令：这一支的语义是「这条连接用钥匙」，
+        // 留着旧密文会让下次启动的 `restore_passwords` 把口令解回 `profile.password`，
+        // 于是 core 那条「密码优先」会拿它去登录 —— 用户选了私钥却被密码挡回来。
+        let stored = if auth == AuthMode::Key {
+            None
+        } else if pass.is_empty() {
             prev_stored
         } else if secret_key.is_empty() {
             None
@@ -1077,6 +1142,10 @@ impl MainView {
             rustshell_core::proxy::ProxyChoice::from_parts(self.io.dlg_proxy_mode, cfg)
         };
         let mode = self.dialog.take();
+        // 凭据定稿：**只留被选中那一侧**（见 `credential_sides` 的说明）。
+        // 这样 `core::ssh::connect_only` 的「密码优先，其次私钥」永远只有一支有值，
+        // 用户在单选框里选的是什么，实际就用什么。
+        let (cred_password, cred_key_path) = credential_sides(auth, &pass, &key_path);
         // 「保存之后接着连」的意图：由连接入口留下的旗（见字段文档）。
         // 在这里一次性取走 —— 不管这次保存走哪条分支，旗都不该留到下一次打开。
         let connect_after = std::mem::take(&mut self.io.dlg_connect_after);
@@ -1097,16 +1166,11 @@ impl MainView {
                     p.username = user;
                     p.group_id = group_id;
                     p.notes = notes;
-                    p.password = if pass.is_empty() { None } else { Some(pass) };
+                    p.password = cred_password.clone();
                     p.stored_password = stored;
-                    // 私钥：留空 = 清掉（与口令不同 —— 口令留空表示「不改」是因为
-                    // 解不出密文时留空是常态；而私钥是明文路径，屏幕上就写着，
-                    // 用户把它删干净就是在说「不用私钥了」）。
-                    p.key_path = if key_path.is_empty() {
-                        None
-                    } else {
-                        Some(key_path.clone())
-                    };
+                    // 私钥同理由认证方式决定：密码认证下**清掉**（这条连接不再用它），
+                    // 私钥认证下已校验非空。
+                    p.key_path = cred_key_path.clone();
                     p.forwards = forwards.clone();
                     p.session_log = session_log;
                     p.auto_reconnect = auto_reconnect;
@@ -1127,19 +1191,25 @@ impl MainView {
                 p.port = port;
                 p.group_id = group_id;
                 p.notes = notes;
-                p.password = if pass.is_empty() { None } else { Some(pass) };
+                p.password = cred_password;
                 p.stored_password = stored;
-                p.key_path = if key_path.is_empty() {
-                    None
-                } else {
-                    Some(key_path.clone())
-                };
+                p.key_path = cred_key_path;
                 p.forwards = forwards.clone();
                 p.session_log = session_log;
                 p.auto_reconnect = auto_reconnect;
                 p.proxy = proxy;
                 let id = p.id.clone();
                 self.conn_store.add_profile(p);
+                // 新连接落在某个分组里时把那个分组展开：默认落在 `default` 时尤其要紧，
+                // 否则「保存成功」之后树上看不到任何变化（条目在收起的分组里），
+                // 用户会以为保存失败又建一条。
+                if let Some(gid) = self
+                    .conn_store
+                    .profile(&id)
+                    .and_then(|p| p.group_id.clone())
+                {
+                    self.conn_ui.expanded_groups.insert(gid);
+                }
                 if let Err(e) = self.conn_store.save(&paths::connections_path()) {
                     log::warn!("新建连接落盘失败: {e}");
                 }
@@ -1242,11 +1312,27 @@ impl MainView {
                 .and_then(rustshell_platform::secret::unprotect),
             _ => None,
         };
-        let password = if typed_pass.is_empty() {
-            stored_pass
-        } else {
-            Some(typed_pass)
+        // 认证方式决定试哪一侧（与 `dialog_save` 同一口径）：选了私钥就**不再**
+        // 偷偷拿旧口令去试 —— 那样测通的是一条用户没选的路径。
+        let (password, key_path) = match self.io.dlg_auth {
+            AuthMode::Password => (
+                if typed_pass.is_empty() {
+                    stored_pass
+                } else {
+                    Some(typed_pass)
+                },
+                String::new(),
+            ),
+            AuthMode::Key => (None, key_path),
         };
+        if self.io.dlg_auth == AuthMode::Key && key_path.is_empty() {
+            self.io.dlg_test = Some((
+                false,
+                rustshell_core::i18n::t("请选择私钥文件").to_string(),
+            ));
+            cx.notify();
+            return;
+        }
         if password.is_none() && key_path.is_empty() {
             self.io.dlg_test = Some((
                 false,
@@ -1394,8 +1480,6 @@ impl MainView {
         self.io.set_hint = None;
         // 已保存 到 关闭时不再回滚
         self.io.set_snapshot = None;
-        // 落盘后重算背景图缓存：缓存必须与「已保存的设置」一致
-        self.refresh_background();
 
         // 即时应用：主题 / 指标采样频率 / 已打开终端的字体字号与配色
         crate::theme::apply_theme_mode(cx, self.settings.theme_mode);
@@ -1411,7 +1495,7 @@ impl MainView {
             scrollback: self.settings.scrollback,
             palette,
             encoding: self.settings.terminal_encoding.clone(),
-            background_alpha: self.settings.panel_alpha(),
+            background_alpha: 1.0,
             cursor_blink: self.settings.terminal_cursor_blink,
             cursor_blink_ms: self.settings.terminal_cursor_blink_ms,
             cursor_style: self.settings.terminal_cursor_style,
@@ -1858,7 +1942,7 @@ impl MainView {
         //
         // 提示走官方`Alert`，变体由 `set_hint_ok` 决定。该字段此前**只写不读**
         // （全仓无渲染路径消费它），于是这里的取色恒为 danger 到
-        // 「背景图已应用」这类成功提示也渲染成红色错误。现在收口在 `Alert` 上：
+        // 成功的保存提示也渲染成红色错误。现在收口在 `Alert` 上：
         // 成功=success、失败=error，级别由 `set_info(text, ok)` 声明。
         let hint_kind = if self.io.set_hint_ok {
             crate::notice::NoticeKind::Success
@@ -2730,9 +2814,29 @@ impl MainView {
         cx.notify();
     }
 
+    /// 信任框被「关掉」（X / ESC / 点遮罩）而不是被按钮回答时的收尾。
+    ///
+    /// 必须当成**不信任**处理：连接线程此刻正 `await` 那个 `reply`，不发就等于让它
+    /// 白等满 120s 的 `TRUST_TIMEOUT`，而屏幕上已经没有任何东西提示它还在等。
+    ///
+    /// **不要**在这里调 `w.close_dialog(cx)`：官方在 `on_close` 之后自己会 pop 栈顶，
+    /// 再关一次就会把下面那层（例如正在测试连接的连接对话框）一起关掉。
+    fn reject_trust_on_dismiss(&mut self) {
+        if let Some(req) = self.conn_ui.pending_trust.take() {
+            let _ = req.reply.send(false);
+        }
+        self.conn_ui.trust_dialog_open = false;
+    }
+
+    /// 打开「首次信任 / 密钥已变更」对话框。
+    ///
+    /// **不走 `present_dialog`**（那条路开头有 `has_active_dialog` 守卫，挡的是「重复开
+    /// 同一扇窗」）：信任框必须能叠在**任何**业务对话框之上。最典型的就是 2026-10-21
+    /// 用户要求的场景 ——「新建/编辑连接 → 测试连接」时连接对话框开着，而连接线程正卡在
+    /// 主机密钥校验上等一个答案。官方对话框层是栈（逐层渲染、关闭只弹栈顶），
+    /// 与 OpenSSH 导入层 / 免确认白名单同一手法。
     pub(super) fn present_trust_dialog(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        // 守卫用官方 dialog 状态，避免业务标记残留锁死或与其它对话框叠加。
-        if self.conn_ui.pending_trust.is_none() || w.has_active_dialog(cx) {
+        if self.conn_ui.pending_trust.is_none() {
             return;
         }
         let view = cx.entity();
@@ -2756,24 +2860,85 @@ impl MainView {
         let host_label = format!("{}:{}", req.host, req.port);
         let fingerprint = req.fingerprint.clone();
         let key_type = req.key_type.clone();
+        // 「首次连接」与「密钥已变更」是两件性质完全不同的事，文案必须分开：
+        // 前者核对指纹即可；后者要先说清「变了」，并把**旧指纹**并排给出来 ——
+        // 容器重建后重新信任，靠的就是这一屏（旧实现里这种情况直接扔一句
+        // `Unknown server key`，界面上没有任何可操作入口）。
+        let changed = match &req.kind {
+            rustshell_core::ssh::ServerKeyChange::Changed {
+                old_fingerprint,
+                old_key_type,
+            } => Some((old_fingerprint.clone(), old_key_type.clone())),
+            rustshell_core::ssh::ServerKeyChange::FirstSeen => None,
+        };
 
         let header = div()
             .text_size(px(14.))
             .font_weight(gpui::FontWeight::BOLD)
-            .child(rustshell_core::i18n::t("首次连接：验证主机指纹"));
+            .child(if changed.is_some() {
+                rustshell_core::i18n::t("主机密钥已变更：请先核对指纹")
+            } else {
+                rustshell_core::i18n::t("首次连接：验证主机指纹")
+            });
 
-        let body =
-            v_flex()
-                .gap_2()
-                .child(div().text_size(px(12.)).text_color(hex(t.fg_muted)).child(
-                    SharedString::from(rustshell_core::i18n::ts(
-                        format!("主机 {host_label} 的真实性无法确认，请核对以下指纹："),
-                        format!(
-                            "Cannot verify the authenticity of host {host_label}; \
-                             check the fingerprint below:"
-                        ),
-                    )),
-                ))
+        let intro = if changed.is_some() {
+            rustshell_core::i18n::ts(
+                format!(
+                    "主机 {host_label} 本次提供的服务器密钥，与上次连接时记录的不一致。\
+                     容器被重建、系统重装、或 sshd 重新生成了 host key 都会如此；\
+                     但也可能是中间人攻击。"
+                ),
+                format!(
+                    "Host {host_label} presented a different server key than the one \
+                     recorded last time. Rebuilt containers, reinstalled systems and \
+                     regenerated sshd host keys all cause this — but so can a \
+                     man-in-the-middle attack."
+                ),
+            )
+        } else {
+            rustshell_core::i18n::ts(
+                format!("主机 {host_label} 的真实性无法确认，请核对以下指纹："),
+                format!(
+                    "Cannot verify the authenticity of host {host_label}; \
+                     check the fingerprint below:"
+                ),
+            )
+        };
+
+        let mut body = v_flex()
+            .gap_2()
+            // 量取钩子：用例要证明「业务对话框开着时，信任框仍然叠得上来」
+            // —— 那个场景正是「测试连接遇到的未知主机」。
+            .debug_selector(|| "dlg-trust-body".to_string())
+            .child(
+            div()
+                .text_size(px(12.))
+                .text_color(hex(t.fg_muted))
+                .child(SharedString::from(intro)),
+        );
+        if let Some((old_fp, old_type)) = &changed {
+            body = body
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(hex(t.fg_muted))
+                        .child(SharedString::from(rustshell_core::i18n::ts(
+                            format!("旧指纹（known_hosts 记录，{old_type}）：{old_fp}"),
+                            format!("Old fingerprint (known_hosts, {old_type}): {old_fp}"),
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(hex(t.fg_primary))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(SharedString::from(rustshell_core::i18n::ts(
+                            format!("新指纹（服务器本次提供，{key_type}）：{fingerprint}"),
+                            format!("New fingerprint (presented now, {key_type}): {fingerprint}"),
+                        ))),
+                );
+        } else {
+            body = body
                 .child(
                     div()
                         .text_size(px(12.))
@@ -2791,16 +2956,24 @@ impl MainView {
                             format!("指纹：{fingerprint}"),
                             format!("Fingerprint: {fingerprint}"),
                         ))),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(hex(t.fg_muted))
-                        .pt_1()
-                        .child(rustshell_core::i18n::t(
-                        "信任后该密钥将加入白名单；若指纹与服务器管理员公布的不一致，请勿信任。",
-                    )),
                 );
+        }
+        body = body.child(
+            div()
+                .text_size(px(11.))
+                .text_color(hex(t.fg_muted))
+                .pt_1()
+                .child(if changed.is_some() {
+                    rustshell_core::i18n::t(
+                        "确认后将以新密钥替换旧记录并继续连接。若无法确认这次变化来自你自己（重建容器 / 重装系统 / 换机器），请取消 —— 这可能是中间人攻击。",
+                    )
+                } else {
+                    rustshell_core::i18n::t(
+                        "信任后该密钥将加入白名单；若指纹与服务器管理员公布的不一致，请勿信任。",
+                    )
+                }),
+        );
+
         let footer = h_flex()
             .gap_2()
             .justify_end()
@@ -2808,7 +2981,11 @@ impl MainView {
             .child(
                 Button::new("trust-reject")
                     .small()
-                    .label(rustshell_core::i18n::t("取消"))
+                    .label(if changed.is_some() {
+                        rustshell_core::i18n::t("取消连接")
+                    } else {
+                        rustshell_core::i18n::t("取消")
+                    })
                     .on_click(cx.listener(|m, _e, w, cx| {
                         m.resolve_trust(false, w, cx);
                     })),
@@ -2817,7 +2994,11 @@ impl MainView {
                 Button::new("trust-accept")
                     .small()
                     .primary()
-                    .label(rustshell_core::i18n::t("信任并连接"))
+                    .label(if changed.is_some() {
+                        rustshell_core::i18n::t("更新密钥并连接")
+                    } else {
+                        rustshell_core::i18n::t("信任并连接")
+                    })
                     .on_click(cx.listener(|m, _e, w, cx| {
                         m.resolve_trust(true, w, cx);
                     })),
@@ -2825,6 +3006,7 @@ impl MainView {
 
         let view = cx.entity();
         let view_ok = view.clone();
+        let view_close = view.clone();
         dialog
             .w(px(440.))
             .bg(hex(t.bg_overlay))
@@ -2846,6 +3028,11 @@ impl MainView {
                         true
                     }),
             )
+            // X / ESC / 点遮罩：官方在 `on_close` 之后自己 pop 这一层，
+            // 所以这里只发「不信任」并复位标记（见 `reject_trust_on_dismiss`）。
+            .on_close(move |_ev, _w, cx| {
+                view_close.update(cx, |m, _cx| m.reject_trust_on_dismiss());
+            })
     }
 }
 
@@ -3044,6 +3231,32 @@ fn profile_picker(
         ));
     }
     picker_box("task-pick-profiles", &t, rows)
+}
+
+/// 认证方式 → 两个凭据字段的落盘取值（**纯函数，可单测**）。
+///
+/// 只留被选中那一侧：
+/// - 密码认证：`key_path` 置空（这条连接不再用钥匙）；
+/// - 私钥认证：`password` 置空 —— 否则 `core::ssh::connect_only` 的「密码优先」
+///   会拿旧口令去登录，用户选了私钥却被密码挡回来。
+///
+/// 抽成纯函数是因为它的错法是**静默**的：两边都留着照样能连上，只是用的不是
+/// 用户选的那条路径，谁都不会发现。
+fn credential_sides(
+    auth: AuthMode,
+    pass: &str,
+    key_path: &str,
+) -> (Option<String>, Option<String>) {
+    match auth {
+        AuthMode::Password => (
+            (!pass.is_empty()).then(|| pass.to_string()),
+            None,
+        ),
+        AuthMode::Key => (
+            None,
+            (!key_path.is_empty()).then(|| key_path.to_string()),
+        ),
+    }
 }
 
 /// 单选行：`RadioGroup` 太重（只有两个选项且要跟草稿状态走），
@@ -3283,27 +3496,64 @@ pub(in crate::main_view) mod tests {
              表单里已经没有分组一栏，这条入参是归属的**唯一**来路。"
         );
 
-        // 其余入口（栏顶 + / 树空白右键）传 None ⇒ 默认不分组。
+        // 其余入口（栏顶 + / 树空白右键）传 None：**库里只有一个分组时落到它**，
+        // 否则未分组（2026-10-21「初始化只建一个 default 文件夹」）。
+        // 先把那个统一入口的两种情况都穷举出来，免得这条规则只靠源码注释自证。
         // 先关掉上一层：`present_dialog` 开头有 `has_active_dialog` 守卫，
         // 不关就再开等于什么都没发生（断言会假绿）。
         main.update_in(vcx, |m, window, cx| {
             m.close_dialog_ui(window, cx);
         });
         vcx.run_until_parked();
+
+        // ① 库里一个分组都没有 → 未分组（不能凭空造一个 id 出来）
         main.update_in(vcx, |m, window, cx| {
+            m.conn_store.groups.clear();
             m.open_connect_dialog(None, window, cx);
         });
         vcx.run_until_parked();
-        vcx.update(|window, cx| {
-            assert!(
-                window.has_active_dialog(cx),
-                "关掉再开就没开出来（够不着的守卫？），下面的 None 断言会假绿"
-            );
-        });
         assert_eq!(
             main.read_with(vcx, |m, _| m.io.dlg_group_id.clone()),
             None,
-            "不带上下文进来的新建连接必须默认未分组（None）。"
+            "没有任何分组时，新建连接必须未分组。"
+        );
+
+        // ② 恰好一个分组 → 落到它（这就是 `default` 的行为）
+        main.update_in(vcx, |m, window, cx| {
+            m.close_dialog_ui(window, cx);
+        });
+        vcx.run_until_parked();
+        let only = main.update_in(vcx, |m, window, cx| {
+            m.conn_store
+                .groups
+                .push(rustshell_core::connections::ConnectionGroup::new("default"));
+            let id = m.conn_store.groups[0].id.clone();
+            m.open_connect_dialog(None, window, cx);
+            id
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            main.read_with(vcx, |m, _| m.io.dlg_group_id.clone()),
+            Some(only.clone()),
+            "库里只有一个分组时，新建连接应落到它（默认 default 文件夹的唯一作用）。"
+        );
+
+        // ③ 两个及以上 → 不猜，回到未分组
+        main.update_in(vcx, |m, window, cx| {
+            m.close_dialog_ui(window, cx);
+        });
+        vcx.run_until_parked();
+        main.update_in(vcx, |m, window, cx| {
+            m.conn_store
+                .groups
+                .push(rustshell_core::connections::ConnectionGroup::new("另一个组"));
+            m.open_connect_dialog(None, window, cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            main.read_with(vcx, |m, _| m.io.dlg_group_id.clone()),
+            None,
+            "多分组下自动归属就是猜，猜错比不猜更烦 —— 必须保持未分组。"
         );
     }
 
@@ -3361,6 +3611,197 @@ pub(in crate::main_view) mod tests {
             vcx.debug_bounds("dlg-connect-form").is_some()
                 && vcx.debug_bounds("dlg-connect-advanced").is_none(),
             "编辑连接也必须是同一张简单表单（新建与编辑共用 `render_dialog`）"
+        );
+    }
+
+    /// 2026-10-21 用户要求「增加认证方式，默认密码认证，主要目的是减少界面内容」：
+    /// 密码框与私钥行**互斥在场**，且默认只有密码认证。
+    ///
+    /// 量取钩子（`dlg-pass-row` / `dlg-key-row`）而不是数源码里的 `.child(..)`：
+    /// 只有真渲染一次才知道那一支到底进没进树。
+    #[gpui::test]
+    fn auth_mode_swaps_the_credential_field(cx: &mut gpui::TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = build_main(cx);
+
+        main.update_in(vcx, |m, window, cx| m.open_connect_dialog(None, window, cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|window, cx| window.has_active_dialog(cx)),
+            "新建连接对话框没打开，本用例会退化成空断言"
+        );
+
+        // 默认：密码认证 —— 私钥那一行不该在场
+        assert_eq!(
+            main.read_with(vcx, |m, _| m.io.dlg_auth),
+            AuthMode::Password,
+            "新建连接默认必须是密码认证"
+        );
+        assert!(
+            vcx.debug_bounds("dlg-pass-row").is_some(),
+            "密码认证下密码框必须在场"
+        );
+        assert!(
+            vcx.debug_bounds("dlg-key-row").is_none(),
+            "密码认证下不该出现私钥行 —— 「减少界面内容」要的就是它不占地方"
+        );
+        assert!(
+            vcx.debug_bounds("dlg-connect-credentials").is_some(),
+            "凭据卡片（用户名 + 认证方式）不该被分支漏掉"
+        );
+
+        // 切到私钥认证：两行的在场状态必须对调
+        main.update_in(vcx, |m, _w, cx| {
+            m.io.dlg_auth = AuthMode::Key;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("dlg-key-row").is_some(),
+            "切到私钥认证后私钥行必须出现"
+        );
+        assert!(
+            vcx.debug_bounds("dlg-pass-row").is_none(),
+            "切到私钥认证后密码框必须让位"
+        );
+    }
+
+    /// 认证方式的落盘语义：**只留被选中那一侧**，另一侧清空。
+    ///
+    /// 这条错法是静默的 —— 两边都留着照样连得上，只是走的不是用户选的那条路。
+    #[test]
+    fn credential_sides_keeps_only_the_selected_one() {
+        assert_eq!(
+            credential_sides(AuthMode::Password, "pw", "/home/u/.ssh/id_ed25519"),
+            (Some("pw".to_string()), None),
+            "密码认证必须清掉私钥路径（否则用户以为自己在用钥匙）"
+        );
+        assert_eq!(
+            credential_sides(AuthMode::Key, "pw", "/home/u/.ssh/id_ed25519"),
+            (None, Some("/home/u/.ssh/id_ed25519".to_string())),
+            "私钥认证必须清掉口令（否则 core 的「密码优先」会拿它去登录）"
+        );
+        assert_eq!(
+            credential_sides(AuthMode::Password, "", "/k"),
+            (None, None),
+            "空口令就是空口令，不要凭空捏一个 Some(\"\")"
+        );
+    }
+
+    /// 编辑既有连接时的认证方式反推：有私钥且没有口令 = 私钥认证。
+    ///
+    /// 反推错了后果很重：对话框会显示「密码认证」，用户一保存就把钥匙路径清掉了。
+    #[test]
+    fn auth_mode_is_recovered_from_the_stored_credentials() {
+        let mut p = ConnectionProfile::new("k", "h", "u");
+        assert_eq!(
+            AuthMode::of_profile(&p),
+            AuthMode::Password,
+            "什么都没有时是默认的密码认证"
+        );
+        p.key_path = Some("/k".into());
+        assert_eq!(
+            AuthMode::of_profile(&p),
+            AuthMode::Key,
+            "只有私钥 = 私钥认证（否则一编辑一保存就把钥匙丢了）"
+        );
+        p.password = Some("pw".into());
+        assert_eq!(
+            AuthMode::of_profile(&p),
+            AuthMode::Password,
+            "两者都有时按 core 的实际顺序显示为密码认证（密码确实会先被试）"
+        );
+    }
+
+    /// 2026-10-21 用户要求「测试连接功能移除无人值守之类的限制」：信任框必须能
+    /// **叠在业务对话框之上**。
+    ///
+    /// 「测试连接」正是这个组合：连接对话框开着，后台线程卡在主机密钥校验上等答复。
+    /// 旧实现里 `present_trust_dialog` 有 `has_active_dialog` 守卫，会把这一层直接
+    /// 挡掉（而 `trust_dialog_open` 已置位 ⇒ 再也不重试），结果是连接线程白等满
+    /// 120s，用户什么也看不到。判据是几何：信任框的 body 量得到。
+    #[gpui::test]
+    fn the_trust_dialog_stacks_on_top_of_the_connect_dialog(cx: &mut gpui::TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = build_main(cx);
+
+        // 业务层：新建连接对话框（测试连接就在它里面）
+        main.update_in(vcx, |m, window, cx| m.open_connect_dialog(None, window, cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|window, cx| window.has_active_dialog(cx)),
+            "前提丢了：连接对话框没开出来"
+        );
+
+        // 模拟连接线程送来一条「未知主机」信任请求，并走上屏路径。
+        //
+        // 这里直接调 `present_trust_dialog`（而不是等 `render` 的 `on_next_frame`
+        // 触发）：本用例要守的是「业务对话框开着时这一层还叠不叠得上来」——
+        // 旧实现的 `has_active_dialog` 守卫就在这个函数里，直接调用同样会被挡。
+        let (tx, _rx) = flume::bounded(1);
+        main.update_in(vcx, |m, window, cx| {
+            m.conn_ui.pending_trust = Some(rustshell_core::ssh::ServerKeyPrompt {
+                host: "10.0.0.1".into(),
+                port: 22,
+                fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                key_type: "ssh-ed25519".into(),
+                kind: rustshell_core::ssh::ServerKeyChange::FirstSeen,
+                reply: tx,
+            });
+            m.present_trust_dialog(window, cx);
+        });
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("dlg-trust-body").is_some(),
+            "信任框没叠上来 —— 连接测试遇到未知主机就只能干等（用户要求移除的限制）。"
+        );
+        // 业务对话框仍在栈里：关掉信任框之后还要回到它
+        assert!(
+            vcx.debug_bounds("dlg-connect-form").is_some(),
+            "叠信任框时把下面的连接对话框挤掉了 —— 关掉信任框就回不去了。"
+        );
+    }
+
+    /// 2026-10-21 用户要求「新增连接，主机字段，默认：localhost」。
+    ///
+    /// 两条一起守：① 新建时主机是 `localhost`、端口仍是 22；
+    /// ② **重开一次**不能把上一条敲过的主机带出来（默认值必须是「每次新建的起点」，
+    /// 不是「上次留下什么就是什么」—— 后者正是清空逻辑要防的那种串味）。
+    #[gpui::test]
+    fn new_connection_defaults_the_host_to_localhost(cx: &mut gpui::TestAppContext) {
+        let (main, vcx) = build_main(cx);
+
+        main.update_in(vcx, |m, window, cx| m.open_connect_dialog(None, window, cx));
+        vcx.run_until_parked();
+
+        let read = |vcx: &mut gpui::VisualTestContext| {
+            main.read_with(vcx, |m, cx| {
+                (
+                    m.io.dlg_host.read(cx).value().to_string(),
+                    m.io.dlg_port.read(cx).value().to_string(),
+                )
+            })
+        };
+        assert_eq!(
+            read(vcx),
+            ("localhost".to_string(), "22".to_string()),
+            "新建连接的主机默认值必须是 localhost（端口仍默认 22）"
+        );
+
+        // 改成别的主机 → 关掉 → 再新建：必须回到 localhost，而不是留着 10.0.0.1
+        main.update_in(vcx, |m, window, cx| {
+            m.io.dlg_host
+                .update(cx, |s, cx| s.set_value("10.0.0.1", window, cx));
+            m.close_dialog_ui(window, cx);
+        });
+        vcx.run_until_parked();
+        main.update_in(vcx, |m, window, cx| m.open_connect_dialog(None, window, cx));
+        vcx.run_until_parked();
+        assert_eq!(
+            read(vcx).0,
+            "localhost",
+            "重开新建框时主机又带出了上一条的值 —— 默认值应当每次都重新落上"
         );
     }
 

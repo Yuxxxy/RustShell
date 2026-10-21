@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod cmdhistory;
 pub mod command;
 pub mod completion;
+pub mod config_dir;
 pub mod configio;
 pub mod connections;
 pub mod events;

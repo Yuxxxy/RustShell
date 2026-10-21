@@ -411,14 +411,17 @@ impl ConnectionStore {
         Ok(())
     }
 
-    /// 首次启动种子数据
+    /// 首次启动种子数据。
+    ///
+    /// 2026-10-21 用户要求「初始化默认只建一个文件夹，名称为 default」：原先是
+    /// 「生产组 + 开发组」两个空文件夹 —— 用户打开应用先得删掉两个自己没建的组。
+    /// 只留一个 `default` 作为新连接的默认落点（UI 侧「库里只有一个分组时自动归属」，
+    /// 见 `MainView::open_connect_dialog`），名字用小写是刻意的：它是个占位容器，
+    /// 不是「生产环境」这种需要人改名的东西。
     fn with_seed() -> Self {
         Self {
             profiles: vec![],
-            groups: vec![
-                ConnectionGroup::new("生产组"),
-                ConnectionGroup::new("开发组"),
-            ],
+            groups: vec![ConnectionGroup::new("default")],
             schema_version: CONNECTIONS_SCHEMA_VERSION,
         }
     }

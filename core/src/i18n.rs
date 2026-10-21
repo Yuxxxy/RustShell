@@ -112,14 +112,15 @@ fn translate(zh: &'static str) -> &'static str {
         "主机与用户名为必填项" => "Host and username are required",
         "请先填写密码或私钥" => "Enter a password or a private key first",
         "测试线程异常结束" => "The connection test ended unexpectedly",
-        "私钥" => "Private key",
-        "私钥路径，如 ~/.ssh/id_ed25519" => "Private key path, e.g. ~/.ssh/id_ed25519",
+        // 认证方式（2026-10-21：改为单选框，密码与私钥不再同时占位）
+        "认证方式" => "Authentication",
+        "密码认证" => "Password",
+        "私钥认证" => "Private key",
+        "私钥文件" => "Private key file",
+        "请选择私钥文件" => "Select a private key file first",
         "选择私钥文件" => "Select a private key file",
         "选择…" => "Choose…",
         "清除" => "Clear",
-        "填了密码就用密码；密码留空时用私钥登录" => {
-            "Password wins when set; the private key is used only when it is blank"
-        }
         "字体名称不合法（过长或含控制字符）" => {
             "Invalid font name (too long or contains control chars)"
         }
@@ -232,9 +233,6 @@ fn translate(zh: &'static str) -> &'static str {
         "密码" => "Password",
         "分组" => "Group",
         "备注" => "Notes",
-        "备注（可选，如用途、跳板机、到期日）" => {
-            "Notes (optional: purpose, jump host, expiry)"
-        }
 
         // 会话类型（原状态栏段；状态栏已于 2026-09-17 移除，「本地」仍被终端面板使用）
         "本地" => "Local",
@@ -256,7 +254,6 @@ fn translate(zh: &'static str) -> &'static str {
         "关闭当前标签" => "Close Current Tab",
         "下一个标签" => "Next Tab",
         "上一个标签" => "Previous Tab",
-        "切换侧栏" => "Toggle Sidebar",
         "终端全屏" => "Terminal Fullscreen",
         "退出终端全屏" => "Exit Terminal Fullscreen",
         "命令面板" => "Command Palette",
@@ -407,7 +404,7 @@ fn translate(zh: &'static str) -> &'static str {
         // 一并删除 —— g2 护栏会盯着「表里有、代码里没人引用」，留着就是红。
 
         // 导入 / 导出连接（设置页「连接管理」）
-        "搜索连接…" => "Search connections…",
+        "搜索…" => "Search…",
         "未找到匹配的连接" => "No matching connections",
         "导出文件写入失败" => "Failed to write the export file",
         "读取导入文件失败" => "Failed to read the import file",
@@ -463,16 +460,22 @@ fn translate(zh: &'static str) -> &'static str {
             "Once trusted, this key is whitelisted. If the fingerprint differs from the one \
              published by your server administrator, do not trust it."
         }
+        // 主机密钥**变更**（容器重建 / 重装系统 / 疑似中间人）
+        "主机密钥已变更：请先核对指纹" => "Host Key Changed: Verify the Fingerprint",
+        "取消连接" => "Disconnect",
+        "更新密钥并连接" => "Update Key & Connect",
+        "确认后将以新密钥替换旧记录并继续连接。若无法确认这次变化来自你自己（重建容器 / 重装系统 / 换机器），请取消 —— 这可能是中间人攻击。" => {
+            "Confirming replaces the old record with the new key and continues. If you cannot \
+             explain the change (rebuilt container, reinstalled system, new machine), cancel — \
+             this may be a man-in-the-middle attack."
+        }
 
         // 表单占位符 / 标签 / 诊断
         "API Key（加密保存，不回显）" => "API Key (encrypted, never shown)",
-        "主机名 / IP" => "Hostname / IP",
-        "名称，如 prod-01" => "Name, e.g. prod-01",
         "命令名称，如 build" => "Command name, e.g. build",
         "API 端点，如 https://api.deepseek.com/v1" => {
             "API endpoint, e.g. https://api.deepseek.com/v1"
         }
-        "密码（留空则连接时询问）" => "Password (empty = prompt on connect)",
         "按下新组合键…" => "Press the new shortcut…",
         "搜索终端…" => "Search terminal…",
         "新分组" => "New Group",
@@ -554,10 +557,6 @@ fn translate(zh: &'static str) -> &'static str {
         "该连接已不存在" => "That connection no longer exists",
         "请先在连接树中选中一个连接" => "Select a connection in the tree first",
         "选中的连接已不存在" => "The selected connection no longer exists",
-        // 连接对话框：口令一律记住（「记住密码」开关已取消），但「已加密落盘」必须让用户看见
-        "密码将使用系统凭据加密保存，仅本机可解" => {
-            "The password is saved encrypted with system credentials; only this device can decrypt it"
-        }
         "命令内容，如 make -j4（支持多行）" => {
             "Command, e.g. make -j4 (multi-line supported)"
         }

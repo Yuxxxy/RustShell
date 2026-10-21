@@ -53,8 +53,6 @@ pub struct TerminalPaneConfig {
     /// T4-E1：PTY 输出字节的源编码 key（`"utf-8"`= 直通；其他经后台转码）。
     pub encoding: String,
     /// 终端默认底色的 alpha（1.0 = 不透明）。
-    /// 启用窗口背景图时取`Settings::panel_alpha()`，让图片在终端区域也能透出；
-    /// 未启用背景图时恒为 1.0，与改动前逐像素一致（不做无意义合成）。
     pub background_alpha: f32,
     /// 光标闪烁总开关（设置项）。关闭后常亮，定时器不启动。
     pub cursor_blink: bool,

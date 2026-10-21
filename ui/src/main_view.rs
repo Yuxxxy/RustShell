@@ -25,7 +25,7 @@ mod settings_panel;
 // 「免确认白名单」配置框（设置 - Agent 页的「配置」按钮，2026-09-22 起由内联
 // 列表改为弹窗）。弹窗要在设置面板之上再叠一层，故独立成模块单独走 `open_dialog`。
 mod whitelist_dialog;
-// 标签分屏（向右/向下拆分、取消分屏）与窗口背景图缓存。
+// 标签分屏（向右/向下拆分、取消分屏）。
 // 决策逻辑在 core::split（纯函数），本模块负责落到会话与视图上。
 mod split_actions;
 // 命令补全浮层（C-1）：Ctrl+Space 唤起、边打字边过滤、↑↓ 选、Tab/Enter 采纳。
@@ -92,7 +92,7 @@ mod tab_model;
 //
 // 改写由 `scripts/coverage/split_mainview_fields.py` 完成（可重跑，带覆盖完整性断言）。
 mod ui_state;
-pub use ui_state::{AiUiState, ConnUiState, DialogIoState, PanelUiState, TabsState};
+pub use ui_state::{AiUiState, AuthMode, ConnUiState, DialogIoState, PanelUiState, TabsState};
 // 公开面：`TabEntry` 等被 `files_panel.rs` 等模块按 `main_view::TabEntry` 引用；
 // `DialogMode` / `chat_title_from` / `take_due_retries` / `display_tab_title`
 // 原本就是 crate 内可见（`pub(crate)` 或私有），不进公开 API。
@@ -108,8 +108,8 @@ use std::time::Duration;
 
 use gpui::{
     div, px, App, AppContext as _, Context, ElementId, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window,
 };
 use gpui_component::{
     h_flex,
@@ -135,7 +135,6 @@ gpui::actions!(
     [
         NewTab,
         CloseTab,
-        ToggleSidebar,
         TabNext,
         TabPrev,
         OpenSettings,
@@ -978,8 +977,7 @@ fn main_split_id(panel: PanelKind, sidebar_visible: bool, ai_visible: bool) -> E
 
 /// 内容区的「连接中 / 连接失败 / 已断开」占位卡片。
 ///
-/// `bg` 由调用方经 `panel_bg` 算好传入：启用背景图时半透明透出背景图
-/// （2026-09-18 反馈「背景图只替换了连接栏」—— 此前这里是硬编码不透明 `bg_base`）。
+/// `bg` 由调用方经 `crate::theme::surface` 算好传入：面板底色取主题纯色（alpha=1.0）。
 fn render_connect_placeholder(
     t: &rustshell_core::theme::ThemeTokens,
     bg: gpui::Hsla,
@@ -1130,41 +1128,28 @@ impl MainView {
         cx.set_global(hub);
 
         // ── 2. 连接对话框 / 代理 / 快捷指令 的输入框实体（`DialogIoState` 的 `dlg_*` / `quick_*` 部分）。
-        let dlg_name = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rustshell_core::i18n::t("名称，如 prod-01"))
-        });
-        let dlg_host = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rustshell_core::i18n::t("主机名 / IP"))
-        });
-        let dlg_port = cx.new(|cx| InputState::new(window, cx).placeholder("22"));
-        let dlg_user =
-            cx.new(|cx| InputState::new(window, cx).placeholder(rustshell_core::i18n::t("用户名")));
+        //
+        // 2026-10-21 用户要求「移除字段的 placeholder」：连接表单这几只框一律不带
+        // 占位符 —— 每只框上方已经有标签（名称 / 主机 / 端口 / 用户名……），
+        // 再垫一句灰色示例字只是重复，还把「已经填了值」和「只显示示例」的对比搞弱。
+        let dlg_name = cx.new(|cx| InputState::new(window, cx));
+        let dlg_host = cx.new(|cx| InputState::new(window, cx));
+        let dlg_port = cx.new(|cx| InputState::new(window, cx));
+        let dlg_user = cx.new(|cx| InputState::new(window, cx));
         // 口令输入：**掩码显示**（2026-09-18 运行反馈「连接-编辑，密码需要 *** 展示」）。
         // `masked(true)` 只影响绘制，`value()` 仍回真实文本（见 gpui-base
         // `InputBaseState::value`：直接返回 `self.text`），所以「编辑时回填原口令、
         // 留空即不改口令」这条既有语义一字不变；变化只是编辑对话框不再把口令
         // 明文摊在屏幕上（此前打开编辑框 = 屏幕共享时口令被读走）。
-        let dlg_pass = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rustshell_core::i18n::t("密码（留空则连接时询问）"))
-                .masked(true)
-        });
+        let dlg_pass = cx.new(|cx| InputState::new(window, cx).masked(true));
         // 私钥路径（明文，不是口令）：`~/.ssh/id_ed25519` 这类路径要能一眼看全，
         // 掩码显示只会让人没法确认自己选的是哪把钥匙。
-        let dlg_key_path = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rustshell_core::i18n::t("私钥路径，如 ~/.ssh/id_ed25519"))
-        });
+        let dlg_key_path = cx.new(|cx| InputState::new(window, cx));
         // 备注：官方多行 Textarea（`TextareaState` 自带的模式就是「多行纯文本」，
-        // 不需要额外开关）。初值 3 行、随内容长到 6 行 —— 备注常是一小段话，
-        // 固定 3 行会让长备注只能滚动着看，自动生长则不至于把对话框撑爆。
-        let dlg_notes = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder(rustshell_core::i18n::t(
-                    "备注（可选，如用途、跳板机、到期日）",
-                ))
-                .auto_grow(3, 6)
-        });
+        // 不需要额外开关）。2026-10-21 用户要求「默认两行」：初值 2 行、随内容长到
+        // 6 行 —— 备注是可选项，占三行会把「凭据」那一块推得离视口底部太近。
+        // 占位符同样撤掉（与其余字段一致，标签已经在上面）。
+        let dlg_notes = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 6));
         // 代理（F-10）的四个输入框：与上面那批 dlg_* 同一条创建管线。
         // 口令掩码显示（与连接口令同一个处理）。
         let dlg_proxy_host = cx.new(|cx| InputState::new(window, cx).placeholder("127.0.0.1"));
@@ -1196,7 +1181,7 @@ impl MainView {
         });
         // 快捷命令栏（v3）：展开态搜索框与分组行内重命名输入框
         let conn_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rustshell_core::i18n::t("搜索连接…"))
+            InputState::new(window, cx).placeholder(rustshell_core::i18n::t("搜索…"))
         });
         let quick_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(rustshell_core::i18n::t("搜索命令…"))
@@ -1654,7 +1639,6 @@ impl MainView {
                 sidebar_panel,
                 view_epoch: ViewEpoch::default(),
                 sidebar_collapsed: false,
-                bg_source: None,
                 metrics_interval,
                 palette_state: None,
                 pending_palette: false,
@@ -1748,6 +1732,7 @@ impl MainView {
                 dlg_port,
                 dlg_user,
                 dlg_pass,
+                dlg_auth: AuthMode::Password,
                 dlg_notes,
                 dlg_forwards: Vec::new(),
                 dlg_session_log: None,
@@ -1826,9 +1811,6 @@ impl MainView {
         for g in view.conn_store.groups.clone() {
             view.conn_ui.expanded_groups.insert(g.id);
         }
-        // 背景图缓存预热：渲染路径只读缓存，文件系统检查集中在这里
-        // （以及设置面板打开/切换背景/手动刷新时）。
-        view.refresh_background();
 
         // F-9 会话恢复：2026-09-29 起**启动不再自动恢复、也不再自动弹框**
         // （用户要求「取消恢复上次会话功能」）。这里只调 `layout_startup` 读一眼
@@ -2464,7 +2446,7 @@ impl Render for MainView {
             .id("rustshell-root")
             .relative()
             .size_full()
-            .bg(self.panel_bg(t.bg_base))
+            .bg(crate::theme::surface(1.0, t.bg_base))
             .text_color(hex(t.fg_primary))
             .text_size(px(13.))
             .on_action(cx.listener(|m, _: &NewTab, _w, cx| {
@@ -2474,10 +2456,6 @@ impl Render for MainView {
                 if let Some(id) = m.tabs_state.active.clone() {
                     m.close_tab_by_session(&id, cx);
                 }
-            }))
-            .on_action(cx.listener(|m, _: &ToggleSidebar, _w, cx| {
-                m.panel_ui.sidebar_collapsed = !m.panel_ui.sidebar_collapsed;
-                cx.notify();
             }))
             .on_action(cx.listener(|m, _: &OpenSettings, w, cx| {
                 m.open_settings(w, cx);
@@ -2565,26 +2543,6 @@ impl Render for MainView {
                 m.rename_selected_connection(w, cx);
             }));
 
-        // 窗口背景图：绝对定位铺满，作为第一个子节点 —— 后续所有面板盖在其上。
-        // `Panel 底色 * panel_opacity` 透出这张图（见`MainView::panel_bg`）。
-        // 图源路径已由`refresh_background`校验过（渲染路径不做文件系统 IO）；
-        // 覆盖层用纯黑按`background_dim`配 alpha，避免亮图把面板文字冲淡。
-        if let Some(bg) = self.panel_ui.bg_source.clone() {
-            root = root
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(gpui::img(bg).object_fit(ObjectFit::Cover)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(gpui::rgba(self.settings.clamped_background_dim())),
-                );
-        }
-
         // 过程提示条（本地 Shell 启动中）：accent 底色，随启动完成自动消失
         if self.conn_ui.connect_error.is_none() {
             if let Some(notice) = self.conn_ui.connect_notice.clone() {
@@ -2653,8 +2611,7 @@ impl Render for MainView {
             );
         }
 
-        // 标题栏。`TitleBar` 官方默认取主题 bar 底色（不透明），会盖住背景图顶部；
-        // 改经 `panel_bg` 透出（2026-09-18 反馈「背景图只替换了连接栏」）。
+        // 标题栏。`TitleBar` 官方默认取主题 bar 底色（不透明），盖住主区域顶部。
         // 高度收一档见 `TITLE_BAR_HEIGHT`；品牌名后补版本号（2026-09-18 反馈
         // 「增加版本显示」）——版本号取 `core::APP_VERSION`（= 工作区 Cargo.toml 的
         // `workspace.package.version`），不写死字面量，发版时不会忘记同步。
@@ -2673,7 +2630,7 @@ impl Render for MainView {
                 // 宽度归零后 `is_border_visible()` 直接跳过这条边的绘制（不是画成透明）。
                 // 本应用标题栏底色与下方内容同为 `bg_base`，分界交给留白即可。
                 .border_b_0()
-                .bg(self.panel_bg(t.bg_base))
+.bg(crate::theme::surface(1.0, t.bg_base))
                 // 标题行**整体**不参与全局字号收档（用户要求「标题行不用动」）。
                 // 官方 `TitleBar` 的子节点（品牌名、右上角三枚控制图标）都按**继承**的
                 // 字号绘制 —— `Icon::render` 取的就是 `window.text_style().font_size`
@@ -2738,11 +2695,10 @@ impl Render for MainView {
             let ai_w_px = px(self.settings.clamped_ai_chat_width());
             let ai_min_w = px(rustshell_core::settings::AI_CHAT_WIDTH_MIN);
             let ai_max_w = px(rustshell_core::settings::AI_CHAT_WIDTH_MAX);
-            // 面板底色统一经`panel_bg`取：未启用背景图时 alpha = 1.0，与改动前
-            // 逐像素一致；启用后按`panel_opacity`透出窗口背景图。底色只画在卡片壳上，
-            // 内层面板不再自带背景（否则 alpha < 1 时会叠两遍，透出度与设置不符）。
-            let sidebar_bg = self.panel_bg(t.bg_elevated);
-            let pane_bg = self.panel_bg(t.bg_base);
+            // 面板底色统一取主题纯色（alpha = 1.0）。底色只画在卡片壳上，
+            // 内层面板不再自带背景。
+            let sidebar_bg = crate::theme::surface(1.0, t.bg_elevated);
+            let pane_bg = crate::theme::surface(1.0, t.bg_base);
             let card_border = hex(t.border_subtle);
 
             // 终端列内容（Tab 栏 + 终端 + 快捷命令栏 + 无会话提示）。

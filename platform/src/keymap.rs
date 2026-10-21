@@ -38,7 +38,6 @@ use std::path::Path;
 pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("NewTab", "mod-t"),
     ("CloseTab", "mod-w"),
-    ("ToggleSidebar", "mod-b"),
     ("TabNext", "mod-tab"),
     ("TabPrev", "mod-shift-tab"),
     ("OpenSettings", "mod-,"),

@@ -103,12 +103,6 @@ pub struct Settings {
     pub terminal_custom_palette: Option<CustomPalette>,
     /// 快捷命令栏是否展开：`false`= 40px 折叠胶囊条，`true`= 280px 展开分组列表。
     pub quick_bar_expanded: bool,
-    /// 窗口背景图文件名（限定在配置目录的 backgrounds 子目录内）；`None`= 纯色背景。
-    pub background_image: Option<String>,
-    /// 背景图之上的遮罩浓度百分比 0–70：越大文字越清楚。
-    pub background_dim: u32,
-    /// 面板不透明度百分比 60–100：开启背景图时生效，越小背景图透出越多。
-    pub panel_opacity: u32,
     /// 光标闪烁总开关。关闭后光标常亮（不启动闪烁定时器）。
     /// 注意这是**用户侧**开关，终端还能用 DECSCUSR / `ESC[?12h|l` 单独要求，
     /// 两者取「与」。
@@ -465,9 +459,6 @@ impl Default for Settings {
             terminal_color_scheme: SCHEME_FOLLOW_THEME.to_string(),
             terminal_custom_palette: None,
             quick_bar_expanded: true,
-            background_image: None,
-            background_dim: DEFAULT_BACKGROUND_DIM,
-            panel_opacity: DEFAULT_PANEL_OPACITY,
             terminal_cursor_blink: true,
             terminal_cursor_blink_ms: DEFAULT_CURSOR_BLINK_MS,
             terminal_cursor_style: CursorStyle::default(),
@@ -481,17 +472,6 @@ impl Default for Settings {
         }
     }
 }
-
-/// 背景遮罩浓度的默认值与区间（百分比）。
-pub const DEFAULT_BACKGROUND_DIM: u32 = 30;
-pub const BACKGROUND_DIM_MIN: u32 = 0;
-pub const BACKGROUND_DIM_MAX: u32 = 70;
-/// 面板不透明度的默认值与区间（百分比）。
-pub const DEFAULT_PANEL_OPACITY: u32 = 85;
-pub const PANEL_OPACITY_MIN: u32 = 60;
-pub const PANEL_OPACITY_MAX: u32 = 100;
-/// 背景图片所在子目录（相对配置目录）。
-pub const BACKGROUND_DIR_NAME: &str = "backgrounds";
 
 /// 粘贴保护阈值的默认值与区间（F-5）。
 ///
@@ -590,12 +570,6 @@ impl Settings {
             .clamp(AI_CHAT_WIDTH_MIN, AI_CHAT_WIDTH_MAX)
     }
 
-    /// 背景遮罩浓度（钳制到合法区间；手改 settings.json 也不会渲染出全黑/无遮罩）
-    pub fn clamped_background_dim(&self) -> u32 {
-        self.background_dim
-            .clamp(BACKGROUND_DIM_MIN, BACKGROUND_DIM_MAX)
-    }
-
     /// 终端行高倍数（钳制到合法区间；手改 settings.json 也不会把字形切掉或撑出大片空白）
     pub fn clamped_line_height(&self) -> f32 {
         if !self.terminal_line_height.is_finite() {
@@ -603,12 +577,6 @@ impl Settings {
         }
         self.terminal_line_height
             .clamp(TERMINAL_LINE_HEIGHT_MIN, TERMINAL_LINE_HEIGHT_MAX)
-    }
-
-    /// 面板不透明度（钳制到合法区间；100 = 完全不透明）
-    pub fn clamped_panel_opacity(&self) -> u32 {
-        self.panel_opacity
-            .clamp(PANEL_OPACITY_MIN, PANEL_OPACITY_MAX)
     }
 
     /// SFTP 并发传输数（钳制到合法区间；手改 settings.json 也拉不出 0 或 99）
@@ -630,14 +598,6 @@ impl Settings {
         unprotect: impl Fn(&str) -> Option<String>,
     ) -> Option<crate::proxy::ProxyConfig> {
         self.proxy.as_ref().map(|p| p.with_plaintext(unprotect))
-    }
-
-    /// 面板底色的 alpha 系数：未启用背景图时恒为 1（走原色，不做无意义合成）。
-    pub fn panel_alpha(&self) -> f32 {
-        if self.background_image.is_none() {
-            return 1.0;
-        }
-        self.clamped_panel_opacity() as f32 / 100.0
     }
 
     pub fn load(path: &PathBuf) -> Self {
@@ -869,29 +829,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.resolve_terminal_palette(), TerminalPalette::dark());
-    }
-
-    /// 背景相关数值的钳制与 alpha 派生：手改 JSON 越界值不得渲染出全黑/无遮罩。
-    #[test]
-    fn background_values_clamped() {
-        let mut s = Settings {
-            background_image: Some("bg.png".into()),
-            background_dim: 999,
-            panel_opacity: 0,
-            ..Default::default()
-        };
-        assert_eq!(s.clamped_background_dim(), BACKGROUND_DIM_MAX);
-        assert_eq!(s.clamped_panel_opacity(), PANEL_OPACITY_MIN);
-        assert!((s.panel_alpha() - 0.6).abs() < 1e-6);
-
-        s.panel_opacity = 1000;
-        assert_eq!(s.clamped_panel_opacity(), PANEL_OPACITY_MAX);
-        assert_eq!(s.panel_alpha(), 1.0);
-
-        // 关掉背景图 到 alpha 恒为 1（与有无越界值无关）
-        s.background_image = None;
-        s.panel_opacity = 10;
-        assert_eq!(s.panel_alpha(), 1.0);
     }
 
     /// 侧栏宽度：**按面板分别记**，互不干扰，且都过钳制。

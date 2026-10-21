@@ -3,7 +3,7 @@
 use rustshell_core::connections::ConnectionProfile;
 use rustshell_core::sftp::{new_transfer_id, sftp_events, SftpCmd, SftpEvent};
 use rustshell_core::sftp_resume::{resume_store, ResumeMark, TransferDir};
-use rustshell_core::ssh::{connect_in_background, trust_requests, ConnectResult};
+use rustshell_core::ssh::{connect_in_background, trust_requests, ConnectResult, ServerKeyChange};
 use std::time::Duration;
 
 fn docker_enabled() -> bool {
@@ -63,7 +63,7 @@ fn connect_trusted(p: &ConnectionProfile, max_concurrent: u32) -> ConnectResult 
     match trust_requests().1.recv_timeout(Duration::from_secs(5)) {
         Err(flume::RecvTimeoutError::Timeout) => {}
         Ok(prompt) => panic!(
-            "不该弹信任请求（已信任与密钥变更都是硬路径）：{}",
+            "不该弹信任询问（这条连接的主机密钥与记录一致）：{}",
             prompt.fingerprint
         ),
         Err(e) => panic!("信任通道异常：{e}"),
@@ -71,6 +71,37 @@ fn connect_trusted(p: &ConnectionProfile, max_concurrent: u32) -> ConnectResult 
     let res = rx.recv_timeout(Duration::from_secs(30)).expect("连接超时");
     handle.join().expect("连接线程 panic");
     res
+}
+
+/// 连接并**捕获一次**信任询问：返回 (询问的 (新指纹, 成因), 连接结果)。
+///
+/// 与 `connect_with_trust` 的区别是它把 `kind` 也带出来 —— 「密钥变更」这条路径
+/// 的关键正是「问的是哪一种」，只看连不连得上会把两种询问混为一谈。
+fn connect_capturing_prompt(
+    p: &ConnectionProfile,
+    trust: bool,
+) -> (Option<(String, ServerKeyChange)>, ConnectResult) {
+    let (tx, rx) = flume::unbounded();
+    let handle = connect_in_background(
+        p.clone(),
+        Duration::from_secs(20),
+        None,
+        1,
+        None,
+        tx,
+    );
+    let prompt = trust_requests()
+        .1
+        .recv_timeout(Duration::from_secs(20))
+        .ok()
+        .map(|pr| {
+            let captured = (pr.fingerprint.clone(), pr.kind.clone());
+            let _ = pr.reply.send(trust);
+            captured
+        });
+    let res = rx.recv_timeout(Duration::from_secs(30)).expect("连接超时");
+    handle.join().expect("连接线程 panic");
+    (prompt, res)
 }
 
 #[test]
@@ -100,13 +131,56 @@ fn docker_ssh_e2e_trust_and_reconnect() {
     let res = connect_trusted(&profile(), 1);
     assert!(res.is_ok(), "重连应成功且无询问：{:?}", res.err());
 
-    // 3) 密钥变更（known_hosts 被替换为另一个合法但不同的 ed25519 公钥） 到 硬拒绝
-    let bogus = "[127.0.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAWyypbD1OxgqHPphLSN8o1fo71hm8Qg7jtKgGaTmw8l\n";
-    std::fs::write(&kh, bogus).expect("写入伪造 known_hosts");
+    // 3) 密钥变更：known_hosts 里的记录换成另一把合法但**不同**的 ed25519。
+    //
+    // 这正是「docker 容器被删了重建」的形态：镜像里的 sshd host key 没挂持久卷，
+    // 重建即重新生成 —— 账号口令都没变，客户端却撞上 KeyChanged。
+    // 改造前这里**直接硬拒**（russh 只回一句 `Unknown server key`，界面上没有任何
+    // 可操作入口）；现在必须先弹「已变更」询问，由人核对新旧指纹后决定。
+    let bogus_key = "AAAAC3NzaC1lZDI1NTE5AAAAIAWyypbD1OxgqHPphLSN8o1fo71hm8Qg7jtKgGaTmw8l";
+    std::fs::write(
+        &kh,
+        format!("[127.0.0.1]:2222 ssh-ed25519 {bogus_key}\n"),
+    )
+    .expect("写入伪造 known_hosts");
+
+    // 3a) 取消 → 不建立连接，且不得偷偷改写记录
+    let (prompt, res) = connect_capturing_prompt(&profile(), false);
+    let (new_fp, kind) = prompt.expect("密钥变更必须弹询问，而不是硬拒");
+    let (old_fp, old_type) = match &kind {
+        ServerKeyChange::Changed {
+            old_fingerprint,
+            old_key_type,
+        } => (old_fingerprint.clone(), old_key_type.clone()),
+        other => panic!("询问成因应为 Changed（密钥变更），实际 {other:?}"),
+    };
+    assert_eq!(old_type, "ssh-ed25519");
+    assert!(!old_fp.is_empty(), "变更询问必须带上旧指纹供核对");
+    assert_ne!(old_fp, new_fp, "旧指纹与服务器本次提供的指纹不该相同");
+    assert!(res.is_err(), "用户取消后不得建立连接");
+    eprintln!("密钥变更（取消）信息：{:?}", res.err());
+    assert!(
+        std::fs::read_to_string(&kh).unwrap().contains(bogus_key),
+        "取消时不得改写 known_hosts"
+    );
+
+    // 3b) 确认更新 → 连上，且旧行被**替换**（并存会让下次连接继续撞旧行）
+    let (prompt2, res) = connect_capturing_prompt(&profile(), true);
+    let (new_fp2, kind2) = prompt2.expect("确认前仍应再次询问（上次取消了）");
+    assert_eq!(kind2, kind, "同一场景两次询问的成因必须一致");
+    assert_eq!(new_fp2, new_fp);
+    assert!(res.is_ok(), "确认更新密钥后应能连上：{:?}", res.err());
+    let content = std::fs::read_to_string(&kh).expect("known_hosts 应存在");
+    assert_eq!(
+        content.lines().count(),
+        1,
+        "旧记录必须被替换而不是追加并存：{content}"
+    );
+    assert!(!content.contains(bogus_key), "旧密钥必须已删除：{content}");
+
+    // 3c) 再连一次 → 无询问（更新后的信任已落盘）
     let res = connect_trusted(&profile(), 1);
-    assert!(res.is_err(), "密钥变更必须拒绝连接");
-    let err = res.err().unwrap();
-    eprintln!("KeyChanged 拒绝信息：{:?}", err);
+    assert!(res.is_ok(), "更新密钥后重连应无需询问：{:?}", res.err());
 
     let _ = std::fs::remove_file(&kh);
     std::env::remove_var("RUSTSHELL_KNOWN_HOSTS");

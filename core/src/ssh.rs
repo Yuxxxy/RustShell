@@ -9,7 +9,7 @@ use crate::session::{
 };
 use anyhow::Context as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 /// 全局 tokio 运行时（russh 需要；与 UI 线程解耦）。
 ///
@@ -68,6 +68,13 @@ pub struct ServerKeyVerifier {
     /// 这个字段是「无人值守」安全边界的关键：定时任务与巡检跑在后台，
     /// **没有人能回答信任对话框**，此时静默信任等于把中间人攻击的门打开。
     policy: HostKeyPolicy,
+    /// 本次握手被拒的**可读原因**（unknown / changed / 证书类 / 用户取消）。
+    ///
+    /// 必须有这条旁路：russh 把四类拒绝一律折叠成 `Error::UnknownKey`（文本
+    /// `Unknown server key`），只从错误串上根本分不出「主机密钥变了」和「从没见过
+    /// 这台主机」。而这两件事的后果完全不同 —— 前者可能是中间人攻击。校验器知道
+    /// 真相，就在拒绝的同一处把它记下来，建连失败时由 [`exec_friendly_err`] 取用。
+    reject: Arc<Mutex<Option<String>>>,
 }
 
 /// 未知主机密钥的处置方式。
@@ -90,6 +97,32 @@ pub enum HostKeyPolicy {
 /// **巡检失败**（而不是「服务器异常」），拼错一个字符就会让分类失效。
 pub const HOST_KEY_UNKNOWN_MARK: &str = "主机密钥未知";
 
+/// 已知主机但**密钥变了**时的错误标记。
+///
+/// 与 [`HOST_KEY_UNKNOWN_MARK`] 分开是刻意的：两者在告警引擎里的分级不同
+/// （变更 = 疑似中间人，Critical；未知 = 待信任，Warning），见
+/// `runner::inspect::inspection_failure_finding`。
+/// 文案里必须带「不一致」三个字 —— 那条分流就是按它判 Critical 的。
+pub const HOST_KEY_CHANGED_MARK: &str = "主机密钥已变更";
+
+/// 首次信任请求的成因 —— 决定对话框说什么、点「信任」后怎么写 known_hosts。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerKeyChange {
+    /// 这台主机没记录过（或 known_hosts 读不到）：核对该指纹即可信任。
+    FirstSeen,
+    /// 记录过，但服务器现在给的是**另一把**密钥。
+    ///
+    /// 最常见的合法成因是「容器被删了重建 / 系统重装 / sshd 重新生成了 host key」——
+    /// 只要镜像里的 host key 没有挂持久卷，每次重建都会变。但同样的现象也可能是
+    /// 中间人攻击，所以绝不能自动接受，必须让人看着新旧指纹做决定。
+    Changed {
+        /// 旧记录（known_hosts 里那条）的 OpenSSH 风格指纹
+        old_fingerprint: String,
+        /// 旧记录的密钥类型，形如 "ssh-ed25519"
+        old_key_type: String,
+    },
+}
+
 /// 首次信任请求（连接线程 到 UI）：展示指纹等待用户决策
 pub struct ServerKeyPrompt {
     pub host: String,
@@ -98,6 +131,8 @@ pub struct ServerKeyPrompt {
     pub fingerprint: String,
     /// 密钥类型，形如 "ssh-ed25519"
     pub key_type: String,
+    /// 这次询问是「首次连接」还是「密钥变了」（UI 据此换标题、换按钮、加警告）
+    pub kind: ServerKeyChange,
     /// 用户决策回传：true = 信任并加入 known_hosts
     pub reply: flume::Sender<bool>,
 }
@@ -119,10 +154,16 @@ fn known_hosts_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("RUSTSHELL_KNOWN_HOSTS") {
         return std::path::PathBuf::from(p);
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rustshell")
-        .join("known_hosts")
+    crate::config_dir::config_dir().join("known_hosts")
+}
+
+/// known_hosts 里的主机字段：标准端口写裸主机名，非标准端口写 `[host]:port`。
+fn known_hosts_entry(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
+    }
 }
 
 /// 将已信任的主机密钥以 OpenSSH 格式追加到 known_hosts
@@ -130,11 +171,7 @@ fn record_known_host(path: &std::path::Path, host: &str, port: u16, key: &russh:
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let host_entry = if port == 22 {
-        host.to_string()
-    } else {
-        format!("[{host}]:{port}")
-    };
+    let host_entry = known_hosts_entry(host, port);
     if let Ok(line) = key.to_openssh() {
         use std::io::Write as _;
         match std::fs::OpenOptions::new()
@@ -158,17 +195,173 @@ fn record_known_host(path: &std::path::Path, host: &str, port: u16, key: &russh:
     }
 }
 
+/// known_hosts 的「主机字段」是否指向 `entry`。
+///
+/// 认三种写法：裸主机名 / 逗号分隔的多个别名 / OpenSSH 的哈希形式（`|1|salt|hash`）。
+/// 哈希形式无法反解，只能按「可能是它」处理 —— 但删除时还要**同时**命中旧密钥，
+/// 所以放宽的代价只是可能多删一条同密钥别名，不会误伤别的密钥。
+fn host_field_matches(field: &str, entry: &str) -> bool {
+    field
+        .split(',')
+        .any(|part| part == entry || part.starts_with("|1|"))
+}
+
+/// 从 known_hosts **文本**里剔除「同一主机 + 指定旧密钥」的记录，其余行原样保留。
+///
+/// 抽成纯函数是为了可单测：这段逻辑一旦写错，用户点「更新密钥」后依然连不上
+/// （旧行还在，每次校验都先撞上它），而现象与「没修」一模一样，极难排查。
+///
+/// - 注释行、空行、其它主机的行、**其它算法**的行一律保留；
+/// - 兼容 `@cert-authority` / `@revoked` 前缀（字段整体右移一位）；
+/// - 保留原文件的「末尾是否有换行」，不给下游留意外差异。
+fn without_stale_key(
+    content: &str,
+    entry: &str,
+    stale: &[russh::keys::PublicKey],
+) -> String {
+    if stale.is_empty() || content.is_empty() {
+        return content.to_string();
+    }
+    let ends_with_newline = content.ends_with('\n');
+    let mut out = String::with_capacity(content.len());
+    for raw in content.lines() {
+        // `lines()` 会吞掉 `\r`，这里显式去掉后再判断 —— 否则 Windows 上写回的行
+        // 与解析用的行不一致。
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = line.trim();
+        let toks: Vec<&str> = trimmed.split_whitespace().collect();
+        let base = if toks.first().is_some_and(|t| t.starts_with('@')) {
+            1
+        } else {
+            0
+        };
+        let stale_line = match (toks.get(base), toks.get(base + 2)) {
+            (Some(hosts), Some(b64)) => {
+                host_field_matches(hosts, entry)
+                    && matches!(
+                        russh::keys::parse_public_key_base64(b64),
+                        Ok(k) if stale.iter().any(|s| *s == k)
+                    )
+            }
+            _ => false,
+        };
+        if !stale_line {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !ends_with_newline && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// 用新密钥**替换**该主机同算法的旧记录（容器重建后重新信任时用）。
+///
+/// 只删「同主机 + 同算法」的行：不同算法的记录（例如还留着一条 `ssh-rsa`）
+/// 不参与 `KeyChanged` 判定，留着无害，删了反而要重新信任一次。
+fn replace_known_host(
+    path: &std::path::Path,
+    host: &str,
+    port: u16,
+    key: &russh::keys::PublicKey,
+) {
+    let entry = known_hosts_entry(host, port);
+    // 旧记录走 russh 自己的匹配逻辑（含哈希主机名），不自己解析 —— 两套解析
+    // 一旦漂移，就会出现「校验说变了、删除却没删到」的死循环。
+    let stale: Vec<russh::keys::PublicKey> =
+        russh::keys::known_hosts::known_host_keys_path(host, port, path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, k)| k.algorithm() == key.algorithm())
+            .map(|(_, k)| k)
+            .collect();
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let next = without_stale_key(&content, &entry, &stale);
+            if next != content {
+                if let Err(e) = std::fs::write(path, &next) {
+                    log::warn!("重写 known_hosts 失败（{e}）：旧密钥残留会让下次连接继续被拒");
+                }
+            }
+        }
+        // 文件读不出来（不存在 = 首次，正常）就不改写，直接追加
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            log::warn!("读取 known_hosts 失败（{e}）：无法清理旧记录");
+        }
+        Err(_) => {}
+    }
+    // 新密钥本身可能已经在文件里（同一把密钥的重复行），别重复追加
+    let already = key
+        .to_openssh()
+        .ok()
+        .map(|line| format!("{entry} {line}"))
+        .is_some_and(|want| {
+            std::fs::read_to_string(path)
+                .map(|c| c.lines().any(|l| l.trim_end() == want))
+                .unwrap_or(false)
+        });
+    if !already {
+        record_known_host(path, host, port, key);
+    }
+}
+
 const TRUST_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl ServerKeyVerifier {
+    /// 记下本次被拒的可读原因（供建连失败时拼用户文案）。
+    fn note_reject(&self, reason: String) {
+        if let Ok(mut slot) = self.reject.lock() {
+            *slot = Some(reason);
+        }
+    }
+
+    /// 只在不比已有原因更具体时补一条。
+    ///
+    /// 「主机密钥已变更（旧指纹 → 新指纹）」比「用户取消了」信息量大得多，不能被后者盖掉 ——
+    /// 用户点取消之后看到的最终报错，最该知道的是**为什么**被拒，而不是他刚做过的动作。
+    fn note_reject_weak(&self, reason: String) {
+        if let Ok(mut slot) = self.reject.lock() {
+            if slot.is_none() {
+                *slot = Some(reason);
+            }
+        }
+    }
+
+    /// known_hosts 里该主机、与新密钥**同算法**的旧记录（用于展示「旧指纹」）。
+    ///
+    /// 只按算法筛：`KeyChanged` 只在算法相同时才可能触发，因此这条就是
+    /// 冲突的那一条。读不到就返回 `None`，调用方降级成 `<读取失败>`。
+    fn recorded_key_of_same_alg(
+        &self,
+        path: &std::path::Path,
+        new_key: &russh::keys::PublicKey,
+    ) -> Option<russh::keys::PublicKey> {
+        russh::keys::known_hosts::known_host_keys_path(&self.host, self.port, path)
+            .ok()?
+            .into_iter()
+            .map(|(_, k)| k)
+            .find(|k| k.algorithm() == new_key.algorithm())
+    }
+
     /// 发送信任请求给 UI 并等待用户决策（120s 超时拒绝）。
-    async fn wait_user_trust(&self, key: &russh::keys::PublicKey, path: &std::path::Path) -> bool {
+    ///
+    /// `change` 决定「信任」后怎么写 known_hosts：首次 → 追加；密钥变更 →
+    /// **先清掉旧行再追加**（否则下次连接又撞上旧行）。
+    async fn wait_user_trust(
+        &self,
+        key: &russh::keys::PublicKey,
+        path: &std::path::Path,
+        change: ServerKeyChange,
+    ) -> bool {
         let (reply_tx, reply_rx) = flume::bounded(1);
+        let replace = matches!(change, ServerKeyChange::Changed { .. });
         let prompt = ServerKeyPrompt {
             host: self.host.clone(),
             port: self.port,
             fingerprint: key.fingerprint(russh::keys::HashAlg::Sha256).to_string(),
             key_type: key.algorithm().to_string(),
+            kind: change,
             reply: reply_tx,
         };
         log::info!("未知主机 {}:{}，等待用户信任决策", self.host, self.port);
@@ -183,7 +376,17 @@ impl ServerKeyVerifier {
         };
         self.trust_pending.store(false, AtomicOrdering::SeqCst);
         if ok {
-            record_known_host(path, &self.host, self.port, key);
+            if replace {
+                replace_known_host(path, &self.host, self.port, key);
+            } else {
+                record_known_host(path, &self.host, self.port, key);
+            }
+        } else {
+            // 用户点了取消 / 对话框超时：也得说清楚是「没信任」而不是「网络不通」
+            self.note_reject_weak(format!(
+                "{}:{} 的主机密钥未获信任（已取消或等待超时），连接已中止",
+                self.host, self.port
+            ));
         }
         ok
     }
@@ -206,6 +409,10 @@ impl russh::client::Handler for ServerKeyVerifier {
                     self.host,
                     self.port
                 );
+                self.note_reject(format!(
+                    "{}:{} 返回的是证书类主机密钥，本客户端不做证书链校验，已拒绝连接",
+                    self.host, self.port
+                ));
                 return Ok(false);
             }
         };
@@ -216,32 +423,76 @@ impl russh::client::Handler for ServerKeyVerifier {
             Ok(true) => Ok(true),
             // 未知主机 -> 按策略处置
             Ok(false) => match self.policy {
-                HostKeyPolicy::AskUser => Ok(self.wait_user_trust(key, &path).await),
+                HostKeyPolicy::AskUser => {
+                    Ok(self
+                        .wait_user_trust(key, &path, ServerKeyChange::FirstSeen)
+                        .await)
+                }
                 HostKeyPolicy::RejectUnknown => {
                     log::warn!(
                         "{}:{} 的主机密钥未知，无人值守策略下拒绝连接（需先手动连接一次完成信任）",
                         self.host,
                         self.port
                     );
+                    self.note_reject(format!(
+                        "{HOST_KEY_UNKNOWN_MARK}：{}:{} 不在 known_hosts 中。\
+                         无人值守任务不会自动信任未知主机，请先在连接面板手动连接一次完成信任",
+                        self.host, self.port
+                    ));
                     Ok(false)
                 }
             },
-            // 密钥与记录不一致：疑似中间人攻击，硬拒绝
+            // 密钥与记录不一致：可能是容器重建 / 系统重装，也可能是中间人攻击
             Err(russh::keys::Error::KeyChanged { line }) => {
+                let old = self.recorded_key_of_same_alg(&path, key);
+                let old_fp = old
+                    .as_ref()
+                    .map(|k| k.fingerprint(russh::keys::HashAlg::Sha256).to_string())
+                    .unwrap_or_else(|| "<读取失败>".into());
+                let old_type = old
+                    .as_ref()
+                    .map(|k| k.algorithm().to_string())
+                    .unwrap_or_else(|| "<读取失败>".into());
+                let new_fp = key.fingerprint(russh::keys::HashAlg::Sha256).to_string();
+                let new_type = key.algorithm().to_string();
                 log::error!(
-                    "主机 {}:{} 的密钥与 known_hosts 第 {} 行记录不一致，拒绝连接",
+                    "主机 {}:{} 的密钥与 known_hosts 第 {} 行记录不一致（旧 {old_type} {old_fp} → 新 {new_type} {new_fp}），拦截连接",
                     self.host,
                     self.port,
                     line + 1
                 );
-                Ok(false)
+                // 文案里必须出现「不一致」：告警引擎按这三个字把它判为 Critical（疑似中间人）
+                self.note_reject(format!(
+                    "{HOST_KEY_CHANGED_MARK}：{}:{} 的服务器密钥与 known_hosts 记录不一致\
+                     （旧 {old_type} {old_fp} → 新 {new_type} {new_fp}）。\
+                     常见成因是服务器/容器被重建、系统重装或 sshd 重新生成了 host key；\
+                     若并非你所为，请按中间人攻击处理",
+                    self.host, self.port
+                ));
+                match self.policy {
+                    // 交互式：让人看着新旧指纹决定，而不是丢一句 Unknown server key 了事
+                    HostKeyPolicy::AskUser => Ok(self
+                        .wait_user_trust(
+                            key,
+                            &path,
+                            ServerKeyChange::Changed {
+                                old_fingerprint: old_fp,
+                                old_key_type: old_type,
+                            },
+                        )
+                        .await),
+                    // 无人值守：绝不自动接受变更
+                    HostKeyPolicy::RejectUnknown => Ok(false),
+                }
             }
             // 文件不可读等异常：按「未知主机」处理（同样受策略约束 ——
             // 无人值守下不能因为 known_hosts 读不到就降级为无条件信任）
             Err(e) => {
                 log::warn!("known_hosts 校验异常（{e}）");
                 match self.policy {
-                    HostKeyPolicy::AskUser => Ok(self.wait_user_trust(key, &path).await),
+                    HostKeyPolicy::AskUser => Ok(self
+                        .wait_user_trust(key, &path, ServerKeyChange::FirstSeen)
+                        .await),
                     HostKeyPolicy::RejectUnknown => Ok(false),
                 }
             }
@@ -360,9 +611,17 @@ pub type TestConnectResult = Result<String, String>;
 /// 返回 `Receiver` 而不是 `JoinHandle`：调用方（对话框）只需要一句话，
 /// `flume::Receiver::recv_async()` 可以直接 `await`，不必再关心线程。
 ///
-/// 未识别的主机密钥按**无人值守**处理（[`HostKeyPolicy::RejectUnknown`]），与
-/// 〔任务调度〕同口径：测试发生在对话框里，此刻没有人能回答指纹信任弹窗。用户
-/// 得到的是「先连一次确认主机」这句话，而不是一个永远转不完的圈。
+/// 未识别的主机密钥按**交互式**处理（[`HostKeyPolicy::AskUser`]，2026-10-21 用户要求
+/// 「测试连接功能移除无人值守之类的限制」）。
+///
+/// 原先这里是 `RejectUnknown`，理由是「测试发生在对话框里，此刻没有人能回答指纹
+/// 信任弹窗」。那条理由站不住：测试连接恰恰是**人正盯着对话框、点了按钮**的时刻 ——
+/// 弹信任框正是他期待的下一步。用拒绝代替询问，用户得到的是「请先手动连接一次
+/// 完成信任」这种绕路提示：想验证一份凭据，却被迫先建一个会话。
+///
+/// 安全边界没有放松：`AskUser` 只在 known_hosts **没有记录**时询问，密钥变更仍要
+/// 用户看着新旧指纹确认（见 `ServerKeyChange`）；真正无人值守的路径（`exec` /
+/// SFTP 服务任务 / 定时巡检）依旧走 `RejectUnknown`。
 pub fn test_connection_in_background(
     profile: ConnectionProfile,
     timeout: Duration,
@@ -387,7 +646,7 @@ pub fn test_connection_in_background(
                 .block_on(connect_only(
                     &profile,
                     timeout,
-                    HostKeyPolicy::RejectUnknown,
+                    HostKeyPolicy::AskUser,
                     global_proxy.as_ref(),
                 ))
                 .map(|_handle| {
@@ -461,6 +720,9 @@ pub async fn connect_only(
     // russh 会无限等待，必须显式超时，否则 UI 永远停留在「连接中」。
     let trust_pending = Arc::new(AtomicBool::new(false));
     let phase = Arc::new(AtomicU8::new(Phase::PreStream as u8));
+    // 校验器拒绝握手时会往这里写可读原因；russh 只回一句 `Unknown server key`，
+    // 分不出「密钥变了」和「没见过这台主机」—— 那个区分在安全上很要紧。
+    let reject: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut connect_fut = Box::pin(open_transport(
         addr,
         proxy.as_ref(),
@@ -470,6 +732,7 @@ pub async fn connect_only(
             port: profile.port,
             trust_pending: trust_pending.clone(),
             policy,
+            reject: reject.clone(),
         },
     ));
     let start = std::time::Instant::now();
@@ -495,7 +758,10 @@ pub async fn connect_only(
             res = connect_fut.as_mut() => {
                 // `open_transport` 已把底层错误串成可读的整句，这里只做
                 // 「无人值守」那一层增强（与改造前 `with_context` 的位置等价）。
-                break res.map_err(|raw| exec_friendly_err(profile, raw, policy));
+                break res.map_err(|raw| {
+                    let reason = reject.lock().ok().and_then(|g| g.clone());
+                    exec_friendly_err(profile, raw, policy, reason.as_deref())
+                });
             }
             _ = tokio::time::sleep(wait) => {
                 if trust_pending.load(AtomicOrdering::SeqCst) && start.elapsed() < CONNECT_TOTAL_CAP {
@@ -656,18 +922,55 @@ fn handshake_timeout_msg(
     }
 }
 
-/// 连接错误文案的无人值守增强：把「未知主机密钥」这一类失败说清楚，
-/// 而不是让用户对着 `Unknown key` 之类的底层报错猜。
-fn exec_friendly_err(profile: &ConnectionProfile, raw: String, policy: HostKeyPolicy) -> String {
-    if policy == HostKeyPolicy::RejectUnknown
-        && (raw.contains("Unknown key") || raw.contains("unknown key") || raw.contains("key"))
-    {
-        return format!(
-            "{HOST_KEY_UNKNOWN_MARK}：{}:{}。无人值守场景不会自动信任未知主机，请先手动连接一次完成信任（原因：{raw}）",
-            profile.host, profile.port
-        );
+/// russh 对「服务器主机密钥被 handler 拒绝」的**固定文本**（`Error::UnknownKey`）。
+///
+/// 判据必须钉死在这句上。改造前用的是 `raw.contains("key")` —— 那会把
+/// 「加载私钥失败」「认证 key 无效」之类全都说成主机密钥问题，把用户指向完全
+/// 错误的排查方向（甚至让人以为要动 known_hosts）。
+const HOST_KEY_REJECT_RAW: &str = "Unknown server key";
+
+/// 连接错误文案的主机密钥增强：把「密钥未知 / 密钥变更 / 用户取消」说清楚，
+/// 而不是让用户对着 `Unknown server key` 猜。
+///
+/// `reject_reason` 是校验器在拒绝那一刻写下的原因（见 [`ServerKeyVerifier::reject`]）：
+/// 有这个就优先用它，因为只有校验器知道到底是「变了」还是「没见过」。
+fn exec_friendly_err(
+    profile: &ConnectionProfile,
+    raw: String,
+    policy: HostKeyPolicy,
+    reject_reason: Option<&str>,
+) -> String {
+    match host_key_error_text(&profile.host, profile.port, &raw, policy, reject_reason) {
+        Some(msg) => msg,
+        None => raw,
     }
-    raw
+}
+
+/// [`exec_friendly_err`] 的**纯函数内核**（不依赖 `ConnectionProfile`，可单测）。
+///
+/// 返回 `None` = 这条错误与主机密钥无关，调用方原样透出。
+fn host_key_error_text(
+    host: &str,
+    port: u16,
+    raw: &str,
+    policy: HostKeyPolicy,
+    reject_reason: Option<&str>,
+) -> Option<String> {
+    if !raw.contains(HOST_KEY_REJECT_RAW) {
+        return None;
+    }
+    if let Some(reason) = reject_reason {
+        return Some(format!("{reason}（底层原因：{raw}）"));
+    }
+    Some(match policy {
+        // 握手被别的路径掐断（超时、代理断开）时不该硬套主机密钥文案
+        HostKeyPolicy::AskUser => format!(
+            "连接 {host}:{port} 失败：服务器主机密钥未通过校验，请重试（原因：{raw}）"
+        ),
+        HostKeyPolicy::RejectUnknown => format!(
+            "{HOST_KEY_UNKNOWN_MARK}：{host}:{port}。无人值守场景不会自动信任未知主机，请先手动连接一次完成信任（原因：{raw}）"
+        ),
+    })
 }
 
 /// 输出泵对**一条**信道消息的处置。
@@ -1898,5 +2201,145 @@ mod tests {
         );
         assert_eq!(disks.len(), 1);
         assert_eq!(disks[0].mount, "/mnt/my data");
+    }
+
+    /// 接线护栏（2026-10-21 用户要求「测试连接功能移除无人值守之类的限制」）：
+    /// 测试连接必须走 `AskUser`，不能再用无人值守的硬拒。
+    ///
+    /// 为什么是源码断言而不是端到端：`test_connection_in_background` 的真实路径要
+    /// 一台「known_hosts 里没有记录」的 sshd（docker 夹具），而这条契约一旦被改回去
+    /// **不会**报错、只会让用户看到「请先手动连接一次」——正是用户报的那个限制。
+    #[test]
+    fn connection_test_asks_the_user_about_unknown_host_keys() {
+        let src = include_str!("ssh.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let at = code
+            .find("pub fn test_connection_in_background(")
+            .expect("找不到连接测试入口");
+        let body = &code[at..];
+        let end = body.find("\n}").expect("找不到连接测试的结尾");
+        let body = &body[..end];
+        assert!(
+            body.contains("HostKeyPolicy::AskUser"),
+            "连接测试又退回不询问主机密钥了：人在对话框前点「测试连接」，\
+             未知主机应该弹信任框，而不是让他先去手动连一次。"
+        );
+        assert!(
+            !body.contains("HostKeyPolicy::RejectUnknown"),
+            "连接测试仍带着无人值守策略 —— 正是用户要求移除的那条限制。"
+        );
+    }
+
+    // ---- 主机密钥变更（容器重建）相关 --------------------------------------
+    //
+    // 现场：服务器上的 docker 容器被删了重建，账号口令都没变，直连却报
+    // 「Unknown server key」。根因是镜像里的 sshd host key 没挂持久卷，重建后
+    // 重新生成 ⇒ known_hosts 里的旧记录与新密钥冲突 ⇒ russh 回
+    // `Error::UnknownKey`。改造前这条路径**只写日志、界面无入口**，用户只能去
+    // 手改 known_hosts。这些用例钉住「能重新信任」与「旧记录必须被替换」。
+
+    /// russh 自带的两个合法 ed25519 公钥字面量（来自其 known_hosts 单测），
+    /// 用作「旧密钥 / 新密钥」。
+    const ED_A: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    const ED_B: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
+
+    fn key(b64: &str) -> russh::keys::PublicKey {
+        russh::keys::parse_public_key_base64(b64).expect("测试用公钥字面量必须可解析")
+    }
+
+    /// 只删「同一主机 + 同一把旧密钥」的行；注释、其它主机、其它密钥一律保留。
+    #[test]
+    fn without_stale_key_drops_only_the_conflicting_record() {
+        let content = format!(
+            "# managed by rustshell\n\
+             [10.0.0.5]:2222 ssh-ed25519 {ED_A}\n\
+             10.0.0.5 ssh-ed25519 {ED_A}\n\
+             other.example ssh-ed25519 {ED_A}\n\
+             [10.0.0.5]:2222 ssh-ed25519 {ED_B}\n"
+        );
+        let out = without_stale_key(&content, "[10.0.0.5]:2222", &[key(ED_A)]);
+
+        assert!(
+            !out.contains(&format!("[10.0.0.5]:2222 ssh-ed25519 {ED_A}")),
+            "冲突行必须被删掉，否则下次连接还会撞上它（用户点多少次「更新」都没用）"
+        );
+        assert!(out.contains("# managed by rustshell"), "注释行不该被删");
+        assert!(
+            out.contains(&format!("10.0.0.5 ssh-ed25519 {ED_A}")),
+            "同一 IP 但**端口不同**（裸主机名 = 22）是另一条记录，必须保留"
+        );
+        assert!(
+            out.contains(&format!("other.example ssh-ed25519 {ED_A}")),
+            "别的主机即便用同一把密钥也必须保留"
+        );
+        assert!(
+            out.contains(&format!("[10.0.0.5]:2222 ssh-ed25519 {ED_B}")),
+            "同主机其它密钥（不同算法/不同值）不参与本次冲突，必须保留"
+        );
+    }
+
+    /// 端到端：写文件 → russh 判定 KeyChanged → `replace_known_host` → russh 判定通过，
+    /// 且旧行**不残留**（这是「更新密钥后仍连不上」那个死循环的回归点）。
+    #[test]
+    fn replace_known_host_makes_the_next_check_pass() {
+        let dir = std::env::temp_dir().join(format!("rs-kh-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("known_hosts");
+        std::fs::write(&path, format!("[h.example]:2200 ssh-ed25519 {ED_A}\n")).unwrap();
+
+        let (old, new) = (key(ED_A), key(ED_B));
+        assert_ne!(old, new, "测试前提：新旧密钥必须不同");
+        assert!(
+            matches!(
+                russh::keys::check_known_hosts_path("h.example", 2200, &new, &path),
+                Err(russh::keys::Error::KeyChanged { .. })
+            ),
+            "前提：新旧密钥不同，russh 必须报 KeyChanged"
+        );
+
+        replace_known_host(&path, "h.example", 2200, &new);
+        assert!(
+            russh::keys::check_known_hosts_path("h.example", 2200, &new, &path).unwrap(),
+            "更新后再校验必须通过 —— 否则用户「点了信任」还是连不上"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after.lines().count(),
+            1,
+            "旧记录必须被**替换**而不是追加并存（否则永远先命中旧行）：{after}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 主机密钥类失败必须能区分「变了」与「没见过」，且不能把无关的 key 错误算进来。
+    #[test]
+    fn host_key_error_text_distinguishes_changed_from_unknown() {
+        let raw = format!("连接 h:22 失败: {HOST_KEY_REJECT_RAW}");
+        let changed = format!("{HOST_KEY_CHANGED_MARK}：h:22 的服务器密钥与 known_hosts 记录不一致");
+        let got = host_key_error_text("h", 22, &raw, HostKeyPolicy::RejectUnknown, Some(&changed))
+            .expect("主机密钥类错误必须被接管");
+        assert!(
+            got.contains(HOST_KEY_CHANGED_MARK) && got.contains("不一致"),
+            "变更类文案要带标记与「不一致」（告警引擎按它判 Critical）：{got}"
+        );
+        assert!(!got.contains(HOST_KEY_UNKNOWN_MARK), "变更不能说成「未知」：{got}");
+
+        // 有未知标记（无 reject 原因）时走未知分支
+        let unknown = host_key_error_text("h", 22, &raw, HostKeyPolicy::RejectUnknown, None)
+            .expect("主机密钥类错误必须被接管");
+        assert!(unknown.contains(HOST_KEY_UNKNOWN_MARK), "{unknown}");
+
+        // 改造前的 `raw.contains("key")` 会把这些误判成主机密钥问题，指向错误排查方向
+        for unrelated in [
+            "加载私钥 /tmp/id_ed25519 失败: key is encrypted",
+            "认证错误: no key accepted",
+            "连接 h:22 失败: Connection refused",
+        ] {
+            assert!(
+                host_key_error_text("h", 22, unrelated, HostKeyPolicy::RejectUnknown, None).is_none(),
+                "与主机密钥无关的错误不该被改写：{unrelated}"
+            );
+        }
     }
 }

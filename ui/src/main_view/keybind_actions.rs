@@ -20,7 +20,7 @@ use rustshell_platform::paths;
 
 use super::{
     ui_call, AiAssistant, CommandPalette, MainView, NewConnection, NewTab, OpenSettings,
-    RestoreLastSession, ToggleSidebar, UiHub,
+    RestoreLastSession, UiHub,
 };
 
 impl MainView {
@@ -281,9 +281,6 @@ impl MainView {
                 self.connect_profile(&profile_id, w, cx)
             }
             CommandOrigin::Builtin => match entry.action_id {
-                Some("ToggleSidebar") => {
-                    self.panel_ui.sidebar_collapsed = !self.panel_ui.sidebar_collapsed;
-                }
                 Some("OpenSettings") => self.open_settings(w, cx),
                 _ => {}
             },
@@ -329,7 +326,6 @@ impl MainView {
                     // 内置命令挂真实 Action：confirm 时由组件自动派发到根处理器
                     if let Some(id) = c.action_id {
                         it = it.action(match id {
-                            "ToggleSidebar" => Box::new(ToggleSidebar),
                             "OpenSettings" => Box::new(OpenSettings),
                             // 2026-09-17「命令窗口新增【新增连接】【AI助手】」
                             "NewConnection" => Box::new(NewConnection),
@@ -702,7 +698,7 @@ mod tests {
                 .expect("默认键位表里必须有 NewTab");
             let taken = rustshell_platform::keymap::resolve(&victim.spec);
 
-            m.panel_ui.keymap_recording = Some("ToggleSidebar".to_string());
+            m.panel_ui.keymap_recording = Some("OpenSettings".to_string());
             m.finish_key_record(taken.clone(), cx);
 
             assert!(!km_path.exists(), "冲突时不该落盘");

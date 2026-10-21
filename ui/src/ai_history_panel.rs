@@ -201,7 +201,7 @@ mod tests {
             "对话正文只在终端右侧渲染（`ai_panel`）；左侧这一列是会话目录。"
         );
         assert!(
-            !code.contains(".bg(m.panel_bg"),
+            !code.contains(".bg(crate::theme::surface"),
             "面板不自带底色 —— 底色与圆角由 `MainView` 的卡片壳提供，\
              叠两遍会在卡片圆角处露出一圈直角内衬。"
         );

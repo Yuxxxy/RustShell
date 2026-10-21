@@ -307,20 +307,14 @@ pub fn resume_store() -> &'static ResumeStore {
 /// `RUSTSHELL_SFTP_RESUME` 可覆盖 —— 测试与 Docker e2e 靠它把记录落在临时目录，
 /// 不碰开发机真实配置（同 `ssh.rs::known_hosts_path` 的手法）。
 pub fn resume_path() -> PathBuf {
-    resolve_path(
-        std::env::var("RUSTSHELL_SFTP_RESUME").ok(),
-        dirs::config_dir(),
-    )
+    resolve_path(std::env::var("RUSTSHELL_SFTP_RESUME").ok())
 }
 
-fn resolve_path(env: Option<String>, config: Option<PathBuf>) -> PathBuf {
+fn resolve_path(env: Option<String>) -> PathBuf {
     if let Some(p) = env.filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    config
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustshell")
-        .join("sftp_resume.json")
+    crate::config_dir::config_dir().join("sftp_resume.json")
 }
 
 #[cfg(test)]
@@ -572,28 +566,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 路径解析：环境变量优先，其次配置目录，最后当前目录。
+/// 路径解析：环境变量优先，其次配置目录。
     #[test]
     fn resume_path_prefers_the_env_override() {
         assert_eq!(
-            resolve_path(
-                Some("D:\\tmp\\r.json".into()),
-                Some(PathBuf::from("C:\\cfg"))
-            ),
+            resolve_path(Some("D:\\tmp\\r.json".into())),
             PathBuf::from("D:\\tmp\\r.json")
         );
         assert_eq!(
-            resolve_path(None, Some(PathBuf::from("C:\\cfg"))),
-            PathBuf::from("C:\\cfg")
-                .join("rustshell")
-                .join("sftp_resume.json")
+            resolve_path(None),
+            crate::config_dir::config_dir().join("sftp_resume.json")
         );
+        // 空环境变量视为未设置
         assert_eq!(
-            resolve_path(Some(String::new()), None),
-            PathBuf::from(".")
-                .join("rustshell")
-                .join("sftp_resume.json"),
-            "空环境变量等于没设"
+            resolve_path(Some(String::new())),
+            crate::config_dir::config_dir().join("sftp_resume.json")
         );
     }
 }

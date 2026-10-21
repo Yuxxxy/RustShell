@@ -959,13 +959,9 @@ impl MainView {
             // 注意：gpui-pre 的 overflow 容器只预留布局、不绘制滚动条，界面上看不到滑动轴 ——
             // 这正是 2026-09-17 第二轮反馈要的结果（第一轮补的覆盖层已整条撤掉）。
             .track_scroll(&self.tabs_state.tab_scroll.handle)
-            // Segmented 轨道底色官方取主题 token（不透明）：2026-09-18 反馈
-            // 「背景图只替换了连接栏」，改经 `panel_bg` 透出背景图。`TabBar`
+            // Segmented 轨道底色官方取主题 token（不透明）：`TabBar`
             // 实现了 `Styled`，refinement 在官方 `.bg(..)` 之后应用、优先生效。
-            .bg(crate::theme::surface(
-                self.settings.panel_alpha(),
-                t.bg_elevated,
-            ))
+            .bg(crate::theme::surface(1.0, t.bg_elevated))
             // 点击标签 = 放进「焦点窗格」。
             // 未分屏时与普通切换等价；分屏时若该标签不在任何窗格，
             // 则替换掉焦点窗格的槽位（被换下来的标签仍留在标签栏，不会被关闭）。
@@ -986,40 +982,16 @@ impl MainView {
             bar = bar.selected_index(ix);
         }
 
-        // 右侧：侧栏开关 + 终端全屏。**挂在轨道之外**（不进`TabBar`的 suffix）：
+        // 右侧：终端全屏。**挂在轨道之外**（不进`TabBar`的 suffix）：
         // Segmented 的轨道底色画在`TabBar`根节点上、覆盖包括 suffix 在内的整条盒子，
         // 留在 suffix 里会被压在灰色轨道右端，像轨道自带的一枚按钮。
         // 2026-09-17 运行反馈：移除「向右拆分 / 向下拆分 / 新建本地终端」三个图标 ——
         // 拆分入口仍在标签右键菜单与 Ctrl+Alt+R / Ctrl+Alt+D，新建终端在 Ctrl+T
         // 与终端右键菜单，标签栏不必再摆一遍。
+        // 2026-10-21 运行反馈：再撤掉「切换侧栏」那枚图标（连同它的点击功能）——
+        // 侧栏仍可由左竖栏点当前面板图标收起/展开，标签栏只留全屏这一个出口。
         let fullscreen = self.terminal_fullscreen;
         let mut trailing = h_flex().gap_1().items_center();
-        // 全屏时侧栏开关**不画**：侧栏此刻已被全屏藏起来，这枚图标点下去画面
-        // 不会有任何变化，却会悄悄改掉 `sidebar_collapsed` —— 用户退出全屏时才会
-        // 发现侧栏没了，且找不到是哪一步弄丢的。
-        if !fullscreen {
-            trailing = trailing.child(
-                Button::new("toggle-sidebar")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::PanelLeft)
-                    .tooltip(rustshell_core::i18n::ts(
-                        format!(
-                            "{}  {}",
-                            rustshell_core::i18n::t("切换侧栏"),
-                            crate::keybinds::display_spec("mod-b")
-                        ),
-                        format!(
-                            "Toggle Sidebar ({})",
-                            crate::keybinds::display_spec("mod-b")
-                        ),
-                    ))
-                    .on_click(cx.listener(|m, _e, _w, cx| {
-                        m.panel_ui.sidebar_collapsed = !m.panel_ui.sidebar_collapsed;
-                        cx.notify();
-                    })),
-            );
-        }
         // 终端全屏：图标随状态换成「最大化 / 最小化」，点它 = 进出全屏
         // （窗口进系统全屏 + 竖栏/侧栏/AI 列让位，见 `MainView::toggle_terminal_fullscreen`）。
         // 全屏下它是**唯一**的鼠标出口，所以任何状态都必须画出来。
@@ -1426,24 +1398,25 @@ mod tests {
         prod(include_str!("tab_bar.rs"))
     }
 
-    /// 回归（2026-09-17 运行反馈）：标签栏右侧不再有「向右拆分 / 向下拆分 /
-    /// 新建本地终端」三个图标按钮。
+    /// 回归（2026-09-17 / 2026-10-21 两次运行反馈）：标签栏右侧只留「终端全屏」。
     ///
-    /// 这三个入口仍然存在（标签右键菜单、终端右键菜单、`Ctrl+Alt+R/D`、`Ctrl+T`），
-    /// 只是不该在标签栏上再占位置。
+    /// * 2026-09-17：撤掉「向右拆分 / 向下拆分 / 新建本地终端」三个图标
+    ///   （入口仍在标签右键菜单、终端右键菜单与 `Ctrl+Alt+R/D` / `Ctrl+T`）；
+    /// * 2026-10-21：再撤掉「切换侧栏」那枚图标与其点击功能 —— 侧栏仍可由左竖栏
+    ///   点当前面板图标收起/展开，标签栏不必再摆一枚会偷偷改用户布局意图的按钮。
     #[test]
-    fn tab_bar_no_longer_carries_split_and_new_tab_buttons() {
+    fn tab_bar_carries_only_the_fullscreen_button() {
         let code = production_source();
-        for needle in ["split-right", "split-down", "new-tab"] {
+        for needle in ["split-right", "split-down", "new-tab", "toggle-sidebar"] {
             assert!(
                 !code.contains(needle),
-                "标签栏仍残留 `{needle}` 按钮；拆分与新建入口只保留在右键菜单与快捷键里。"
+                "标签栏仍残留 `{needle}` 按钮；它已按运行反馈撤下（入口都在别处）。"
             );
         }
-        // 反向：侧栏开关必须还在（那是标签栏上唯一该留的图标）
+        // 反向：全屏按钮必须在（它是标签栏右侧唯一的出口）。
         assert!(
-            code.contains("toggle-sidebar"),
-            "标签栏必须保留侧栏开关，否则连最后这个入口也没了。"
+            code.contains("toggle-terminal-fullscreen"),
+            "终端全屏按钮不见了 —— 全屏后那是唯一的鼠标出口。"
         );
     }
 
@@ -1451,13 +1424,13 @@ mod tests {
     ///
     /// 结构层三条：按钮在、点击调的是 [`MainView::toggle_terminal_fullscreen`]
     /// （而不是只翻一下本地标记 —— 那样窗口不会真的进系统全屏）、图标与提示词
-    /// 随状态换；外加一条「全屏时侧栏开关不画」：它此刻点下去画面不会变，
-    /// 却会悄悄改掉 `sidebar_collapsed`，用户退出全屏才发现侧栏没了。
+    /// 随状态换。行为面（全屏时这枚出口真的还在、三列真的让位、退出后宽度还原）
+    /// 由 `main_view` 的 `terminal_fullscreen_hides_the_chrome_and_puts_it_back` 量实宽。
     ///
-    /// 行为面（全屏时这枚出口真的还在、三列真的让位、退出后宽度还原）由
-    /// `main_view` 的 `terminal_fullscreen_hides_the_chrome_and_puts_it_back` 量实宽。
+    /// 2026-10-21 起它右侧不再有别的图标（侧栏开关已撤），原先「侧栏开关必须在
+    /// 全屏按钮左侧」那条顺序断言一并作废。
     #[test]
-    fn fullscreen_toggle_sits_right_of_the_sidebar_toggle() {
+    fn the_fullscreen_toggle_is_the_only_trailing_button() {
         let code = production_source();
 
         assert!(
@@ -1480,27 +1453,9 @@ mod tests {
                 "全屏按钮少了 `{needle}`：图标与提示词都要随全屏状态换。"
             );
         }
-
-        // 用户要的是「**右侧**增加全屏图标」：顺序 = 侧栏开关先挂、全屏后挂。
-        let sidebar = code
-            .find(r#"Button::new("toggle-sidebar")"#)
-            .expect("找不到侧栏开关");
-        let fullscreen = code
-            .find(r#"Button::new("toggle-terminal-fullscreen")"#)
-            .expect("找不到终端全屏按钮");
         assert!(
-            sidebar < fullscreen,
-            "全屏图标必须排在侧栏开关右侧（挂进 `trailing` 的先后顺序）。"
-        );
-
-        // 全屏时侧栏开关不画（侧栏已被全屏藏起来，点了没反应还会污染用户意图）。
-        let guard = code
-            .find("if !fullscreen {")
-            .expect("找不到「全屏时不画侧栏开关」的守卫");
-        assert!(
-            guard < sidebar,
-            "侧栏开关必须被 `if !fullscreen {{ .. }}` 守卫住 —— 全屏下它点了没用，\n\
-             却会把 `sidebar_collapsed` 改掉，用户退出全屏才会发现侧栏没了。"
+            !code.contains("IconName::PanelLeft"),
+            "标签栏又画了侧栏开关图标 —— 用户明确要求移除（图标与功能一并撤下）。"
         );
     }
 

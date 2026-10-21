@@ -93,8 +93,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         .w(px(RAIL_W))
         .h_full()
         .flex_shrink_0()
-        // 经 `panel_bg` 透出背景图（2026-09-18 反馈「背景图只替换了连接栏」）
-        .bg(m.panel_bg(tk.bg_elevated))
+        .bg(crate::theme::surface(1.0, tk.bg_elevated))
         // 右侧那条 1px 分割线随圆角卡片一并撤下：2026-09-18 起侧栏是**独立卡片**，
         // 与竖栏之间隔着 `CARD_GAP` 的留白，分界由留白自己承担；再画一条线，
         // 它会孤零零地立在空隙中间（离卡片还有 8px），比不画更像渲染缺陷。
@@ -222,7 +221,9 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
 }
 
 fn rail_item(
-    m: &mut MainView,
+    // 会话数角标撤下之后，这里不再读主视图数据；参数保留是为了不给每个调用点
+    // 改签名（也留个位置：将来若要按会话状态改图标，落点就在这）。
+    _m: &mut MainView,
     panel: PanelKind,
     is_active: bool,
     cx: &mut Context<MainView>,
@@ -231,21 +232,10 @@ fn rail_item(
     // N8：统一走主题工具函数（原就地 hex 闭包）
     use crate::theme::to_hsla as hex;
     let id: SharedString = format!("rail-{:?}-{}", panel, panel_hotkey(panel)).into();
-    let count = m.tabs_state.tabs.len();
-
-    let badge = if panel == PanelKind::Terminals && count > 0 {
-        Some(
-            div()
-                .absolute()
-                .top(px(0.))
-                .right(px(4.))
-                .text_size(px(9.))
-                .text_color(hex(t.fg_muted))
-                .child(format!("{}", count.min(99))),
-        )
-    } else {
-        None
-    };
+    // 2026-10-21 用户要求「最左栏终端图标不显示数字」：原先终端那格右上角挂着一枚
+    // 会话数（`tabs.len()`，最多显示 99）。撤掉之后图标只看形状与选中指示条 ——
+    // 标签栏本来就写着有哪几个会话，这里那枚小字既挤在 38px 宽的栏里，
+    // 又要在每次开关标签时重排。
 
     let btn = Button::new(id)
         .ghost()
@@ -301,7 +291,6 @@ fn rail_item(
                 .when(is_active, |d| d.bg(hex(t.accent))),
         )
         .child(btn)
-        .children(badge)
         .into_any_element()
 }
 
@@ -356,6 +345,23 @@ mod tests {
             !code.contains("ordered_panels("),
             "图标栏又接回了 `ordered_panels`（按最近访问重排）：用户已要求回退，\
              图标位置不许再随访问历史变化。"
+        );
+    }
+
+    /// 2026-10-21 用户要求「最左栏终端图标不显示数字」：终端那格不再挂会话数角标。
+    ///
+    /// 反向断言在这里是安全的：`prod()` 已剥注释，且「往图标上挂数字」在本文件
+    /// 只有 `rail_item` 一处（`count.min(99)` 是那枚角标的独有写法）。
+    #[test]
+    fn the_rail_does_not_pin_a_tab_count_badge() {
+        let code = prod(include_str!("activity_bar.rs"));
+        assert!(
+            !code.contains("count.min(99)"),
+            "终端图标右上角又出现会话数角标了 —— 用户要求不显示数字。"
+        );
+        assert!(
+            !code.contains(".children(badge)"),
+            "`rail_item` 又把 badge 挂回图标盒上了。"
         );
     }
 

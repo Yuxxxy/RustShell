@@ -42,8 +42,6 @@ impl MainView {
         self.cancel_key_record();
         self.panel_ui.keymap_rows = crate::keybinds::snapshot_rows();
         self.panel_ui.keymap_hint = None;
-        // 背景图候选与可导入文件：每次打开重扫，用户新放进目录的图片/文件立即出现
-        self.refresh_background();
         // 拖动位移每次打开归零：面板回到默认落点，避免上次拖出去的位置
         // （尤其是靠近窗口边缘的）让用户以为设置打不开。
         self.io.set_drag_offset = (0.0, 0.0);
@@ -74,10 +72,6 @@ impl MainView {
         if theme_changed {
             self.apply_theme_everywhere(cx);
         }
-        // 背景图也是即时预览的（渲染读的是 bg_source 缓存），
-        // 回滚后必须重算缓存，否则会「设置里写着无背景、窗口上还挂着图」；
-        // 终端底色 alpha 同理，要跟着回滚后的面板不透明度重算。
-        self.refresh_background();
         self.apply_terminal_palette(cx);
         self.io.set_hint = None;
         cx.notify();
@@ -261,8 +255,8 @@ impl MainView {
     pub(super) fn apply_theme_everywhere(&mut self, cx: &mut Context<Self>) {
         crate::theme::apply_theme_mode(cx, self.settings.theme_mode);
         let new_palette = self.settings.resolve_terminal_palette();
-        // 终端底色 alpha：背景图启用时半透明；未启用恒为 1.0（无视觉变化）
-        let bg_alpha = self.settings.panel_alpha();
+        // 终端底色：不透明（alpha = 1.0）
+        let bg_alpha = 1.0;
         for tab in &self.tabs_state.tabs {
             let Some(term) = tab.terminal.clone() else {
                 continue;
@@ -344,8 +338,8 @@ impl MainView {
     /// 把当前`settings`里解析出的终端配色推给所有已打开的终端（字体/配色即时生效）。
     pub(super) fn apply_terminal_palette(&mut self, cx: &mut Context<Self>) {
         let new_palette = self.settings.resolve_terminal_palette();
-        // 终端底色 alpha：背景图启用时半透明；未启用恒为 1.0（无视觉变化）
-        let bg_alpha = self.settings.panel_alpha();
+        // 终端底色：不透明（alpha = 1.0）
+        let bg_alpha = 1.0;
         for tab in &self.tabs_state.tabs {
             let Some(term) = tab.terminal.clone() else {
                 continue;
@@ -574,8 +568,6 @@ impl MainView {
         self.set_info(msg, true);
         cx.notify();
     }
-
-    // 背景图
 
     /// 发送一封测试邮件（设置面板「发送测试邮件」按钮）。
     ///

@@ -201,9 +201,8 @@ fn render_collapsed(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement 
         .flex_shrink_0()
         .justify_center()
         .border_t_1()
-        .border_color(hex(t.border_subtle))
-        // 经 `panel_bg` 透出背景图（2026-09-18 反馈「背景图只替换了连接栏」）
-        .bg(m.panel_bg(t.bg_elevated))
+.border_color(hex(t.border_subtle))
+        .bg(crate::theme::surface(1.0, t.bg_elevated))
         .child(
             h_flex()
                 .flex_1()
@@ -534,8 +533,7 @@ fn render_expanded(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement {
         .flex_shrink_0()
         .border_t_1()
         .border_color(hex(t.border_subtle))
-        // 经 `panel_bg` 透出背景图（2026-09-18 反馈「背景图只替换了连接栏」）
-        .bg(m.panel_bg(t.bg_elevated))
+        .bg(crate::theme::surface(1.0, t.bg_elevated))
         .child(toolbar)
         .child(div().w_full().child(tabs.overflow_x_scrollbar()))
         .child(

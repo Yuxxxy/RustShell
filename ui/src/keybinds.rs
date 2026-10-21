@@ -8,7 +8,6 @@ use rustshell_platform::paths;
 
 use crate::main_view::{
     CloseTab, CommandPalette, NewTab, OpenSettings, SplitDown, SplitRight, TabNext, TabPrev,
-    ToggleSidebar,
 };
 
 /// 键位表格行快照（设置面板渲染用）
@@ -63,7 +62,7 @@ pub fn snapshot_rows() -> Vec<KeymapRow> {
 /// 「其余能力的入口在哪」。终端相关动作（终端内搜索 / 拆分 / 切标签）刻意不列 ——
 /// 现在按下它们一点效果都没有，列出来只会让人以为坏了。
 pub const EMPTY_STATE_ACTIONS: &[&str] =
-    &["NewTab", "CommandPalette", "ToggleSidebar", "OpenSettings"];
+    &["NewTab", "CommandPalette", "OpenSettings"];
 
 /// 生成空窗格提示行：`(显示名, 键位展示串)`，与 [`EMPTY_STATE_ACTIONS`] 一一对应。
 ///
@@ -149,7 +148,6 @@ pub fn make_binding(action_id: &str, keys: &str) -> Option<KeyBinding> {
     Some(match action_id {
         "NewTab" => KeyBinding::new(keys, NewTab, None),
         "CloseTab" => KeyBinding::new(keys, CloseTab, None),
-        "ToggleSidebar" => KeyBinding::new(keys, ToggleSidebar, None),
         "TabNext" => KeyBinding::new(keys, TabNext, None),
         "TabPrev" => KeyBinding::new(keys, TabPrev, None),
         "OpenSettings" => KeyBinding::new(keys, OpenSettings, None),
@@ -169,7 +167,6 @@ fn action_type_id(action_id: &str) -> Option<TypeId> {
     Some(match action_id {
         "NewTab" => TypeId::of::<NewTab>(),
         "CloseTab" => TypeId::of::<CloseTab>(),
-        "ToggleSidebar" => TypeId::of::<ToggleSidebar>(),
         "TabNext" => TypeId::of::<TabNext>(),
         "TabPrev" => TypeId::of::<TabPrev>(),
         "OpenSettings" => TypeId::of::<OpenSettings>(),

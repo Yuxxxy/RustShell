@@ -14,6 +14,12 @@ use crate::terminal_view::{create_terminal_view, TerminalPaneConfig};
 
 use super::{connect_results, ChildView, DialogMode, MainView, RetryLedger, TabEntry, ViewDirty};
 
+/// 「新建连接」表单里主机的默认值（2026-10-21 用户要求）。
+///
+/// 只在**新建**时填：编辑既有连接一律回填它自己的主机，绝不用这个值兜底 ——
+/// 那会把「主机没填」这种错误悄悄变成「连到 localhost」。
+const DEFAULT_HOST: &str = "localhost";
+
 impl MainView {
     // 会话编排
 
@@ -548,6 +554,9 @@ impl MainView {
         let notes = p.notes.clone();
         // 私钥路径回填：明文，直接进输入框。空 = 这条连接不用私钥认证。
         let key_path = p.key_path.clone().unwrap_or_default();
+        // 认证方式回填（2026-10-21）：由已落盘的凭据反推（见 `AuthMode::of_profile`），
+        // 否则编辑一条私钥连接时对话框会显示「密码认证」，一保存就把钥匙路径抹掉。
+        let auth = super::AuthMode::of_profile(p);
         self.io
             .dlg_name
             .update(cx, |s, cx| s.set_value(name, w, cx));
@@ -569,6 +578,9 @@ impl MainView {
         self.io
             .dlg_notes
             .update(cx, |s, cx| s.set_value(notes, w, cx));
+        // 认证方式：与上面那批同一个节奏 —— 不回填，编辑一条私钥连接就会
+        // 默认成「密码认证」，保存时把 `key_path` 清掉。
+        self.io.dlg_auth = auth;
         // 端口转发规则（F-3）：编辑时把既有规则**克隆**进草稿。
         // 克隆而非引用：对话框里改的是草稿，点「取消」不该动已落盘的那一份。
         // 「高级」界面已隐藏（2026-09-29，用户要求保持简单），这里照旧回填 ——
@@ -611,11 +623,12 @@ impl MainView {
         self.present_dialog(DialogMode::Edit(p.id.clone()), w, cx);
     }
 
-    /// 打开「新建连接」对话框。`group_id` 是这次新建的**上下文归属**（None = 未分组）。
+    /// 打开「新建连接」对话框。`group_id` 是这次新建的**上下文归属**。
     ///
     /// 表单里没有分组一栏（2026-09-23 用户要求删掉、默认不分组），所以这个参数是
     /// 归属的**唯一**来路：只有「在某个分组上右键 → 新建连接」会带上它，其余入口
-    /// （栏顶 `+`、树空白右键）都传 `None`。
+    /// （栏顶 `+`、树空白右键）都传 `None` —— 传 `None` 时若库里只有一个分组，
+    /// 会落到那个分组里（见下文，2026-10-21「默认 default 文件夹」）。
     ///
     /// 新建与编辑共用同一批输入状态，所以这里必须把上一次（尤其是「编辑某条连接」）
     /// 留下的内容**全部清空** —— 不清就会把上一条的名称/主机/口令带进「新建」，
@@ -627,10 +640,22 @@ impl MainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 默认落点（2026-10-21）：初始化只建一个 `default` 文件夹，若还让新连接
+        // 散在根级，那个文件夹就永远是空的 —— 用户看到的是「文件夹 + 一堆游离条目」。
+        //
+        // 只在**库里恰好只有一个分组**时自动归属：多分组下猜错归属，比让用户自己
+        // 拖一下更烦；而「只有一个分组」时没有任何歧义。改名/删除都不影响这条判断
+        // （不看名字，只看数量），所以把 default 改成「生产」也照样成立。
+        let group_id = group_id.or_else(|| {
+            (self.conn_store.groups.len() == 1).then(|| self.conn_store.groups[0].id.clone())
+        });
         let default_proxy_port = rustshell_core::proxy::DEFAULT_PROXY_PORT.to_string();
         for (state, value) in [
             (&self.io.dlg_name, ""),
-            (&self.io.dlg_host, ""),
+            // 主机给默认值 `localhost`（2026-10-21 用户要求）：连接库的绝大多数条目
+            // 都是本机 / 本地端口转发（`127.0.0.1:2222` 这类），让它开箱就有个能直接
+            // 改后缀的起点，比对着空框想「要不要填 IP」快。端口仍旧默认 22。
+            (&self.io.dlg_host, DEFAULT_HOST),
             (&self.io.dlg_port, "22"),
             (&self.io.dlg_user, ""),
             (&self.io.dlg_pass, ""),
@@ -666,6 +691,9 @@ impl MainView {
             .dlg_notes
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.io.dlg_group_id = group_id;
+        // 认证方式回默认（2026-10-21 用户要求「默认密码认证」）：不清就会带着
+        // 上一条连接的「私钥认证」进新建框，而私钥那一栏此刻是空的。
+        self.io.dlg_auth = super::AuthMode::Password;
         self.io.dlg_error = None;
         self.io.dlg_test = None;
         self.io.dlg_testing = false;
@@ -1118,8 +1146,8 @@ impl MainView {
             palette: self.settings.resolve_terminal_palette(),
             // T4-E1：字符编码（保存后新终端生效）
             encoding: self.settings.terminal_encoding.clone(),
-            // 背景图启用时终端底色半透明，让图片透出到终端区域
-            background_alpha: self.settings.panel_alpha(),
+            // 终端底色：不透明（alpha = 1.0）
+            background_alpha: 1.0,
             cursor_blink: self.settings.terminal_cursor_blink,
             cursor_blink_ms: self.settings.terminal_cursor_blink_ms,
             cursor_style: self.settings.terminal_cursor_style,

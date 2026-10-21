@@ -96,7 +96,6 @@ pub fn builtin_commands() -> Vec<CommandEntry> {
         entry("新增连接", None, "NewConnection"),
         entry("新增本地 Shell", None, "NewLocalShell"),
         entry("AI助手", None, "AiAssistant"),
-        entry("切换侧栏", Some("mod+B"), "ToggleSidebar"),
         entry("打开设置", Some("mod+,"), "OpenSettings"),
         // 2026-09-29「取消恢复上次会话功能」：启动不再自动弹「恢复上次会话？」框，
         // 恢复改由这一条**手动触发** —— 所以它必须进面板，否则功能就没入口了。
@@ -117,7 +116,6 @@ pub fn action_label(action_id: &str) -> Option<&'static str> {
         "CloseTab" => "关闭当前标签",
         "TabNext" => "下一个标签",
         "TabPrev" => "上一个标签",
-        "ToggleSidebar" => "切换侧栏",
         "OpenSettings" => "打开设置",
         "CommandPalette" => "命令面板",
         "SearchInTerminal" => "终端内搜索",
@@ -206,7 +204,8 @@ mod tests {
     fn builtin_has_stable_labels() {
         let cmds = builtin_commands();
         // 2026-09-29：+1 条「恢复上次会话」（启动不再自动弹框后的手动入口）。
-        assert_eq!(cmds.len(), 6);
+        // 2026-10-21：-1 条「切换侧栏」（用户要求连图标带功能一起撤下，见 `tab_bar`）。
+        assert_eq!(cmds.len(), 5);
         // 存储为平台无关描述，展示时平台化
         assert!(cmds
             .iter()
@@ -236,8 +235,8 @@ mod tests {
             .all(|c| c.origin == CommandOrigin::Builtin && c.action_id.is_some()));
         // 展示串在非 macOS 下应为 Ctrl 前缀（CI 为 windows/linux）
         if !cfg!(target_os = "macos") {
-            let sidebar = cmds.iter().find(|c| c.label == "切换侧栏").unwrap();
-            assert_eq!(sidebar.shortcut_label().as_deref(), Some("Ctrl+B"));
+            let settings = cmds.iter().find(|c| c.label == "打开设置").unwrap();
+            assert_eq!(settings.shortcut_label().as_deref(), Some("Ctrl+,"));
         }
     }
 
@@ -271,7 +270,6 @@ mod tests {
             "新增连接",
             "新增本地 Shell",
             "AI助手",
-            "切换侧栏",
             "打开设置",
         ] {
             assert!(labels.contains(&kept), "命令面板丢了应用级命令「{kept}」");

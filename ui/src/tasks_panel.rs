@@ -71,8 +71,10 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 // 眼睛扫比打字慢得多。搜索框常驻（不藏进折叠区）：它有意义的
                 // 前提是用户知道它在。
                 //
-                // 「新建」在搜索框**右侧**（用户指定）：左侧没有放大镜图标，
-                // 输入框独占整行左侧，与列表左对齐。
+                // 2026-10-21 用户要求「定时任务搜索栏左侧增加放大镜图标」：
+                // 与连接树搜索框同一手法（`Input::prefix`，图标落在框内左侧、
+                // 随输入框高度居中）。此前这里明确撤掉过放大镜，现在是加回来。
+                // 「新建」仍在输入框**右侧**。
                 .child(
                     h_flex()
                         .w_full()
@@ -82,6 +84,16 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                             Input::new(&m.io.task_search)
                                 .small()
                                 .cleanable(true)
+                                .prefix(
+                                    // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
+                                    div()
+                                        .debug_selector(|| "task-search-icon".to_string())
+                                        .child(
+                                            Icon::new(LucideIcon::Search)
+                                                .xsmall()
+                                                .text_color(hex(t.fg_muted)),
+                                        ),
+                                )
                                 .w_full(),
                         )
                         .child(
@@ -529,7 +541,7 @@ mod tests {
     fn panel_does_not_paint_its_own_background() {
         let c = code();
         assert!(
-            !c.contains(".bg(m.panel_bg"),
+            !c.contains(".bg(crate::theme::surface"),
             "面板不自带底色 —— 底色与圆角由 `MainView` 的卡片壳提供"
         );
     }
@@ -615,10 +627,16 @@ mod tests {
         ] {
             assert!(c.contains(needle), "任务面板的查询功能缺了 `{needle}`");
         }
-        // 放大镜撤下（用户要求）：搜索行里只有输入框与它右侧的「新建」
+        // 左侧放大镜（2026-10-21 用户要求「定时任务搜索栏左侧增加放大镜图标」）：
+        // 与连接树同一手法走官方 `Input::prefix`，图标落在框内左侧。
+        // 反向断言也留着：以前这里明确撤掉过放大镜，别又被人「顺手简化」掉。
         assert!(
-            !c.contains("LucideIcon::Search"),
-            "搜索框左侧的放大镜已撤下，`Search` 不该再出现在本面板"
+            c.contains("LucideIcon::Search"),
+            "搜索框左侧的放大镜不见了（用户 2026-10-21 要求加回来）。"
+        );
+        assert!(
+            c.contains(".prefix("),
+            "放大镜必须走 `Input::prefix` 落在框内左侧，而不是在外面拼一层 h_flex。"
         );
         // 「新建」必须在搜索框所在的这一行、且在输入框**之后**（右侧）
         assert!(
