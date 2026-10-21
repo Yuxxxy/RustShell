@@ -6807,7 +6807,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "embed-resource",
  "rustshell-shell",
@@ -6815,7 +6815,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "aws-lc-sys",
@@ -6840,7 +6840,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-platform"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -6857,7 +6857,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-shell"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "gpui-component",
@@ -6872,7 +6872,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-terminal"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6889,7 +6889,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-ui"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "flume",
