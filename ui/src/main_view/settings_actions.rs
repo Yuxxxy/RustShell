@@ -673,6 +673,71 @@ impl MainView {
         }
         cx.notify();
     }
+
+    /// 「关于」页：从 GitHub Releases 检查最新版本。
+    ///
+    /// 网络请求放到后台执行器，结果回主线程写进设置面板顶部的提示条；
+    /// 检查期间按钮置灰（`io.update_checking`），避免连点并发起多个请求。
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if self.io.update_checking {
+            return;
+        }
+        self.io.update_checking = true;
+        self.io.update_latest = None;
+        self.set_info(
+            rustshell_core::i18n::ts("正在检查更新…".into(), "Checking for updates…".into()),
+            true,
+        );
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { rustshell_core::update::check_latest() })
+                .await;
+            let _ = this.update(cx, |m, cx| {
+                m.io.update_checking = false;
+                match result {
+                    Ok(release) => {
+                        let newer = rustshell_core::update::is_newer(
+                            &release.version,
+                            rustshell_core::APP_VERSION,
+                        );
+                        let msg = if newer {
+                            rustshell_core::i18n::ts(
+                                format!(
+                                    "发现新版本 v{}（当前 v{}），可打开发布页下载。",
+                                    release.version,
+                                    rustshell_core::APP_VERSION
+                                ),
+                                format!(
+                                    "Version v{} is available (current v{}); open the release page to download.",
+                                    release.version,
+                                    rustshell_core::APP_VERSION
+                                ),
+                            )
+                        } else {
+                            rustshell_core::i18n::ts(
+                                format!("已是最新版本（v{}）。", rustshell_core::APP_VERSION),
+                                format!("You are up to date (v{}).", rustshell_core::APP_VERSION),
+                            )
+                        };
+                        m.io.update_latest = Some(release);
+                        m.set_info(msg, true);
+                    }
+                    Err(e) => {
+                        m.io.update_latest = None;
+                        m.set_error(rustshell_core::i18n::ts(
+                            format!("检查更新失败：{e}"),
+                            format!("Update check failed: {e}"),
+                        ));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 #[cfg(test)]

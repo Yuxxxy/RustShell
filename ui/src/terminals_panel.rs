@@ -74,8 +74,10 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 .ml_1()
                 .mr_1()
                 .rounded(px(6.))
-                .when(is_active, |d| d.bg(hex(t.bg_overlay)))
-                .hover(|s| s.bg(hex(t.bg_overlay)))
+                // 卡片底色是 `bg_base`：激活 / hover 都取 `bg_elevated`，
+                // 浅色下 `bg_overlay` 与底色同为纯白（2026-10-22 内外分层调整）。
+                .when(is_active, |d| d.bg(hex(t.bg_elevated)))
+                .hover(|s| s.bg(hex(t.bg_elevated)))
                 .on_click(move |_: &ClickEvent, _w, cx| {
                     let id = id_click.clone();
                     let Some(hub) = cx.try_global::<super::main_view::UiHub>() else {

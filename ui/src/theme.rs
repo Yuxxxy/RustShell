@@ -83,10 +83,11 @@ pub fn apply_theme_mode(cx: &mut App, mode: ThemeMode) {
     // 未配置时是默认浅色，深色主题下会出现白色块（bug 反馈 2026-09-08）。
     //
     // 2026-09-18 运行反馈「软件右上角缩小和放大在浅色模式上鼠标放上去看不出来效果」：
-    // 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，而标题栏底色取的正是 `bg_base`
-    // （见 `MainView::render` 里 TitleBar 的 `.bg(crate::theme::surface(1.0, t.bg_base))`）⇒
-    // 白底上盖白高亮，鼠标移上去逐像素不变。深色下 `bg_overlay(#1C2128)` 与
-    // `bg_base(#0D1117)` 差一档灰阶，所以只有浅色露馅。
+    // 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，而当时标题栏底色取的是 `bg_base`
+    // （现取 `bg_elevated`，与最左侧图标栏一致，见 `MainView::render` 里 TitleBar 的
+    // `.bg(crate::theme::surface(1.0, t.bg_elevated))`）⇒ 白底上盖白高亮，
+    // 鼠标移上去逐像素不变。深色下 `bg_overlay(#1C2128)` 与底色差一档灰阶，
+    // 所以只有浅色露馅。
     //
     // 浅色改用「主文字色的低透明度」当 hover 面：它按定义与任何底色可区分，
     // 不引入新的硬编码色值，且 Dark 分支保持原值——深色主题的观感逐像素不变。
@@ -619,12 +620,12 @@ mod tests {
     /// **标题栏底色**可区分。
     ///
     /// 取色链路：`gpui-component/src/title_bar.rs` 的 `ControlIcon::hover_bg()` 读
-    /// `theme.secondary_hover`；而本应用的标题栏底色是 `bg_base`
-    /// （`MainView::render` 里 `TitleBar` 的 `.bg(crate::theme::surface(1.0, t.bg_base))`）。
-    /// 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，于是旧实现是「白底白高亮」，
+    /// `theme.secondary_hover`；而本应用的标题栏底色是 `bg_elevated`
+    /// （`MainView::render` 里 `TitleBar` 的 `.bg(crate::theme::surface(1.0, t.bg_elevated))`）。
+    /// 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，旧实现是「白底白高亮」，
     /// 深色主题恰好差一档灰阶才没暴露 —— 这正是「只有浅色模式看不出来」的原因。
     ///
-    /// 为什么断言「不等于 bg_base」而不是钉死具体色值：色值可以随主题调整，
+    /// 为什么断言「不等于 bg_elevated」而不是钉死具体色值：色值可以随主题调整，
     /// 要守住的是「悬停看得出变化」这条不变量，两种主题都得成立。
     #[gpui::test]
     fn window_control_hover_is_visible_on_the_title_bar(cx: &mut gpui::TestAppContext) {
@@ -638,7 +639,7 @@ mod tests {
                 let theme = Theme::global(cx);
                 assert_ne!(
                     theme.colors.secondary_hover,
-                    to_hsla(token.bg_base),
+                    to_hsla(token.bg_elevated),
                     "{mode:?} 主题下窗口控制按钮 hover 底色 == 标题栏底色 → \
                      鼠标放上去看不出来效果"
                 );

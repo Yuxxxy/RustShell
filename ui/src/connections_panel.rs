@@ -309,7 +309,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         m.conn_ui.conn_tree_key = Some(tree_key);
     }
 
-    // /S5：宽度与背景由`MainView`的侧栏容器统一提供（可拖拽调宽 + bg_elevated
+    // /S5：宽度与背景由`MainView`的侧栏容器统一提供（可拖拽调宽 + bg_base
     // + 右侧分割线），面板只负责内容，避免各面板底色不一致导致与终端界限不清。
     //
     // 2026-09-15 用户要求：取消树顶部的「服务器」标识，让分组/连接直接作为最上层。

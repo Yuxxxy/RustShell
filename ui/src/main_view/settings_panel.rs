@@ -998,13 +998,105 @@ impl MainView {
                 .group(proxy_group)
         };
 
-        // 2026-09-18 运行反馈「移除配置-关于，导出诊断和复制诊断数据功能」：
-        // 原先这里是一整页「关于」（版本 / 运行环境 / 配置目录 / 日志文件四行信息
-        // + 导出诊断信息 / 复制诊断信息 / 日志文件 / 配置目录四枚按钮）。
-        // 整页撤下：信息本身在标题栏（版本号）、日志与配置目录在文件系统里都找得到，
-        // 而诊断导出会把本机路径写进一个文件再弹资源管理器，属于「用户没要就替用户
-        // 做决定」的动作。`MainView::{export_diagnostics, copy_diagnostics,
-        // open_log_folder}` 与 `ui_call_export_diagnostics` 随页一并删除。
+        // 「关于」页（2026-10-22 用户要求恢复）：软件简介、GitHub 仓库入口与检查更新。
+        //
+        // 2026-09-18 曾整页撤下（当时连同「导出 / 复制诊断信息」一起删）；这次只恢复
+        // 「关于」本身，诊断导出与键位导入导出仍不回归 —— 那几项会替用户把本机路径
+        // 写进文件或弹资源管理器，属于「用户没要就替用户做决定」的动作。
+        let about = {
+            let me_check = me.clone();
+            let me_status = me.clone();
+            SettingPage::new(t("关于"))
+                .icon(IconName::Info)
+                .description(t(
+                    "RustShell 是一款基于 Rust 与 GPUI 构建的跨平台 SSH / SFTP 终端，支持多标签与分屏、文件传输、AI 助手和批量命令执行。",
+                ))
+                .group(
+                    SettingGroup::new()
+                        .item(SettingItem::new(
+                            t("版本"),
+                            SettingField::render(move |_options, _w, cx| {
+                                let tok = crate::theme::current(cx);
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(hex(tok.fg_primary))
+                                    .child(SharedString::from(format!(
+                                        "v{}",
+                                        rustshell_core::APP_VERSION
+                                    )))
+                                    .into_any_element()
+                            }),
+                        ))
+                        .item(
+                            SettingItem::new(
+                                SharedString::from("GitHub"),
+                                SettingField::render(move |_options, _w, _cx| {
+                                    Button::new("about-github")
+                                        .small()
+                                        .outline()
+                                        .label(t("GitHub 仓库"))
+                                        .on_click(|_e, _w, cx: &mut App| {
+                                            cx.open_url(rustshell_core::update::REPO_URL)
+                                        })
+                                        .into_any_element()
+                                }),
+                            )
+                            .description(SharedString::from(rustshell_core::update::REPO_URL)),
+                        )
+                        .item(
+                            SettingItem::new(
+                                t("检查更新"),
+                                SettingField::render(move |_options, _w, cx| {
+                                    let (checking, latest) = {
+                                        let m = me_status.read(cx);
+                                        (m.io.update_checking, m.io.update_latest.clone())
+                                    };
+                                    let mut row = h_flex().gap_2().items_center().child(
+                                        Button::new("about-check-update")
+                                            .small()
+                                            .primary()
+                                            .label(if checking {
+                                                t("正在检查…")
+                                            } else {
+                                                t("检查更新")
+                                            })
+                                            .disabled(checking)
+                                            .on_click({
+                                                let me = me_check.clone();
+                                                move |_e, _w, cx: &mut App| {
+                                                    me.update(cx, |m, cx| {
+                                                        m.check_for_updates(cx)
+                                                    });
+                                                }
+                                            }),
+                                    );
+                                    // 只有「确实更新」才给下载入口：最新发布等于当前版本时，
+                                    // 多一枚按钮只会让人以为还有别的东西可点。
+                                    if let Some(release) = latest.filter(|r| {
+                                        rustshell_core::update::is_newer(
+                                            &r.version,
+                                            rustshell_core::APP_VERSION,
+                                        )
+                                    }) {
+                                        row = row.child(
+                                            Button::new("about-open-release")
+                                                .small()
+                                                .outline()
+                                                .label(t("打开发布页"))
+                                                .on_click(move |_e, _w, cx: &mut App| {
+                                                    cx.open_url(&release.url)
+                                                }),
+                                        );
+                                    }
+                                    row.into_any_element()
+                                }),
+                            )
+                            .description(t(
+                                "从 GitHub Releases 获取最新版本并与当前版本比较。",
+                            )),
+                        ),
+                )
+        };
 
         // 预警通知（SMTP）
         //
@@ -1440,11 +1532,12 @@ impl MainView {
             // 对话框 940px 宽，侧栏收到 180px 起，字段列才有余量
             .sidebar_width(px(180.))
             .sidebar_size_range(px(150.)..px(262.))
-            // 页序：连接 → 窗口 → 终端 → AI 助手 → Agent → 通知 → 快捷键。
+            // 页序：连接 → 窗口 → 终端 → AI 助手 → Agent → 通知 → 快捷键 → 关于。
             // 窗口在前：它是「这台机器上长什么样」，与连接/终端这类
             // 「跟远端打交道」的页分开。
             // Agent 紧挨 AI 助手：两者读的是同一份 `ai_cfg`，agent 页只是把
             // 「AI 能不能动这台机器」的那几项独立出来（2026-09-22 用户要求归并）。
+            // 关于殿后：版本 / 仓库 / 更新检查属于低频元信息，不占常驻视线。
             .pages(vec![
                 connections_io,
                 window_page,
@@ -1453,6 +1546,7 @@ impl MainView {
                 agent,
                 notify,
                 keybind,
+                about,
             ])
     }
 }
@@ -2078,6 +2172,7 @@ mod tests {
             "agent",
             "notify",
             "keybind",
+            "about",
         ] {
             assert!(
                 list.contains(name),
@@ -2235,29 +2330,49 @@ mod tests {
         );
     }
 
-    /// 回归（2026-09-18 运行反馈）：设置面板不再有「关于」页，也不再有
-    /// 导出/复制诊断、导出/导入键位这四枚按钮。
+    /// 回归（2026-10-22 用户要求「设置中增加关于：描述此软件，跳转 GitHub，检查更新」）。
     ///
-    /// 这既是「改了什么」的说明，也是防止改回去的护栏 —— 特别是键位导入导出：
-    /// 撤掉它不代表键位不可迁移，`<config>/keymap.json` 本身就是可拷的文件，
-    /// 别再把 `keymap-export.json` 那条通路接回来。
+    /// 与 2026-09-18 的「移除配置-关于」并存的口径：
+    /// - 「关于」页回来了，且必须有软件简介、GitHub 入口、检查更新三个落点；
+    /// - 当时一并撤下的「导出 / 复制诊断信息」「导出 / 导入键位」**不再回归** ——
+    ///   它们会替用户把本机路径写进文件或弹资源管理器，属于「用户没要就替用户
+    ///   做决定」的动作。护栏两头都断：该有的在、不该有的不在。
     #[test]
-    fn about_page_and_diagnostics_entrypoints_are_gone() {
+    fn about_page_returns_without_the_diagnostics_entrypoints() {
         let code = production_source();
-        for gone in [
-            "关于",
-            "导出诊断信息",
-            "复制诊断信息",
-            "导出键位",
-            "导入键位",
+        // ① 关于页存在，且三个落点都在。
+        assert!(
+            code.contains(&t_call("关于")),
+            "设置面板缺少「关于」页（2026-10-22 用户要求恢复）。"
+        );
+        let at = code.find("let about = {").expect("「关于」页装配必须存在");
+        let tail = &code[at..];
+        let page = &tail[..tail
+            .find("let notify = {")
+            .expect("「关于」页之后应当是通知页")];
+        for needle in [
+            "RustShell 是一款基于 Rust 与 GPUI 构建的跨平台 SSH / SFTP 终端",
+            "about-github",
+            "about-check-update",
+            "check_for_updates",
         ] {
+            assert!(
+                page.contains(needle),
+                "「关于」页缺少 `{needle}` —— 简介 / GitHub 跳转 / 检查更新缺一不可。"
+            );
+        }
+        assert!(
+            page.contains("rustshell_core::update::REPO_URL"),
+            "GitHub 入口必须用 `core::update::REPO_URL`，不要在 UI 里另抄一份地址。"
+        );
+        // ② 诊断 / 键位导入导出仍保持撤下。
+        for gone in ["导出诊断信息", "复制诊断信息", "导出键位", "导入键位"] {
             let needle = t_call(gone);
             assert!(
                 !code.contains(&needle),
                 "设置面板仍残留已移除的条目：{needle}"
             );
         }
-        // 按钮 id 一并消失（源码串断言不必依赖 i18n 词条表，故两样都查）
         for gone in [
             "about-export-diag",
             "about-copy-diag",

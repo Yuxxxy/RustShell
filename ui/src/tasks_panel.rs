@@ -81,20 +81,35 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                         .items_center()
                         .gap_1()
                         .child(
-                            Input::new(&m.io.task_search)
-                                .small()
-                                .cleanable(true)
-                                .prefix(
-                                    // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
-                                    div()
-                                        .debug_selector(|| "task-search-icon".to_string())
-                                        .child(
-                                            Icon::new(LucideIcon::Search)
-                                                .xsmall()
-                                                .text_color(hex(t.fg_muted)),
-                                        ),
-                                )
-                                .w_full(),
+                            // 包装层挂「点框外失焦」（与连接栏同一手法）：点列表行、
+                            // 空白区这些不可聚焦的地方时，焦点也应当从搜索框松开。
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .debug_selector(|| "task-search-box".to_string())
+                                .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                                    super::main_view::blur_input_on_outside_click(
+                                        &m.io.task_search,
+                                        w,
+                                        cx,
+                                    )
+                                }))
+                                .child(
+                                    Input::new(&m.io.task_search)
+                                        .small()
+                                        .cleanable(true)
+                                        .prefix(
+                                            // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
+                                            div()
+                                                .debug_selector(|| "task-search-icon".to_string())
+                                                .child(
+                                                    Icon::new(LucideIcon::Search)
+                                                        .xsmall()
+                                                        .text_color(hex(t.fg_muted)),
+                                                ),
+                                        )
+                                        .w_full(),
+                                ),
                         )
                         .child(
                             Button::new("task-new-ai")
@@ -131,7 +146,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 .px_2()
                 .py_1()
                 .rounded(px(ROW_RADIUS))
-                .bg(hex(t.bg_overlay))
+                .bg(hex(t.bg_elevated))
                 .text_size(px(11.))
                 .text_color(hex(t.warning))
                 .child(SharedString::from(msg))
@@ -257,7 +272,7 @@ fn task_row(
         .mx_1()
         .gap_0p5()
         .rounded(px(ROW_RADIUS))
-        .hover(|s| s.bg(hex(t.bg_overlay)))
+        .hover(|s| s.bg(hex(t.bg_elevated)))
         // 右键：立即执行 / 启用停用 / 复制 / 删除
         .context_menu(move |menu: PopupMenu, _w, _cx| {
             let run = menu_id.clone();
@@ -492,7 +507,7 @@ fn run_row(rec: &RunRecord, task_id: &str, cx: &mut Context<MainView>) -> impl I
                 .px_1()
                 .rounded(px(ROW_RADIUS))
                 .text_color(hex(t.accent))
-                .hover(|s| s.bg(hex(t.bg_overlay)))
+                .hover(|s| s.bg(hex(t.bg_elevated)))
                 .on_click(cx.listener(move |m, _e, _w, cx| {
                     m.task_open_run_session(&task_id, &run_id, cx);
                 }))

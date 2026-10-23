@@ -123,7 +123,7 @@ const AI_COMPOSER_MAX_H: f32 = 400.;
 pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement {
     let cfg_ready = m.ai_ui.ai_cfg.is_configured();
 
-    // /S5：宽度与背景由`MainView`的侧栏容器统一提供（可拖拽调宽 + bg_elevated
+    // /S5：宽度与背景由`MainView`的侧栏容器统一提供（可拖拽调宽 + bg_base
     // + 右侧分割线），面板只负责内容。
     //
     // 2026-09-20 运行反馈「AI助手 输入栏可以上下调整大小」：消息区与输入区之间插一根
@@ -353,7 +353,7 @@ fn message_area(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement {
             // UI-05：本地化文案 + 保留可读 label（a11y）
             .with_jump_button_label(rustshell_core::i18n::t("跳到最新"))
             // UI-08：底部渐隐用面板底色，被裁的半行融入背景而非硬切
-            .with_bottom_fade(hex(t.bg_elevated))
+            .with_bottom_fade(hex(t.bg_base))
             // 演示稿的行距是「2rem 行间 + 列表底 padding」，侧栏比演示框窄得多，
             // 统一收到 12px，最后一行到输入条的间距交给输入条自己的 pt。
             .with_row_style(StyleRefinement::default().pb_3()),
@@ -728,7 +728,9 @@ fn trace_block(msg: &ChatMessage, me: &Entity<MainView>, cx: &mut App) -> AnyEle
             // 用户看到的是「一拖就没了」。
             head = head
                 .cursor_pointer()
-                .hover(|s| s.bg(hex(t.bg_overlay)))
+                // hover 取 `bg_elevated` 而不是 `bg_overlay`：面板底色已是 `bg_base`，
+                // 浅色主题里 `bg_overlay == bg_base == #FFFFFF`，那档高亮会消失。
+                .hover(|s| s.bg(hex(t.bg_elevated)))
                 .on_click(move |_e, _w, cx: &mut App| {
                     let call_id = call_id.clone();
                     me_click.update(cx, |m, cx| {
@@ -785,7 +787,8 @@ fn render_confirm_card(
         .rounded(cx.theme().radius_lg)
         .border_1()
         .border_color(hex(t.warning))
-        .bg(hex(t.bg_overlay))
+        // 与面板底色（bg_base）拉开一档：浅色下 overlay == base，卡片会「没底」。
+        .bg(hex(t.bg_elevated))
         .id(SharedString::from(format!("ai-confirm-{msg_id}")))
         .debug_selector(move || "ai-agent-confirm".to_string())
         .child(
@@ -913,7 +916,7 @@ fn think_block(msg: &ChatMessage, open: bool, me: &Entity<MainView>, cx: &mut Ap
                 .px_2()
                 .py_1()
                 .cursor_pointer()
-                .hover(|s| s.bg(hex(t.bg_overlay)))
+                .hover(|s| s.bg(hex(t.bg_elevated)))
                 .child(
                     Icon::new(if open {
                         IconName::ChevronDown
@@ -1089,8 +1092,10 @@ fn composer(m: &MainView, cx: &mut Context<MainView>, cfg_ready: bool) -> impl I
                                 } else {
                                     ButtonVariant::Custom(
                                         ButtonCustomVariant::new(cx)
-                                            .hover(hex(t.bg_overlay))
-                                            .active(hex(t.bg_elevated))
+                                            .hover(hex(t.bg_elevated))
+                                            // 按下比 hover 再重一点；不能用 `bg_overlay`
+                                            // （浅色下它是纯白，等于没反馈）。
+                                            .active(hex(t.fg_primary).opacity(0.10))
                                             .foreground(hex(t.fg_secondary)),
                                     )
                                 })
@@ -1215,7 +1220,8 @@ fn render_command_card(
         .child(
             div()
                 .text_size(px(11.))
-                .bg(hex(t.bg_base))
+                // 面板底色是 `bg_base`：命令块退到 `bg_elevated` 才看得出「嵌在卡片里」。
+                .bg(hex(t.bg_elevated))
                 .rounded(px(4.))
                 .px_1()
                 .py_1()

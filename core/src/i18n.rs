@@ -195,6 +195,12 @@ fn translate(zh: &'static str) -> &'static str {
             "1–4; applies to new connections, in-flight transfers are unaffected."
         }
         "没读到拖入的文件" => "The drop contained no files",
+        // ZMODEM 窗格浮层与拖放上传（协议在引擎字节泵里，文案归这里）
+        "下载" => "Download",
+        "上传" => "Upload",
+        "传输" => "Transfer",
+        "已有传输在进行" => "A transfer is already running",
+        "会话已断开，无法发送" => "Session closed, cannot send",
         "API 端点" => "API Endpoint",
         "模型名称" => "Model",
         "API Key" => "API Key",
@@ -874,6 +880,19 @@ fn translate(zh: &'static str) -> &'static str {
         }
         "代理口令加密失败（系统凭据存储不可用）" => {
             "Failed to encrypt the proxy password (system credential storage is unavailable)"
+        }
+        // ---- 设置：关于（2026-10-22 恢复）----
+        "关于" => "About",
+        "版本" => "Version",
+        "GitHub 仓库" => "GitHub Repository",
+        "检查更新" => "Check for Updates",
+        "正在检查…" => "Checking…",
+        "打开发布页" => "Open release page",
+        "从 GitHub Releases 获取最新版本并与当前版本比较。" => {
+            "Fetch the latest GitHub release and compare it with the current version."
+        }
+        "RustShell 是一款基于 Rust 与 GPUI 构建的跨平台 SSH / SFTP 终端，支持多标签与分屏、文件传输、AI 助手和批量命令执行。" => {
+            "RustShell is a cross-platform SSH / SFTP terminal built with Rust and GPUI, with tabs and split panes, file transfer, an AI assistant, and batch command execution."
         }
         // ---- 命令补全（C-1）----
         // 浮层标题与来源标签

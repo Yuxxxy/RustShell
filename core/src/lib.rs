@@ -33,6 +33,7 @@ pub mod ssh;
 pub mod stream;
 pub mod tasks;
 pub mod theme;
+pub mod update;
 
 /// 应用版本（关于页与诊断信息共用，避免多处硬编码字符串）。
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -92,7 +92,7 @@ pub fn name_column_width(panel_w: f32) -> f32 {
     (panel_w - fixed).max(0.)
 }
 
-fn fmt_size(n: u64) -> String {
+pub(crate) fn fmt_size(n: u64) -> String {
     if n >= 1 << 30 {
         format!("{:.1}G", n as f64 / (1 << 30) as f64)
     } else if n >= 1 << 20 {
@@ -295,7 +295,9 @@ fn file_row(
         //   有 `w_full()` → 文件行 / 目录行的时间列都在 x=284；
         //   去掉它       → 130 / 296（差 166px，就是截图里那种错位）。
         .w_full()
-        .hover(|s| s.bg(hex(t.bg_overlay)))
+        // hover 取 `bg_elevated`：卡片底色是 `bg_base`，浅色下 `bg_overlay`
+        // 与底色同为纯白，高亮会整条消失。
+        .hover(|s| s.bg(hex(t.bg_elevated)))
         .on_click({
             // 目录点击进入；文件点击无动作
             let tx = tx.clone();
@@ -422,7 +424,8 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         .drag_over::<ExternalPaths>(move |style, _paths, _, _| {
             // 悬浮期整面板高亮：只压一层底色，**不加边框** —— 边框会占布局，
             // 悬停瞬间整块列表会跟着挪 1px（拖到自己想放的文件上时最难受）。
-            style.bg(hex(t.bg_overlay))
+            // 底色用 `bg_elevated`（浅色下 overlay == base，铺上去看不见）。
+            style.bg(hex(t.bg_elevated))
         })
         .on_drop::<ExternalPaths>(|paths: &ExternalPaths, w, cx| {
             drop_uploads(paths.paths().to_vec(), w, cx);

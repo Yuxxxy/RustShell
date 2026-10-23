@@ -131,6 +131,8 @@ pub fn create_terminal_view(
         paste_normalize_newlines: cfg.paste_normalize_newlines,
         // 多行粘贴确认（由 `PasteBehavior` 一次性算出的两个值，见 TerminalPaneConfig 文档）
         paste_protect_lines: cfg.paste_protect_lines,
+        // ZMODEM 收到的文件落这里（`sz` 下载 / 远端主动发文件）
+        zmodem_download_dir: Some(rustshell_platform::paths::default_download_dir()),
     };
 
     cx.new(|cx| {

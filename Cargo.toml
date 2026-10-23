@@ -3,12 +3,16 @@ resolver = "2"
 members = ["app", "shell", "ui", "core", "platform", "terminal"]
 
 [workspace.package]
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["yuxinyu"]
 
 [workspace.dependencies]
+# ZMODEM 协议状态机（无 I/O、no_std）：终端引擎用它实现 rz/sz 与拖放上传。
+# 选它而不是 lrzsz 绑定：纯 Rust、可跨所有传输（本地 PTY / SSH / 将来的串口），
+# 且协议层不碰文件系统 —— 收发落点全由本仓决定。
+zmodem2 = "0.7.3"
 # --- GPUI 生态（统一版本线：gpui-kit v0.8.0 发布线 + gpui-fast 引擎） ---
 #
 # 2026-10-19：从「gpui-pre 0.3.x + gpui-component 0.6.1」升级到 gpui-kit 0.7.3 线，

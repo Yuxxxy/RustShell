@@ -645,6 +645,12 @@ pub struct DialogIoState {
     /// 提示语义：true = 成功/信息（accent 色），false = 校验错误（danger 色）
     pub set_hint_ok: bool,
 
+    /// 「关于」页正在检查更新（按钮置灰，避免连点）。
+    pub update_checking: bool,
+
+    /// 最近一次检查得到的最新发布；None = 还没查过或上次失败。
+    pub update_latest: Option<rustshell_core::update::LatestRelease>,
+
     /// 设置面板打开时的快照（SP-SAVE-01）：取消 / ESC / 点遮罩 / 右上角 X 一律回滚，让「取消」名副其实（此前只有主题等少数字段能回滚）。
     pub(super) set_snapshot: Option<settings_panel::SettingSnapshot>,
 

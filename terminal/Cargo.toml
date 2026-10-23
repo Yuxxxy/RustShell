@@ -27,3 +27,5 @@ flume = { workspace = true }
 log = { workspace = true }
 # PTY 输出字节转码（gbk/big5/shift_jis 转 utf-8）
 encoding_rs = { workspace = true }
+# ZMODEM（rz/sz / 拖放上传）：协议状态机，I/O 与落盘由 `zmodem.rs` 驱动
+zmodem2 = { workspace = true }

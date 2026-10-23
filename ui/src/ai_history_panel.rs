@@ -126,8 +126,10 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                             .px_2()
                             .py_1()
                             .rounded(px(ROW_RADIUS))
-                            .when(is_current, |d| d.bg(hex(t.bg_overlay)))
-                            .hover(|s| s.bg(hex(t.bg_overlay)))
+                            // 卡片底色是 `bg_base`：当前行 / hover 都取 `bg_elevated`
+                            //（浅色下 `bg_overlay` 与底色同为纯白）。
+                            .when(is_current, |d| d.bg(hex(t.bg_elevated)))
+                            .hover(|s| s.bg(hex(t.bg_elevated)))
                             .on_click(cx.listener(move |m, _e, _w, cx| {
                                 m.ai_switch_chat(id, cx);
                             }))

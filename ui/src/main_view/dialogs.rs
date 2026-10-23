@@ -1955,9 +1955,29 @@ impl MainView {
                 .small()
                 .text_size(px(11.5))
         });
+        // 官方 Settings 的侧栏搜索框状态在组件内部（`SettingsState` 不可见），
+        // 拿不到 `Entity<InputState>` 去挂 `blur_input_on_outside_click`。
+        // 这里在整块设置主体上兜底：冒泡阶段若这次按下没有被任何可聚焦控件
+        // 认领（`default_prevented` 仍为 false —— 点在按钮 / 页签 / 空白处），
+        // 就把输入焦点收起来。点进任意输入框不会误伤：官方 Input 的
+        // 「按下即聚焦」在冒泡里执行并 `prevent_default`，本处理器据此让路。
         let body = v_flex()
             .gap_2()
-            .child(div().w_full().h(px(500.)).child(settings))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(500.))
+                    .debug_selector(|| "settings-body".to_string())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_m, _ev, w, cx| {
+                            if !w.default_prevented() && w.focused_input(cx).is_some() {
+                                w.blur(cx);
+                            }
+                        }),
+                    )
+                    .child(settings),
+            )
             .children(hint);
 
         let footer = h_flex()

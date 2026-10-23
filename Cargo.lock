@@ -6807,7 +6807,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "embed-resource",
  "rustshell-shell",
@@ -6815,7 +6815,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "aws-lc-sys",
@@ -6840,7 +6840,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-platform"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -6857,7 +6857,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-shell"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "gpui-component",
@@ -6872,7 +6872,7 @@ dependencies = [
 
 [[package]]
 name = "rustshell-terminal"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6885,11 +6885,12 @@ dependencies = [
  "portable-pty",
  "ropey 1.6.1",
  "unicode-width",
+ "zmodem2",
 ]
 
 [[package]]
 name = "rustshell-ui"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "flume",
@@ -10174,6 +10175,17 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zmodem2"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a4c6cda9d8fd2379ce54d171a1a3a387ff6789b4c9de140586b91a217749ff1"
+dependencies = [
+ "bitflags 2.13.2",
+ "hex",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "zune-core"

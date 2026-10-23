@@ -55,12 +55,14 @@ use crate::input::{
 };
 use crate::render::{CursorPaint, FrameScratch, TerminalRenderer};
 use crate::terminal::TerminalState;
+use crate::zmodem::{ZmodemPump, ZmodemStatus, ZmodemUploadError, ZmodemUploadStart};
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb as AnsiRgb};
 use gpui::{Edges, *};
 use std::cell::{Cell as StdCell, RefCell};
 use std::io::{Read, Write};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -282,6 +284,12 @@ pub struct TerminalConfig {
     /// 阈值语义见 [`needs_paste_confirm`]：默认 1 ⇒ 任何换行都要确认。
     /// 引擎默认 `None`（库不替宿主做产品决策；宿主 RustShell 默认 `Some(1)`）。
     pub paste_protect_lines: Option<u32>,
+
+    /// ZMODEM（`sz` 下载 / 拖放 `rz` 上传）的落盘目录。
+    ///
+    /// `None` 时退回进程工作目录。宿主传用户「下载」目录 —— 引擎不依赖
+    /// 平台路径库（那是宿主的职责），这里只收一个明确落点。
+    pub zmodem_download_dir: Option<PathBuf>,
 }
 
 impl Default for TerminalConfig {
@@ -304,6 +312,8 @@ impl Default for TerminalConfig {
             // 引擎默认不开粘贴闸：这是宿主的产品决策（库不该替调用方定
             // 「粘贴什么要问用户」），宿主在建会话时显式传自己的设置
             paste_protect_lines: None,
+            // ZMODEM 落点由宿主给（通常 = 系统下载目录）
+            zmodem_download_dir: None,
         }
     }
 }
@@ -689,6 +699,14 @@ pub struct TerminalView {
 
     /// Writer for sending input to the terminal process
     stdin_writer: Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
+
+    /// ZMODEM 协议泵（`sz` 下载 / `rz` 上传 / 拖放上传）。
+    ///
+    /// 放在引擎里而不是宿主里：协议工作在**字节流**上（识别 `**\x18B`、
+    /// 吃掉协议帧、把其余文字照常交给 VTE），而字节流恰好握在读线程手里。
+    /// 读线程按**原始字节**喂它（早于编码转换），所以本地 PTY / SSH / 将来的
+    /// 串口都自动继承同一套能力，不必各写一遍。
+    zmodem: Arc<ZmodemPump>,
 
     /// Receiver for terminal events from the event proxy
     event_rx: mpsc::Receiver<TerminalEvent>,
@@ -1152,6 +1170,14 @@ impl TerminalView {
             Box::new(stdin_writer) as Box<dyn Write + Send>
         ));
 
+        // ZMODEM 泵：与事件代理共享同一份写端（协议应答要直接写回 PTY）。
+        // 落点目录由宿主给；没给就退回进程工作目录 —— 引擎不依赖平台路径库。
+        let zmodem_dir = config
+            .zmodem_download_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let zmodem = ZmodemPump::new(stdin_writer.clone(), zmodem_dir);
+
         // Create event channel for terminal events
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -1208,8 +1234,14 @@ impl TerminalView {
         // Spawn background thread to read from stdout
         // This thread sends bytes through the async channel
         let reader_encoding = config.encoding.clone();
+        let reader_zmodem = zmodem.clone();
         thread::spawn(move || {
-            Self::read_stdout_blocking(stdout_reader, bytes_tx, reader_encoding);
+            Self::read_stdout_blocking(
+                stdout_reader,
+                bytes_tx,
+                reader_encoding,
+                Some(reader_zmodem),
+            );
         });
 
         // Spawn async task that awaits on the channel and notifies the view
@@ -1245,6 +1277,7 @@ impl TerminalView {
             renderer,
             focus_handle,
             stdin_writer,
+            zmodem,
             event_rx,
             exit_tx: exit_event_tx,
             window_size,
@@ -1455,10 +1488,14 @@ impl TerminalView {
         *self.stdin_writer.lock() = Box::new(stdin_writer);
 
         // ---- 2) 读端：新线程 + 新合并任务 ----
+        // 旧会话上的 ZMODEM 已在断连时中止；这里再复位一次，确保新会话从干净状态开始
+        // （泵与新读线程共用，不复位会把旧传输的半截状态带进新连接）。
+        self.zmodem.reset();
         let (bytes_tx, bytes_rx) = flume::unbounded::<Vec<u8>>();
         let encoding = self.config.encoding.clone();
+        let zmodem = self.zmodem.clone();
         thread::spawn(move || {
-            Self::read_stdout_blocking(stdout_reader, bytes_tx, encoding);
+            Self::read_stdout_blocking(stdout_reader, bytes_tx, encoding, Some(zmodem));
         });
         // 直接赋值即「旧任务被 drop」⇒ 它的节流定时器与残留 `pending` 一并作废。
         // 顺序要紧：先把新任务装上，再谈别的（否则此间到达的字节会积在无人消费的通道里）。
@@ -1866,6 +1903,9 @@ impl TerminalView {
         self.reset_cursor_blink(cx);
         if !alive {
             self.blink_on = false;
+            // 会话没了，协议传输也不可能继续：复位泵，别让它在断连现场挂着一个
+            // 永远等不到对端的状态（重连时 `reattach` 还会再复位一次）。
+            self.zmodem.reset();
             // 组合到一半掉线：预编辑串留着也没人能提交它了，清掉。
             // 不清理的话它会一直画在断连现场的画面上，像一句没发出去的命令。
             self.preedit.clear();
@@ -1998,6 +2038,11 @@ impl TerminalView {
         if !self.alive {
             return;
         }
+        // ZMODEM 传输中：粘贴会作为协议数据写进管道，把正在传的帧撕碎。
+        // 拦在闸前（连「待确认」都不出现），符合「传输期间键盘不落管道」的约定。
+        if self.zmodem.is_active() {
+            return;
+        }
         let newlines = paste_newline_count(text);
         let ask = self
             .config
@@ -2061,6 +2106,10 @@ impl TerminalView {
         }
         // 会话已死：粘贴同样不落管道（与键盘、`write_to_pty` 同一道闸）
         if !self.alive {
+            return;
+        }
+        // ZMODEM 传输中：文本会混进二进制协议流，必须静默丢弃。
+        if self.zmodem.is_active() {
             return;
         }
         let bracketed = self
@@ -2127,6 +2176,10 @@ impl TerminalView {
     pub fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
         // 会话已死：文本通路与键盘、粘贴同一道闸
         if !self.alive {
+            return;
+        }
+        // ZMODEM 传输中：IME 上屏 / 平台文本消息同样不许混进协议流。
+        if self.zmodem.is_active() {
             return;
         }
         // 先清预编辑：无论这段文本是不是空（输入法取消组合时会提交空串），
@@ -2243,6 +2296,7 @@ impl TerminalView {
         mut stdout_reader: R,
         bytes_tx: flume::Sender<Vec<u8>>,
         encoding: Option<String>,
+        zmodem: Option<Arc<ZmodemPump>>,
     ) {
         let mut buffer = [0u8; 4096];
 
@@ -2261,7 +2315,20 @@ impl TerminalView {
                     break;
                 }
                 Ok(n) => {
-                    let chunk = &buffer[..n];
+                    // ★ ZMODEM 必须看**原始字节**（早于转码）：协议帧是二进制，
+                    //   按 GB18030 转一遍就毁了。泵只扣留协议帧与疑似起始符，
+                    //   普通文字原样返回 ⇒ 下面照旧走编码转换。
+                    let filtered;
+                    let chunk: &[u8] = match zmodem.as_ref() {
+                        Some(pump) => {
+                            filtered = pump.feed(&buffer[..n]);
+                            if filtered.is_empty() {
+                                continue;
+                            }
+                            &filtered
+                        }
+                        None => &buffer[..n],
+                    };
                     let out: Vec<u8> = if let Some(enc) = encoder {
                         // 拼接上次未消费尾部
                         let mut input = std::mem::take(&mut carry);
@@ -2308,6 +2375,24 @@ impl TerminalView {
         // 会话已死：一个键都不许进管道，也**不阻断传播** —— 断连的终端不该再吞掉
         // 全局快捷键（Ctrl+T / Ctrl+W 等），用户此刻最需要的是「换个地方干活」。
         if !self.alive {
+            return;
+        }
+
+        // ZMODEM 传输中：键盘字节会直接落进协议流，把二进制帧撕碎。
+        // 只留一个出口 —— Esc 主动中止；其余按键（含全局快捷键）一律吞掉，
+        // 否则用户按 Ctrl+C 想停传输，反而先污染了数据。
+        if self.zmodem.is_active() {
+            let k = &event.keystroke;
+            if k.key == "escape"
+                && !k.modifiers.control
+                && !k.modifiers.alt
+                && !k.modifiers.platform
+                && !k.modifiers.shift
+            {
+                self.zmodem.cancel();
+                cx.notify();
+            }
+            cx.stop_propagation();
             return;
         }
 
@@ -2928,10 +3013,45 @@ impl TerminalView {
         if !self.alive {
             return;
         }
+        // ZMODEM 传输中：快捷命令 / AI / 菜单的写入同样不许污染协议流。
+        if self.zmodem.is_active() {
+            return;
+        }
         use std::io::Write;
         let mut w = self.stdin_writer.lock();
         let _ = w.write_all(text.as_bytes());
         let _ = w.flush();
+    }
+
+    /// ZMODEM 当前状态快照（宿主据此画传输浮层）。
+    pub fn zmodem_status(&self) -> ZmodemStatus {
+        self.zmodem.status()
+    }
+
+    /// 是否有 ZMODEM 传输在进行（或正在等待远端 `rz` 就位）。
+    pub fn zmodem_active(&self) -> bool {
+        self.zmodem.is_active()
+    }
+
+    /// 驱动超时 / 通知过期，返回状态是否变化（宿主轮询时调用）。
+    pub fn zmodem_tick(&self) -> bool {
+        self.zmodem.tick()
+    }
+
+    /// 拖放上传：向远端发 `rz -be` 并排队这些本地文件。
+    ///
+    /// 真正的握手在字节泵里完成 —— 等远端 `rz` 发出 ZRINIT 后才开始发送，
+    /// 期间状态是 [`ZmodemPhase::Waiting`](crate::zmodem::ZmodemPhase::Waiting)。
+    pub fn start_zmodem_upload(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> Result<ZmodemUploadStart, ZmodemUploadError> {
+        self.zmodem.start_upload(paths)
+    }
+
+    /// 主动中止当前传输（Esc / 浮层取消按钮）。
+    pub fn cancel_zmodem(&self) {
+        self.zmodem.cancel();
     }
 
     /// 设置搜索串（None 清除）。正则编译失败视为无效（返回 false 且不生效）。

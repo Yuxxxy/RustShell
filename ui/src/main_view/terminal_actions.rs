@@ -461,6 +461,12 @@ impl MainView {
             .border_color(hex(t.border_subtle))
             // 点击面板不透传到终端，避免清掉划选。
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // 点浮层以外的地方（终端画面、侧栏）时松手：浮层留着让用户接着跳转，
+            // 但焦点不能一直锁在搜索框里。捕获阶段先失焦，终端若随后的冒泡里
+            // 拿到焦点也不冲突。
+            .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                super::blur_input_on_outside_click(&m.panel_ui.term_search_input, w, cx)
+            }))
             .on_key_down(cx.listener(|m, ev: &gpui::KeyDownEvent, w, cx| {
                 if ev.keystroke.key == "escape" {
                     m.close_term_search(w, cx);

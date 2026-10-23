@@ -349,6 +349,7 @@ pub mod render;
 pub mod shell_integration;
 pub mod terminal;
 pub mod view;
+pub mod zmodem;
 
 // Re-export main types for convenience
 pub use colors::{ColorPalette, ColorPaletteBuilder};
@@ -365,4 +366,7 @@ pub use view::{
     CompletionKeyOutcome, EnterCallback, ExitCallback, InputLine, InputLineCallback, KeyHandler,
     PasteRequest, ResizeCallback, TermScrollMetrics, TerminalConfig, TerminalView, TitleCallback,
     strip_prompt,
+};
+pub use zmodem::{
+    ZmodemNotice, ZmodemPhase, ZmodemPump, ZmodemStatus, ZmodemUploadError, ZmodemUploadStart,
 };

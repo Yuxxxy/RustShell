@@ -147,7 +147,17 @@ impl MainView {
             )
             // 搜索框两页共用：它问的是「这份名单里有没有这一条」，
             // 换页签时留着查询词正好能接着比。
-            .child(Input::new(&self.ai_ui.ai_wl_search).small());
+            //
+            // 包装层挂「点框外失焦」：框里搜完点页签/名单行时，焦点要跟着松开，
+            // 否则键盘输入会一直被搜索框吃掉。
+            .child(
+                div()
+                    .w_full()
+                    .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                        super::blur_input_on_outside_click(&m.ai_ui.ai_wl_search, w, cx)
+                    }))
+                    .child(Input::new(&self.ai_ui.ai_wl_search).small().w_full()),
+            );
 
         // 名单本体：当前页签的那一份，先算成**行快照**再交给官方 `List`。
         let (rows, empty_text): (Vec<WlRow>, &'static str) = if tab == TAB_BUILTIN {

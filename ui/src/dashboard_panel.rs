@@ -15,6 +15,7 @@ use gpui::{
     div, px, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     Styled as _,
 };
+use gpui_base::SelectableText;
 use gpui_component::{h_flex, scroll::ScrollableElement as _, v_flex};
 use rustshell_core::i18n::t as tr;
 use rustshell_core::metrics::{
@@ -46,8 +47,44 @@ fn title(text: &'static str, t: &ThemeTokens) -> impl IntoElement {
         .child(text)
 }
 
-/// 左标签 + 右数值一行（系统 IP / 已运行）
-fn info_row(label: &'static str, value: String, t: &ThemeTokens) -> impl IntoElement {
+/// 左标签 + 右数值一行（主机名 / 系统 IP / 已运行）。
+///
+/// 2026-10-22 用户要求「概览中，主机名称、系统IP可以选中并复制」：数值给了
+/// `selectable_id` 时走 [`SelectableText`]（窗口级选区，复制由 `Root` 的
+/// Ctrl+C 承担，与 AI 面板明细同一条路）。
+///
+/// 数值容器特意是**行布局 + 靠右**，而不是原来的「撑满 + text_right」：
+/// 可选文本的选区高亮按自身 bounds 计算，撑满容器再把字排到右边时，
+/// 高亮会画在文字左边。
+fn info_row(
+    label: &'static str,
+    value: String,
+    selectable_id: Option<&'static str>,
+    t: &ThemeTokens,
+) -> impl IntoElement {
+    // 外层行只负责把数值推到右边；内层 `min_w_0` 容器让长主机名 / IPv6 能被
+    // 压窄（flex item 默认按 min-content 顶着，不压窄就顶出卡片），压窄后由
+    // 继承下来的 `text_ellipsis` 截断。
+    let value_el: gpui::AnyElement = match selectable_id {
+        Some(id) => div()
+            .min_w_0()
+            .debug_selector(move || format!("{id}-text"))
+            .child(SelectableText::new(id, value))
+            .into_any_element(),
+        None => div()
+            .min_w_0()
+            .child(SharedString::from(value))
+            .into_any_element(),
+    };
+    let value_box = h_flex()
+        .flex_1()
+        .min_w_0()
+        .justify_end()
+        .text_size(px(11.))
+        .text_color(hex(t.fg_primary))
+        .text_ellipsis()
+        .child(value_el);
+
     h_flex()
         .items_center()
         .justify_between()
@@ -59,16 +96,7 @@ fn info_row(label: &'static str, value: String, t: &ThemeTokens) -> impl IntoEle
                 .text_color(hex(t.fg_muted))
                 .child(label),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(px(11.))
-                .text_color(hex(t.fg_primary))
-                .text_ellipsis()
-                .text_right()
-                .child(value),
-        )
+        .child(value_box)
 }
 
 /// 存储明细一行，口径对齐 `df -h`：第一行「挂载点 + Use%」，第二行
@@ -234,9 +262,9 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     status_card = status_card.child(div().h(px(1.)).w_full().bg(hex(t.border_subtle)));
     // 远端主机名单独一行：连接名是**用户起的名字**，主机名是机器自报的 ——
     // 两者不一致时（改过名、跳板机）正是需要对照着看的地方。
-    status_card = status_card.child(info_row(tr("主机名"), hostname, &t));
-    status_card = status_card.child(info_row(tr("系统 IP"), ip, &t));
-    status_card = status_card.child(info_row(tr("已运行"), uptime, &t));
+    status_card = status_card.child(info_row(tr("主机名"), hostname, Some("dash-hostname"), &t));
+    status_card = status_card.child(info_row(tr("系统 IP"), ip, Some("dash-ip"), &t));
+    status_card = status_card.child(info_row(tr("已运行"), uptime, None, &t));
     root = root.child(status_card);
 
     // ---- 资源走势（CPU / 内存 / 交换 / 网络 / 磁盘，网络图与磁盘图都在此）----
@@ -307,7 +335,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::prod;
+    use crate::test_support::{prod, region};
 
     /// 柱状图标签：短挂载点原样，长挂载点保留尾部并按路径分隔符起头
     /// （窄侧栏里几根柱子的标签太长就会互相叠在一起）
@@ -363,6 +391,140 @@ mod tests {
         assert!(
             !code.contains("tr(\"运行状态\")"),
             "「运行状态」标签已按用户要求从首行撤下（词条表也已同步删除）。"
+        );
+    }
+
+    /// 回归（2026-10-22 用户要求「概览中，主机名称、系统IP可以选中并复制」）：
+    ///
+    /// 主机名 / 系统 IP 走窗口级可选文本（`SelectableText`，复制由 `Root` 的
+    /// Ctrl+C 承担）；数值排版必须是「行 + 靠右」—— 撑满容器再用 `text_right`
+    /// 把字排到右边时，选区高亮会按 bounds 画在文字左边。「已运行」不需要复制。
+    #[test]
+    fn dashboard_host_and_ip_are_selectable() {
+        let code = production_source();
+        assert!(
+            code.contains("info_row(tr(\"主机名\"), hostname, Some(\"dash-hostname\"), &t)"),
+            "主机名必须挂可选文本"
+        );
+        assert!(
+            code.contains("info_row(tr(\"系统 IP\"), ip, Some(\"dash-ip\"), &t)"),
+            "系统 IP 必须挂可选文本"
+        );
+        assert!(
+            code.contains("info_row(tr(\"已运行\"), uptime, None, &t)"),
+            "已运行保持普通文本"
+        );
+
+        let row = region(&code, "fn info_row(", "\n}\n");
+        assert!(
+            row.contains("SelectableText::new"),
+            "数值必须参与窗口级选区"
+        );
+        assert!(
+            row.contains(".justify_end()"),
+            "数值应靠右摆放，且文本 bounds 只占自身宽度"
+        );
+        assert!(
+            !row.contains(".text_right()"),
+            "可选文本不能用 text_right 撑满，否则选区高亮画在文字左边"
+        );
+    }
+
+    /// 行为护栏（2026-10-22「概览中，主机名称、系统IP可以选中并复制」）：
+    ///
+    /// 源码断言只能证明挂了 `SelectableText`，证明不了它真的能被拖到：
+    /// 在真实窗口里量数值的 bounds，并从左端拖到右端选中主机名；
+    /// 同时用一条长 IPv6 确认数值列会被压窄截断、不会顶出侧栏。
+    #[gpui::test]
+    fn dashboard_host_and_ip_rows_can_be_dragged(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Context, Render, Window};
+
+        struct Probe {
+            focus: gpui::FocusHandle,
+        }
+        impl Render for Probe {
+            fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let t = crate::theme::current(cx);
+                v_flex()
+                    .w(px(200.))
+                    .p_2()
+                    .gap_2()
+                    .track_focus(&self.focus)
+                    .child(info_row(
+                        tr("主机名"),
+                        "web-01".into(),
+                        Some("dash-hostname"),
+                        &t,
+                    ))
+                    .child(info_row(
+                        tr("系统 IP"),
+                        "fe80::1234:5678:9abc:def0".into(),
+                        Some("dash-ip"),
+                        &t,
+                    ))
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+        // Root 的 Ctrl+C 靠窗口内焦点派发：真实应用里焦点总在某个控件上，
+        // 探针里手动给一个，否则按键没有落点（选区本身不依赖焦点）。
+        let focus = cx.update(|cx| cx.focus_handle());
+        let (_, vcx) = cx.add_window_view(|window, cx| {
+            let focus = focus.clone();
+            let probe = cx.new(move |_| Probe { focus });
+            gpui_component::Root::new(probe, window, cx)
+        });
+        vcx.update(|window, cx| window.focus(&focus, cx));
+        vcx.run_until_parked();
+        // `debug_bounds` 读上一帧画出来的坐标（与 AI 面板拖选用例同一口径）
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let host = vcx
+            .debug_bounds("dash-hostname-text")
+            .expect("主机名的可选文本没渲染出来");
+        let host_w: f32 = host.size.width.into();
+        let host_right: f32 = (host.origin.x + host.size.width).into();
+        assert!(
+            host_w < 80.,
+            "短主机名的可选文本宽 {host_w}px —— 又撑满整列了：选区高亮会画在文字左边"
+        );
+        assert!(host_right > 150., "主机名没有靠右（右端 {host_right}px）");
+
+        // 长 IPv6 必须被压窄截断：剩余数值列不到 150px，不压窄就会顶出 200px 宽的探针
+        let ip = vcx
+            .debug_bounds("dash-ip-text")
+            .expect("IP 的可选文本没渲染出来");
+        let ip_w: f32 = ip.size.width.into();
+        assert!(
+            ip_w < 160.,
+            "长 IPv6 的数值宽 {ip_w}px —— 没被压窄，已经顶出侧栏"
+        );
+
+        // 从主机名左端拖到右端：选中内容应当正好是主机名
+        let y = host.origin.y + px(6.);
+        let from = gpui::point(host.origin.x + px(1.), y);
+        let to = gpui::point(host.origin.x + host.size.width - px(1.), y);
+        vcx.simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::default());
+
+        let selected = vcx.update(gpui_base::TextSelection::selected_text);
+        assert_eq!(
+            selected.trim(),
+            "web-01",
+            "拖选主机名没选中它：数值还只是「画上去的字符串」，没进窗口级选区"
+        );
+
+        // 选中之后 Ctrl+C：Root 把选区写进剪贴板
+        vcx.simulate_keystrokes("ctrl-c");
+        let copied = vcx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(
+            copied.as_deref().map(str::trim),
+            Some("web-01"),
+            "Ctrl+C 没把主机名写进剪贴板"
         );
     }
 

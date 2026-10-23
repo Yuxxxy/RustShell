@@ -201,8 +201,8 @@ fn render_collapsed(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement 
         .flex_shrink_0()
         .justify_center()
         .border_t_1()
-.border_color(hex(t.border_subtle))
-        .bg(crate::theme::surface(1.0, t.bg_elevated))
+        .border_color(hex(t.border_subtle))
+        .bg(crate::theme::surface(1.0, t.bg_base))
         .child(
             h_flex()
                 .flex_1()
@@ -352,10 +352,12 @@ fn render_expanded(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement {
                 .py_0p5()
                 .rounded(px(4.))
                 .text_size(px(12.))
+                // 栏底色已是 `bg_base`：选中的 Tab 抬到 `bg_elevated` 才分得出来，
+                // 未选中的 Tab 与栏同色（2026-10-22 内外分层调整）。
                 .bg(if is_active {
-                    hex(t.bg_base)
-                } else {
                     hex(t.bg_elevated)
+                } else {
+                    hex(t.bg_base)
                 })
                 .border_b_2()
                 .border_color(if is_active {
@@ -368,7 +370,7 @@ fn render_expanded(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement {
                 } else {
                     hex(t.fg_muted)
                 })
-                .hover(|s| s.bg(hex(t.bg_overlay)))
+                .hover(|s| s.bg(hex(t.bg_elevated)))
                 .on_click(cx.listener(move |m, _e, _w, cx| {
                     m.set_quick_active_folder(&fid_click, cx);
                 }))
@@ -533,7 +535,7 @@ fn render_expanded(m: &mut MainView, cx: &mut Context<MainView>) -> AnyElement {
         .flex_shrink_0()
         .border_t_1()
         .border_color(hex(t.border_subtle))
-        .bg(crate::theme::surface(1.0, t.bg_elevated))
+        .bg(crate::theme::surface(1.0, t.bg_base))
         .child(toolbar)
         .child(div().w_full().child(tabs.overflow_x_scrollbar()))
         .child(
@@ -587,7 +589,7 @@ fn command_pill(
         .bg(hex(t.bg_base))
         .border_1()
         .border_color(hex(t.border_subtle))
-        .hover(|s| s.bg(hex(t.bg_overlay)).border_color(hex(t.accent)))
+        .hover(|s| s.bg(hex(t.bg_elevated)).border_color(hex(t.accent)))
         .flex()
         .items_center()
         .gap_1()
@@ -640,7 +642,7 @@ fn command_row(
         .px_2()
         .py_0p5()
         .rounded(px(4.))
-        .hover(|s| s.bg(hex(t.bg_overlay)))
+        .hover(|s| s.bg(hex(t.bg_elevated)))
         .on_click(cx.listener(move |m, _e, w, cx| {
             m.execute_quick_cmd(&cid, w, cx);
         }))

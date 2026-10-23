@@ -511,6 +511,12 @@ impl MainView {
 
         let click_id = session_id.to_string();
         let right_id = click_id.clone();
+        // ZMODEM：拖放落点与传输浮层都要用终端实体，而下面的 `term` 会被移动进
+        // 窗格子节点，所以在这里各取一份。
+        let drop_term = term.clone();
+        let zmodem = term
+            .as_ref()
+            .map(|t| (t.clone(), t.read(cx).zmodem_status()));
         // 占位卡底色：主题纯色（alpha=1.0）
         let placeholder_bg = crate::theme::surface(1.0, tok.bg_base);
         let mut pane = div()
@@ -562,6 +568,27 @@ impl MainView {
         // 滚动条压在下面。
         if let Some(plan) = dead {
             pane = pane.child(Self::render_dead_bar(session_id, plan, cx));
+        }
+
+        // ZMODEM 浮层挂在最后（断连条之上）：传输进行中它是这块窗格唯一会动的东西。
+        if let Some((term_ent, status)) = zmodem.as_ref() {
+            if let Some(bar) = Self::render_zmodem_bar(term_ent, status, cx) {
+                pane = pane.child(bar);
+            }
+        }
+
+        // 拖放上传的落点挂在**窗格根**上：gpui 的命中测试把整条命中路径上的祖先
+        // hitbox 都算 hovered（同 `files_panel` 的 F-13），挂一次就覆盖整块终端 ——
+        // 引擎的终端视图自己不认识文件拖放，它只负责把拖进来的路径交给字节泵。
+        if let Some(term_ent) = drop_term {
+            pane = pane
+                .can_drop(|value, _, _| value.is::<gpui::ExternalPaths>())
+                .drag_over::<gpui::ExternalPaths>(move |style, _paths, _w, _cx| {
+                    style.bg(hex(tok.bg_elevated))
+                })
+                .on_drop::<gpui::ExternalPaths>(move |paths: &gpui::ExternalPaths, w, cx| {
+                    MainView::zmodem_drop(term_ent.clone(), paths.paths().to_vec(), w, cx);
+                });
         }
 
         pane.context_menu(|menu: PopupMenu, _w, _cx| pane_context_menu(menu))

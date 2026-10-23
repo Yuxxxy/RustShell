@@ -28,6 +28,7 @@ mod whitelist_dialog;
 // 标签分屏（向右/向下拆分、取消分屏）。
 // 决策逻辑在 core::split（纯函数），本模块负责落到会话与视图上。
 mod split_actions;
+mod zmodem_actions;
 // 命令补全浮层（C-1）：Ctrl+Space 唤起、边打字边过滤、↑↓ 选、Tab/Enter 采纳。
 // 状态留在 `MainView::completion`，本模块只放渲染壳（见 `CompletionBarView` 文档）。
 mod completion_bar;
@@ -1760,6 +1761,8 @@ impl MainView {
                 dlg_qc_newline: true,
                 set_hint: None,
                 set_hint_ok: false,
+                update_checking: false,
+                update_latest: None,
                 set_snapshot: None,
                 files_path: rustshell_core::sftp::DEFAULT_REMOTE_PATH.into(),
                 files_path_input,
@@ -2178,6 +2181,10 @@ impl MainView {
         }
         // 账本到点：把该试的那些真正发出去。
         self.fire_due_retries(cx);
+
+        // 3.5) ZMODEM 心跳：泵里的「远端不应答 / 传输卡住 / 结果提示到点消退」都靠
+        //      这一拍驱动（协议本身在 reader 线程跑，这里只管超时与消退）。
+        changed |= self.tick_zmodem(cx);
 
         // 4) AI 会话落盘（2026-09-23「AI对话需要保存」）。有改动才写，流式期间按
         // 3 秒节流（见 `ai_persist`）；真正把「关窗不丢」钉死的是退出钩子
@@ -2628,9 +2635,10 @@ impl Render for MainView {
                 // `.h(..).border_b_1()....refine_style(&self.style)` 之后才把调用点的
                 // `StyleRefinement` 并进来，`Some(px(0.))` 会盖掉官方那个 1px；
                 // 宽度归零后 `is_border_visible()` 直接跳过这条边的绘制（不是画成透明）。
-                // 本应用标题栏底色与下方内容同为 `bg_base`，分界交给留白即可。
+                // 标题栏底色取 `bg_elevated`，与最左侧图标栏（`activity_bar.rs`）同色，
+                // 上下一整块连续；与下方内容（`bg_base`）的分界交给留白。
                 .border_b_0()
-.bg(crate::theme::surface(1.0, t.bg_base))
+                .bg(crate::theme::surface(1.0, t.bg_elevated))
                 // 标题行**整体**不参与全局字号收档（用户要求「标题行不用动」）。
                 // 官方 `TitleBar` 的子节点（品牌名、右上角三枚控制图标）都按**继承**的
                 // 字号绘制 —— `Icon::render` 取的就是 `window.text_style().font_size`
@@ -2697,7 +2705,12 @@ impl Render for MainView {
             let ai_max_w = px(rustshell_core::settings::AI_CHAT_WIDTH_MAX);
             // 面板底色统一取主题纯色（alpha = 1.0）。底色只画在卡片壳上，
             // 内层面板不再自带背景。
-            let sidebar_bg = crate::theme::surface(1.0, t.bg_elevated);
+            //
+            // 2026-10-22 用户调整：`bg_elevated` 只留给**窗口外框**（标题栏 +
+            // 最左侧图标栏），内部一律 `bg_base` —— 外框一圈略亮、内容区回到
+            // 底纸色，窗口的「壳 / 内容」层次一眼可辨。卡片之间靠 `CARD_GAP`
+            // 的空隙与 `border_subtle` 描边分开，不再靠底色差。
+            let sidebar_bg = crate::theme::surface(1.0, t.bg_base);
             let pane_bg = crate::theme::surface(1.0, t.bg_base);
             let card_border = hex(t.border_subtle);
 
@@ -2936,7 +2949,8 @@ mod tests {
     /// 那条线**不是本文件画的**：官方 `TitleBar` 的渲染链上自带
     /// `.border_b_1().border_color(theme.title_bar_border)`
     /// （gpui-component-0.6.4/src/title_bar.rs），横贯整个窗口宽度。
-    /// 本应用标题栏底色（`bg_base`）与下方内容同色，分界交给留白即可，
+    /// 本应用标题栏底色（`bg_elevated`，与最左侧图标栏同色）与下方内容
+    /// （`bg_base`）不同，但分界交给留白与色差即可，无需一条线，
     /// 故在调用点用 `.border_b_0()` 覆盖：官方在链尾才
     /// `refine_style(&self.style)`，调用点写进去的 `Some(px(0.))` 会盖掉官方
     /// 那个 1px（与紧邻的 `.h(..)` 覆盖官方默认高 34px 是**同一条机理**），
@@ -4165,18 +4179,27 @@ mod tests {
     }
 
     /// 回归（2026-09-18 用户要求「搜索命令和输入命令栏和文件的地址栏，聚焦后，
-    /// 点击别的地方需要进行失焦」）：四个常驻输入框都要挂「点框外失焦」，
-    /// 且实现必须是 [`blur_input_on_outside_click`]（只在焦点真在本框上时才收）。
+    /// 点击别的地方需要进行失焦」；2026-10-22 扩到全部常驻搜索框）：
+    /// 所有搜索/输入框都要挂「点框外失焦」，且实现必须是
+    /// [`blur_input_on_outside_click`]（只在焦点真在本框上时才收）。
     ///
     /// 为什么不能只靠官方 `Input`：它只在点到**另一个可聚焦元素**时才换焦点 ——
     /// 点终端 / 侧栏空白处不会松手，光标一直闪、键盘输入继续被那个框吃掉。
     /// 挂法是 `on_mouse_down_out`（**捕获**阶段、仅在本元素边界外触发），
     /// 所以点到别的输入框时，仍然是那个框在随后的冒泡里拿到焦点。
+    ///
+    /// 设置面板是唯一的例外：搜索框状态在官方组件内部（拿不到 Entity），
+    /// 兜底处理器挂在设置主体上，靠 `default_prevented` 区分「点进输入框」与
+    /// 「点在按钮/空白处」—— 见 `render_settings_dialog`。
     #[test]
     fn text_inputs_release_focus_when_clicking_outside() {
         let quick = prod(include_str!("quick_commands_bar.rs"));
         let files = prod(include_str!("files_panel.rs"));
         let conns = prod(include_str!("connections_panel.rs"));
+        let tasks = prod(include_str!("tasks_panel.rs"));
+        let wl = prod(include_str!("main_view/whitelist_dialog.rs"));
+        let actions = prod(include_str!("main_view/terminal_actions.rs"));
+        let dialogs = prod(include_str!("main_view/dialogs.rs"));
 
         // 每个输入框各挂一枚，且挂在**自己**的包装层上
         // ★ 锚点只取**字段引用**那一段（`&m.ai_ui.quick_search`），不取整条调用 ——
@@ -4189,6 +4212,12 @@ mod tests {
             (&quick, "&m.ai_ui.quick_search"),
             (&quick, "&m.ai_ui.quick_compose_input"),
             (&conns, "&m.conn_ui.conn_search"),
+            // 定时任务搜索：点列表行/空白处要松手（2026-10-22）
+            (&tasks, "&m.io.task_search"),
+            // 白名单配置框的搜索（2026-10-22）
+            (&wl, "&m.ai_ui.ai_wl_search"),
+            // 终端 Ctrl+F 浮层（2026-10-22）
+            (&actions, "&m.panel_ui.term_search_input"),
         ] {
             assert!(
                 src.contains(input),
@@ -4202,6 +4231,20 @@ mod tests {
             "文件地址栏没有挂「点框外失焦」。"
         );
 
+        // 官方设置搜索框：状态私有，只能在设置主体上兜底。
+        // 必须是「先让路给可聚焦控件、否则才 blur」的语义 —— 无条件 blur 会把
+        // 刚落进设置页输入框的焦点又收走。
+        for needle in [
+            "if !w.default_prevented() && w.focused_input(cx).is_some() {",
+            "w.blur(cx);",
+        ] {
+            assert!(
+                dialogs.contains(needle),
+                "设置主体的兜底失焦缺少 `{needle}`：官方搜索框点别处不会松手，\
+                 或点进设置页输入框会被误收焦点。"
+            );
+        }
+
         // 实现在 `main_view.rs`：只收「本来就在这个框上」的焦点
         let main = prod(include_str!("main_view.rs"));
         for needle in [
@@ -4214,6 +4257,122 @@ mod tests {
                 "失焦实现缺少 `{needle}`：无条件 blur 会把对话框/终端的焦点也一起收走。"
             );
         }
+    }
+
+    /// 机制回归：连接栏搜索框聚焦后，点侧栏里的非焦点区域必须松手。
+    ///
+    /// 源码断言只能证明「挂了处理器」，证明不了 gpui 的捕获阶段真的把事件送给它
+    /// （`on_mouse_down_out` 依赖 hitbox 与鼠标位置比对）。这里走真实命中分发。
+    #[gpui::test]
+    fn connection_search_blurs_when_clicking_outside(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable as _;
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
+        vcx.update(|w, cx| w.draw(cx).clear(cx));
+        let search_box = vcx
+            .debug_bounds("conn-search-box")
+            .expect("连接栏搜索框没有渲染出来");
+        main.update_in(vcx, |m, w, cx| {
+            let fh = m.conn_ui.conn_search.read(cx).focus_handle(cx);
+            w.focus(&fh, cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_some()),
+            "前置条件不成立：搜索框没有拿到焦点"
+        );
+
+        // 搜索框正下方 60px：树/空白区，命中不了任何可聚焦控件
+        let outside = gpui::point(
+            search_box.origin.x + search_box.size.width / 2.,
+            search_box.origin.y + search_box.size.height + gpui::px(60.),
+        );
+        vcx.simulate_mouse_down(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_up(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_none()),
+            "点搜索框外后焦点还留在框里：失焦处理器没有被捕获阶段派发到"
+        );
+    }
+
+    /// 同上，覆盖定时任务面板的搜索框（2026-10-22 补挂）。
+    #[gpui::test]
+    fn task_search_blurs_when_clicking_outside(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable as _;
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
+        main.update_in(vcx, |m, _w, cx| {
+            m.panel_ui.panel = crate::main_view::PanelKind::Tasks;
+            m.panel_ui.sidebar_collapsed = false;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.update(|w, cx| w.draw(cx).clear(cx));
+        let search_box = vcx
+            .debug_bounds("task-search-box")
+            .expect("任务搜索框没有渲染出来");
+
+        main.update_in(vcx, |m, w, cx| {
+            let fh = m.io.task_search.read(cx).focus_handle(cx);
+            w.focus(&fh, cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_some()),
+            "前置条件不成立：任务搜索框没有拿到焦点"
+        );
+
+        // 搜索框下方是任务列表：行/开关都不可聚焦，点它必须松开搜索框
+        let outside = gpui::point(
+            search_box.origin.x + search_box.size.width / 2.,
+            search_box.origin.y + search_box.size.height + gpui::px(60.),
+        );
+        vcx.simulate_mouse_down(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_up(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_none()),
+            "点任务列表后焦点还留在搜索框里"
+        );
+    }
+
+    /// 官方 `Settings` 自带的搜索框状态在组件内部（`SettingsState` 不可见），
+    /// 兜底处理器挂在设置主体上：点页签/空白处松开焦点，点进输入框则让路。
+    /// 这条用例走真实事件分发，覆盖 `default_prevented` 这条路。
+    #[gpui::test]
+    fn settings_search_blurs_when_clicking_outside(cx: &mut gpui::TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
+        main.update_in(vcx, |m, w, cx| {
+            m.present_dialog(crate::main_view::DialogMode::Settings, w, cx);
+        });
+        vcx.run_until_parked();
+        vcx.update(|w, cx| w.draw(cx).clear(cx));
+
+        // 设置搜索框在侧栏最上方、tab 序列最前：走几跳就能拿到焦点
+        let mut hops = 0;
+        while vcx.update(|w, cx| w.focused_input(cx).is_none()) {
+            vcx.update(|w, cx| w.focus_next(cx));
+            hops += 1;
+            assert!(hops <= 8, "Tab 序列里走不到设置搜索框，用例前提不成立");
+        }
+
+        let body = vcx
+            .debug_bounds("settings-body")
+            .expect("设置主体没有渲染出来");
+        // 主体右上：页面标题/空白区，命中不了任何可聚焦控件
+        let outside = gpui::point(
+            body.origin.x + body.size.width - gpui::px(150.),
+            body.origin.y + gpui::px(40.),
+        );
+        vcx.simulate_mouse_down(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_up(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|w, cx| w.focused_input(cx).is_none()),
+            "点设置页空白处后焦点还留在搜索框里"
+        );
     }
 
     /// 文件侧边栏默认路径的当前口径（2026-09-20 用户要求）：
