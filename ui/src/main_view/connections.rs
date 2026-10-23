@@ -6,7 +6,7 @@ use gpui_component::{button::ButtonVariant, dialog::DialogButtonProps, WindowExt
 use rustshell_core::connections::ConnectionProfile;
 use rustshell_core::metrics::MetricsStore;
 use rustshell_core::session::{SessionHandle, SessionId, SessionKind, SessionState};
-use rustshell_core::ssh::connect_in_background;
+use rustshell_core::ssh::{connect_in_background, SshChannels};
 
 use rustshell_platform::paths;
 
@@ -216,7 +216,7 @@ impl MainView {
     }
 
     pub fn connect_profile(&mut self, profile_id: &str, w: &mut Window, cx: &mut Context<Self>) {
-        let Some(p) = self.conn_store.profile(profile_id).cloned() else {
+        let Some(p) = self.lookup_profile(profile_id) else {
             return;
         };
         log::info!(
@@ -282,13 +282,25 @@ impl MainView {
             rustshell_core::ssh::CONNECT_TIMEOUT_MIN_SECS,
             rustshell_core::ssh::CONNECT_TIMEOUT_MAX_SECS,
         ));
-        let log_path = self.session_log_target(Some(&p));
+        // 外部链接（`ext:`）：单通道 + 不写会话日志。判定放在这里而不是各入口：
+        // 「连接对话框补完凭据后再连」也必须守住同一条纪律，而它同样走本函数。
+        let ephemeral = self.conn_ui.external.get(&p.id);
+        let channels = match ephemeral.map(|e| e.kind) {
+            Some(rustshell_core::launch::LaunchKind::Sftp) => SshChannels::SftpOnly,
+            Some(rustshell_core::launch::LaunchKind::Ssh) => SshChannels::ShellOnly,
+            None => SshChannels::Full,
+        };
+        let log_path = match ephemeral {
+            Some(_) => None,
+            None => self.session_log_target(Some(&p)),
+        };
         connect_in_background(
             p,
             timeout,
             log_path,
             self.settings.clamped_sftp_max_concurrent(),
             self.runtime_global_proxy(),
+            channels,
             connect_results().0.clone(),
         );
         cx.notify();
@@ -1172,6 +1184,16 @@ impl MainView {
     pub fn close_tab_by_session(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs_state.tabs.iter().position(|t| t.session.id == id) {
             let mut tab = self.tabs_state.tabs.remove(pos);
+            // 外部链接的临时连接：标签一关，口令随表项一起从内存消失
+            // （这是「链接里的密码只留在内存里、标签关掉就没了」的落点）。
+            if let Some(pid) = tab
+                .session
+                .profile_id
+                .clone()
+                .filter(|p| p.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX))
+            {
+                self.conn_ui.external.remove(&pid);
+            }
             // 终止会话（Drop 置位退出标志）
             tab.session.state = SessionState::Closed;
             // 这里在 UI 线程上同步析构会话：ConPTY 的阻塞式释放已由
@@ -1384,12 +1406,19 @@ impl MainView {
         else {
             return; // 未保存为配置的会话没有可重放的目标
         };
-        let Some(p) = self.conn_store.profile(&pid).cloned() else {
+        let Some(p) = self.lookup_profile(&pid) else {
             self.conn_ui.connect_notice =
                 Some(rustshell_core::i18n::t("该会话的连接配置已被删除，无法重连").to_string());
             cx.notify();
             return;
         };
+        // 外部链接重连仍守「一条连接一个通道」：`sftp://` 只要 sftp、`ssh://` 只要 shell。
+        let channels = match self.conn_ui.external.get(&pid).map(|e| e.kind) {
+            Some(rustshell_core::launch::LaunchKind::Sftp) => SshChannels::SftpOnly,
+            Some(rustshell_core::launch::LaunchKind::Ssh) => SshChannels::ShellOnly,
+            None => SshChannels::Full,
+        };
+        let external = self.conn_ui.external.contains_key(&pid);
 
         let timeout = std::time::Duration::from_secs(self.settings.connect_timeout_secs.clamp(
             rustshell_core::ssh::CONNECT_TIMEOUT_MIN_SECS,
@@ -1428,13 +1457,19 @@ impl MainView {
         // 重连是**一次新的连接尝试**，因此也另起一个日志文件（文件名带时间前缀，
         // 按时间顺序读即可拼回整段现场）。不自作主张续写旧文件：续写会让
         // 「这一次到底连上没连上」变得说不清 —— 而重连场景恰恰最需要这个答案。
-        let log_path = self.session_log_target(Some(&p));
+        // 外部链接例外：临时连接不在磁盘上留痕。
+        let log_path = if external {
+            None
+        } else {
+            self.session_log_target(Some(&p))
+        };
         connect_in_background(
             p,
             timeout,
             log_path,
             self.settings.clamped_sftp_max_concurrent(),
             self.runtime_global_proxy(),
+            channels,
             connect_results().0.clone(),
         );
         cx.notify();

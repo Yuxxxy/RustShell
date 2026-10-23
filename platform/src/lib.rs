@@ -5,3 +5,4 @@ pub mod paths;
 pub mod pty;
 pub mod secret;
 pub mod shell_open;
+pub mod single_instance;

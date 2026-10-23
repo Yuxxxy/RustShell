@@ -454,6 +454,7 @@ impl MainView {
                         tab.connect_started,
                         tab.session.kind,
                         tab.is_disconnected(),
+                        tab.is_sftp_live(),
                     ))
                 } else {
                     None
@@ -536,7 +537,7 @@ impl MainView {
             .when_some(term, |d, term| d.child(term))
             .when_some(
                 placeholder,
-                |d, (title, err, started, kind, disconnected)| {
+                |d, (title, err, started, kind, disconnected, sftp_only)| {
                     d.child(super::render_connect_placeholder(
                         &tok,
                         placeholder_bg,
@@ -545,6 +546,7 @@ impl MainView {
                         started,
                         kind,
                         disconnected,
+                        sftp_only,
                     ))
                 },
             )

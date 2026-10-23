@@ -65,10 +65,30 @@ pub fn run() {
     rustshell_ui::watchdog::init();
     // 冷启动打点（M4 性能）：进程入口即记录，首帧渲染时打印耗时
     let _ = rustshell_ui::START.set(std::time::Instant::now());
+
+    // ★ 单实例：堡垒机（JumpServer 等）把 `ssh://` / `sftp://` 交给「已注册的客户端」时，
+    // 用户往往已经开着一个 RustShell。后启动的进程把 argv 转交给已在运行的那个，
+    // 自己直接退出 —— 绝不开第二个窗口、也不让两个实例各写一份配置。
+    //
+    // 本进程自己的参数也走同一条通道（`forward` → `requests`）：UI 只有一条
+    // 「把参数变成连接」的路径，首次启动与后续转交行为完全一致。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let requests = match rustshell_platform::single_instance::claim(&args) {
+        rustshell_platform::single_instance::InstanceRole::Forwarded => return,
+        rustshell_platform::single_instance::InstanceRole::Primary { requests, forward } => {
+            if !args.is_empty() {
+                let _ = forward.try_send(args);
+            }
+            requests
+        }
+    };
+
     gpui_platform::application()
         .with_assets(AppAssets)
         .run(|cx: &mut App| {
             gpui_component::init(cx);
+            // 启动参数通道要在开窗之前装好：首轮 `poll` 才看得到它。
+            rustshell_ui::main_view::ui_install_launch_requests(cx, requests);
             // 主题由用户设置驱动（：settings.theme_mode）
             let settings = rustshell_core::settings::Settings::load(
                 &rustshell_platform::paths::settings_path(),

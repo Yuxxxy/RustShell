@@ -29,6 +29,10 @@ mod whitelist_dialog;
 // 决策逻辑在 core::split（纯函数），本模块负责落到会话与视图上。
 mod split_actions;
 mod zmodem_actions;
+// 外部链接（`ssh://` / `sftp://`，Xshell / WinSCP / JumpServer 的启动方式）：
+// 临时连接、单通道、口令只留内存。单实例转交的 argv 也在这里汇入 `poll`。
+mod external_actions;
+pub use external_actions::ui_install_launch_requests;
 // 命令补全浮层（C-1）：Ctrl+Space 唤起、边打字边过滤、↑↓ 选、Tab/Enter 采纳。
 // 状态留在 `MainView::completion`，本模块只放渲染壳（见 `CompletionBarView` 文档）。
 mod completion_bar;
@@ -987,6 +991,7 @@ fn render_connect_placeholder(
     started: Option<std::time::Instant>,
     kind: SessionKind,
     disconnected: bool,
+    sftp_only: bool,
 ) -> gpui::AnyElement {
     use crate::theme::to_hsla as hex;
     use gpui::Styled as _;
@@ -1010,6 +1015,14 @@ fn render_connect_placeholder(
             },
             hex(t.fg_muted),
             rustshell_core::i18n::t("已断开"),
+        )
+    } else if sftp_only {
+        // 外部 `sftp://`：会话已建立，但这条连接只开了 sftp 子系统 ——
+        // 没有 PTY，画终端只会是一块空白；用户要的文件面板由连接落地时打开。
+        (
+            IconName::FolderClosed,
+            hex(t.accent),
+            rustshell_core::i18n::t("SFTP 已连接"),
         )
     } else if local {
         (
@@ -1058,6 +1071,10 @@ fn render_connect_placeholder(
         // 断开后不显示「已等待 N 秒」，而是给出恢复入口（Tab 右键「连接」）
         card = card.child(div().text_size(px(11.5)).text_color(hex(t.fg_muted)).child(
             SharedString::from(rustshell_core::i18n::t("会话已终止，右键标签可重新连接")),
+        ));
+    } else if sftp_only {
+        card = card.child(div().text_size(px(11.5)).text_color(hex(t.fg_muted)).child(
+            SharedString::from(rustshell_core::i18n::t("文件面板已打开，可在此浏览与传输文件")),
         ));
     } else if let Some(secs) = started.map(|s| s.elapsed().as_secs()) {
         card = card.child(div().text_size(px(11.5)).text_color(hex(t.fg_muted)).child(
@@ -1616,6 +1633,7 @@ impl MainView {
             },
             conn_ui: ConnUiState {
                 expanded_groups: HashSet::new(),
+                external: std::collections::HashMap::new(),
                 conn_tree_key: None,
                 tree_state,
                 selected_profile: None,
@@ -1643,6 +1661,7 @@ impl MainView {
                 metrics_interval,
                 palette_state: None,
                 pending_palette: false,
+                pending_activate_window: false,
                 palette_cmds: Vec::new(),
                 // 启动就建一份键位快照：空窗格的「快捷键提示」表要显示**生效**键位
                 // （含用户在设置里改过的绑定），而空态是应用刚起来、最可能被看到的画面，
@@ -1915,12 +1934,30 @@ impl MainView {
                 // 空掩码会退化成「三个都重绘」，正是改造前的行为。
             }
         }
+        // 0.5) 单实例转交过来的启动参数（`ssh://` / `sftp://`）：先建占位 Tab 再连，
+        // 与正常连接完全同一条收口（结果仍从 `connect_results` 回来）。
+        changed |= self.drain_launch_requests(cx);
         // 1) 连接结果
         while let Ok(res) = connect_results().1.try_recv() {
             changed = true;
             match res {
                 Ok(mut session) => {
                     let id = session.id.clone();
+                    // 单通道 SFTP（外部 `sftp://`）：没有 PTY，也就没有可画的终端 ——
+                    // 它的落地形态是「文件面板」，不是一张空的终端卡片。
+                    let sftp_only = session.writer.is_none() && session.sftp_tx.is_some();
+                    let result_pid = session.profile_id.clone();
+                    // 外部链接的标签在连接途中被关掉了：这条会话**无处安放**，
+                    // 直接丢弃（Drop 会关掉连接）。不丢的话它会以新标签复活，
+                    // 而那个标签已经没有口令、也没有再次连接的资格了。
+                    if let Some(pid) = result_pid.as_deref() {
+                        if pid.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX)
+                            && !self.conn_ui.external.contains_key(pid)
+                        {
+                            log::info!("外部链接的标签已关闭，丢弃已建立的会话: profile={pid}");
+                            continue;
+                        }
+                    }
                     // ★ C-4（2026-09-28）：**成功路径也必须清「连接中」标记**。
                     //
                     // 此前只有失败分支（下面 `Err` 那支）清，成功分支不清 —— 于是
@@ -1983,9 +2020,14 @@ impl MainView {
                                     cx,
                                 );
                             } else {
-                                let (terminal, scroll) = self.mount_terminal(&mut session, cx);
-                                self.tabs_state.tabs[ix].terminal = Some(terminal);
-                                self.tabs_state.tabs[ix].scroll = Some(scroll);
+                                if sftp_only {
+                                    self.tabs_state.tabs[ix].terminal = None;
+                                    self.tabs_state.tabs[ix].scroll = None;
+                                } else {
+                                    let (terminal, scroll) = self.mount_terminal(&mut session, cx);
+                                    self.tabs_state.tabs[ix].terminal = Some(terminal);
+                                    self.tabs_state.tabs[ix].scroll = Some(scroll);
+                                }
                             }
                             self.tabs_state.tabs[ix].session = session;
                             self.tabs_state.tabs[ix].connect_error = None;
@@ -2011,11 +2053,16 @@ impl MainView {
                             self.tabs_state.active = Some(new_id);
                         }
                         None => {
-                            let (terminal, scroll) = self.mount_terminal(&mut session, cx);
+                            let (terminal, scroll) = if sftp_only {
+                                (None, None)
+                            } else {
+                                let (terminal, scroll) = self.mount_terminal(&mut session, cx);
+                                (Some(terminal), Some(scroll))
+                            };
                             self.tabs_state.tabs.push(TabEntry {
                                 session,
-                                terminal: Some(terminal),
-                                scroll: Some(scroll),
+                                terminal,
+                                scroll,
                                 connect_error: None,
                                 connect_started: None,
                                 dead: None,
@@ -2023,6 +2070,14 @@ impl MainView {
                             });
                             self.tabs_state.active = Some(id);
                         }
+                    }
+                    if sftp_only {
+                        // 链接里带了路径就开到那个目录，否则从远端家目录开始。
+                        let path = result_pid
+                            .as_deref()
+                            .and_then(|pid| self.conn_ui.external.get(pid))
+                            .and_then(|e| e.path.clone());
+                        self.external_sftp_first_scan(path, cx);
                     }
                     self.tabs_state.pending_focus = true;
                 }
@@ -2352,6 +2407,13 @@ impl Render for MainView {
         // 走两段式 —— 回调只置旗，这里兑现（弹预览对话框需要 Window）。
         if let Some((config, ssh_dir, home)) = self.conn_ui.openssh_pick_sync.take() {
             self.load_openssh_config(config, ssh_dir, home, window, cx);
+        }
+
+        // 外部链接转交给本实例：把窗口提到前台（`poll` 拿不到 Window，见字段文档）。
+        // 用户从浏览器 / 堡垒机点链接时，本窗口多半正被盖在别的程序后面。
+        if self.panel_ui.pending_activate_window {
+            self.panel_ui.pending_activate_window = false;
+            window.activate_window();
         }
 
         // 焦点收敛：Tab 切换/新建后把键盘焦点交给激活终端。

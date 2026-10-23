@@ -162,6 +162,17 @@ impl TabEntry {
         self.dead.is_some()
     }
 
+    /// 单通道 SFTP 会话（外部 `sftp://`）：**已连接但没有终端**。
+    ///
+    /// 它与「连接中的占位」「已断开的占位」共用 `terminal = None`，靠
+    /// `state == Connected && sftp_tx.is_some()` 区分 —— 状态点、占位卡文案
+    /// 与右键菜单都要认这一种，否则它会被画成「正在连」。
+    pub fn is_sftp_live(&self) -> bool {
+        self.terminal.is_none()
+            && self.session.state == SessionState::Connected
+            && self.session.sftp_tx.is_some()
+    }
+
     /// 断连后正在原地重连（画面仍留在断连现场上）。
     pub fn is_reconnecting(&self) -> bool {
         self.dead.is_some() && self.session.state == SessionState::Connecting
@@ -260,7 +271,12 @@ pub(crate) fn take_due_retries(tabs: &mut [TabEntry], now: std::time::Instant) -
 /// 多个「已删除」只会让人以为连接断了。
 pub(crate) fn display_tab_title(tab: &TabEntry, conn_store: &ConnectionStore) -> String {
     let base = tab.session.title.clone();
-    let gone = tab.terminal.is_none()
+    // 外部链接的临时连接本来就不在库里 —— 不能因此说它「配置已删除」。
+    let external = tab.session.profile_id.as_deref().is_some_and(|pid| {
+        pid.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX)
+    });
+    let gone = !external
+        && tab.terminal.is_none()
         && tab
             .session
             .profile_id

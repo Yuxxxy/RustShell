@@ -258,7 +258,16 @@ impl MainView {
         // 池下标 → 快照下标（`None` = 这个标签不进快照）
         let mut map: Vec<Option<usize>> = vec![None; self.tabs_state.tabs.len()];
         for (ix, tab) in self.tabs_state.tabs.iter().enumerate() {
-            if tab.session.kind == SessionKind::Ssh && tab.session.profile_id.is_none() {
+            let pid = tab.session.profile_id.as_deref();
+            // 临时会话（没有 profile_id）与外部链接的临时连接（`ext:`，只在内存里）
+            // 都不进快照：重建它们连「连哪台、口令是什么」都不知道，
+            // 而口令也绝不该被写进会话布局文件。
+            if tab.session.kind == SessionKind::Ssh
+                && (pid.is_none()
+                    || pid.is_some_and(|p| {
+                        p.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX)
+                    }))
+            {
                 continue;
             }
             map[ix] = Some(tabs.len());

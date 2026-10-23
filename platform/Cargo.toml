@@ -14,6 +14,7 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+flume.workspace = true
 
 # P1-9：非 Windows 密码走 OS 凭据库（macOS Keychain / Linux Secret Service）
 # Windows 构建不编译此依赖（DPAPI 直接走 crypt32）

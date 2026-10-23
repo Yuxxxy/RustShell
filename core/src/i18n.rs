@@ -195,11 +195,17 @@ fn translate(zh: &'static str) -> &'static str {
             "1–4; applies to new connections, in-flight transfers are unaffected."
         }
         "没读到拖入的文件" => "The drop contained no files",
+        // 外部链接（`sftp://`）：只有文件面板，没有终端
+        "SFTP 已连接" => "SFTP Connected",
+        "文件面板已打开，可在此浏览与传输文件" => {
+            "The file panel is open — browse and transfer files there"
+        }
         // ZMODEM 窗格浮层与拖放上传（协议在引擎字节泵里，文案归这里）
         "下载" => "Download",
         "上传" => "Upload",
         "传输" => "Transfer",
         "已有传输在进行" => "A transfer is already running",
+        "传输已取消" => "Transfer cancelled",
         "会话已断开，无法发送" => "Session closed, cannot send",
         "API 端点" => "API Endpoint",
         "模型名称" => "Model",

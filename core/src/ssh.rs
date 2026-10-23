@@ -549,6 +549,23 @@ fn ssh_config() -> Arc<russh::client::Config> {
 /// 连接结果（连接线程 到 UI 轮询通道传递）。Err 携带 (profile_id, 错误描述)，供 UI 清理该 profile 的「连接中」标记。
 pub type ConnectResult = Result<SessionHandle, (String, String)>;
 
+/// 本次连接允许打开哪些通道。
+///
+/// 常规连接（`Full`）会同时用 shell、远端指标（每 5 秒一条 exec 通道）、
+/// SFTP 子系统与端口转发。**部分堡垒机禁止一条连接上多开通道**，那种环境里
+/// 多开一条 exec 就会整条被拒。外部链接（`ssh://` / `sftp://`）因此各只要一条：
+/// 终端只要 shell，SFTP 只要 sftp 子系统。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SshChannels {
+    /// 常规连接：shell + 指标 + SFTP + 端口转发（按配置）。
+    #[default]
+    Full,
+    /// 只开 shell 一条（外部 `ssh://`）。没有 SFTP，也没有远端指标。
+    ShellOnly,
+    /// 只开 sftp 子系统一条（外部 `sftp://`）。没有终端，也没有远端指标。
+    SftpOnly,
+}
+
 /// 同步入口：后台线程中执行异步连接，结果经通道返回给 UI 轮询。
 ///
 /// `log_path`：会话日志落点（F-7）。`None` = 不记录。**调用方算好**（全局开关
@@ -568,6 +585,7 @@ pub fn connect_in_background(
     log_path: Option<std::path::PathBuf>,
     sftp_max_concurrent: u32,
     global_proxy: Option<ProxyConfig>,
+    channels: SshChannels,
     result_tx: flume::Sender<ConnectResult>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
@@ -588,6 +606,7 @@ pub fn connect_in_background(
                     log_path,
                     sftp_max_concurrent,
                     global_proxy.as_ref(),
+                    channels,
                 ))
                 .map_err(|e| (profile.id.clone(), e));
             match &res {
@@ -1049,6 +1068,7 @@ async fn establish(
     log_path: Option<std::path::PathBuf>,
     sftp_max_concurrent: u32,
     global_proxy: Option<&ProxyConfig>,
+    channels: SshChannels,
 ) -> Result<SessionHandle, String> {
     // 交互式会话：未知主机走首次信任对话框
     let handle = connect_only(profile, timeout, HostKeyPolicy::AskUser, global_proxy).await?;
@@ -1058,6 +1078,26 @@ async fn establish(
     // 越不容易漏掉「连上了但 shell 初始化就出错」这一段最需要留档的输出。
     // 建不出来会降级为 None（只 warn），不阻断连接。
     let log = crate::session_log::open_if(log_path.as_deref());
+
+    // ★ 单通道 SFTP（外部 `sftp://` 链接）：整条连接只开 sftp 子系统一条通道。
+    //
+    // 堡垒机（JumpServer 等）常按「每条连接允许几条通道」限流，多开一条 shell
+    // 就整条被拒。这里连数据管道都不建 —— 没有终端，也就没有可画的 PTY。
+    if channels == SshChannels::SftpOnly {
+        let mut session = SessionHandle::pending(
+            crate::connections::uuid_like(),
+            SessionKind::Ssh,
+            profile.name.clone(),
+            Some(profile.id.clone()),
+        );
+        session.state = crate::session::SessionState::Connected;
+        session.log = log;
+        session.sftp_tx = Some(crate::sftp::spawn_sftp_service(
+            std::sync::Arc::new(handle),
+            sftp_max_concurrent,
+        ));
+        return Ok(session);
+    }
 
     // 打开 shell 信道
     let channel = match tokio::time::timeout(step_timeout, handle.channel_open_session()).await {
@@ -1206,25 +1246,39 @@ async fn establish(
     // SessionHandle 退出标志置位后任务结束 到 Handle 释放 到 连接关闭。
     // Handle 非 Clone：包一层 Arc 共享给指标与 SFTP 两个常驻任务（方法均为 &self）
     let handle = Arc::new(handle);
-    let metrics = Arc::new(MetricsStore::new());
-    spawn_remote_metrics(
-        handle.clone(),
-        metrics.clone(),
-        session.exit.clone(),
-        profile.host.clone(),
-    );
-
     let mut session = session;
-    session.metrics = Some(metrics);
-    // 端口转发（F-3）：规则随连接建立自动启动。**先于 SFTP** 起 ——
-    // 两者都要 `handle`，而 SFTP 服务把 handle 吃掉了，转发只能排在它前面。
-    session.forwards =
-        crate::forward::spawn_forwards(handle.clone(), &profile.forwards, session.exit.clone());
-    if !session.forwards.is_empty() {
-        log::info!("已启动 {} 条端口转发规则", session.forwards.len());
+    if channels == SshChannels::Full {
+        let metrics = Arc::new(MetricsStore::new());
+        spawn_remote_metrics(
+            handle.clone(),
+            metrics.clone(),
+            session.exit.clone(),
+            profile.host.clone(),
+        );
+        session.metrics = Some(metrics);
+        // 端口转发（F-3）：规则随连接建立自动启动。**先于 SFTP** 起 ——
+        // 两者都要 `handle`，而 SFTP 服务把 handle 吃掉了，转发只能排在它前面。
+        session.forwards =
+            crate::forward::spawn_forwards(handle.clone(), &profile.forwards, session.exit.clone());
+        if !session.forwards.is_empty() {
+            log::info!("已启动 {} 条端口转发规则", session.forwards.len());
+        }
     }
-    // SFTP 常驻服务：每命令一个子信道，与 shell/指标互不影响
-    session.sftp_tx = Some(crate::sftp::spawn_sftp_service(handle, sftp_max_concurrent));
+    if channels == SshChannels::ShellOnly {
+        // 单通道（外部 `ssh://`）：既没有指标任务也没有 SFTP 服务持有 Handle，
+        // 而 Handle 就是连接本身 —— 这里必须留一个守夜的，否则函数一返回
+        // 连接就被关掉，终端刚连上就断。
+        let exit = session.exit.clone();
+        runtime().spawn(async move {
+            let _keep = handle;
+            while !exit.raised() {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    } else {
+        // SFTP 常驻服务：复用一条 sftp 子系统信道（失败才重开），命令在其上多路复用。
+        session.sftp_tx = Some(crate::sftp::spawn_sftp_service(handle, sftp_max_concurrent));
+    }
     Ok(session)
 }
 

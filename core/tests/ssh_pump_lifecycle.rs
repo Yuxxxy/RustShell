@@ -22,7 +22,9 @@
 
 use rustshell_core::connections::ConnectionProfile;
 use rustshell_core::session::SessionHandle;
-use rustshell_core::ssh::{connect_in_background, runtime, trust_requests, ConnectResult};
+use rustshell_core::ssh::{
+    connect_in_background, runtime, trust_requests, ConnectResult, SshChannels,
+};
 use std::time::{Duration, Instant};
 
 fn docker_enabled() -> bool {
@@ -49,7 +51,15 @@ fn profile() -> ConnectionProfile {
 fn open_session() -> SessionHandle {
     let (tx, rx) = flume::unbounded();
     // 第三个参数是会话日志落点（F-7）：这些用例只关心泵的收场，不记录
-    let handle = connect_in_background(profile(), Duration::from_secs(20), None, 1, None, tx);
+    let handle = connect_in_background(
+        profile(),
+        Duration::from_secs(20),
+        None,
+        1,
+        None,
+        SshChannels::Full,
+        tx,
+    );
     if let Ok(prompt) = trust_requests().1.recv_timeout(Duration::from_secs(30)) {
         assert!(!prompt.fingerprint.is_empty(), "指纹不能为空");
         let _: Result<(), _> = prompt.reply.send(true);

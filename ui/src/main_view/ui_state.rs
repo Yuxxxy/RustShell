@@ -27,7 +27,8 @@ use super::{
 // `main_view.rs` 里是**裸名可见**（同模块），搬进 ui_state 后必须写全路径。
 use super::completion_bar;
 use super::settings_panel;
-use rustshell_core::connections::ForwardRule;
+use rustshell_core::connections::{ConnectionProfile, ForwardRule};
+use rustshell_core::launch::LaunchKind;
 use rustshell_core::session::SessionId;
 use rustshell_core::split::SplitAxis;
 
@@ -82,8 +83,25 @@ pub struct TabsState {
 // 左边是一棵可展开的分组树，右边是「哪些连接正在连 / 连失败了为什么」——
 // 两者都是**连接管理**这一个功能域的投影，所以归在一起。
 
+/// 一条外部链接（`ssh://` / `sftp://`）的临时连接。
+///
+/// **只活在内存里**：`ConnUiState::external` 是它唯一的家，标签一关就整条删除，
+/// 口令也随之消失（见 [`rustshell_core::launch::EXTERNAL_PROFILE_PREFIX`]）。
+/// 它不进 `ConnectionStore`，也就不会被连接树、最近访问或会话快照看见。
+pub struct ExternalConn {
+    /// 连接参数（口令在 `profile.password` 里，明文，仅内存）
+    pub profile: ConnectionProfile,
+    /// 这条链接要开什么：`Ssh` = 单通道 shell；`Sftp` = 单通道 sftp 子系统
+    pub kind: LaunchKind,
+    /// `sftp://` 的初始路径（`None` = 远端家目录）
+    pub path: Option<String>,
+}
+
 pub struct ConnUiState {
     pub expanded_groups: HashSet<String>,
+
+    /// 外部链接打开的临时连接，键 = `ext:` 开头的 profile id。
+    pub external: std::collections::HashMap<String, ExternalConn>,
 
     /// 连接树官方状态实体（gpui-component Tree：展开/选中/键盘导航由组件持有）
     pub tree_state: gpui::Entity<gpui_component::tree::TreeState>,
@@ -182,6 +200,12 @@ pub struct PanelUiState {
     /// 启动路径（`shell/src/app.rs`）拿不到 `Window`，而开浮层要 `window.focus` ——
     /// 于是那里只置这个标记，真正的打开动作落在 `render` 里（与 `pending_focus` 同一手法）。
     pub pending_palette: bool,
+
+    /// 有待激活的窗口（外部链接转交给已在运行的实例时置位）。
+    ///
+    /// `poll` 拿不到 `Window`，而 `activate_window` 是 `Window` 的方法 ——
+    /// 同样走「置旗 → 下一帧 render 兑现」这两段式。
+    pub pending_activate_window: bool,
 
     /// 面板打开时的命令快照（内置命令 + 快速连接，两段拼接）。
     ///

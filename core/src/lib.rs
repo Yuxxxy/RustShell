@@ -11,6 +11,7 @@ pub mod events;
 pub mod exec;
 pub mod forward;
 pub mod i18n;
+pub mod launch;
 pub mod metrics;
 pub mod notify_smtp;
 pub mod openssh;

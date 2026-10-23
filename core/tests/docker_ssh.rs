@@ -3,7 +3,9 @@
 use rustshell_core::connections::ConnectionProfile;
 use rustshell_core::sftp::{new_transfer_id, sftp_events, SftpCmd, SftpEvent};
 use rustshell_core::sftp_resume::{resume_store, ResumeMark, TransferDir};
-use rustshell_core::ssh::{connect_in_background, trust_requests, ConnectResult, ServerKeyChange};
+use rustshell_core::ssh::{
+    connect_in_background, trust_requests, ConnectResult, ServerKeyChange, SshChannels,
+};
 use std::time::Duration;
 
 fn docker_enabled() -> bool {
@@ -35,6 +37,7 @@ fn connect_with_trust(p: &ConnectionProfile, trust: bool) -> ConnectResult {
         None,
         1,
         None,
+        SshChannels::Full,
         tx,
     );
     // 等待可能的信任请求并决策
@@ -58,6 +61,7 @@ fn connect_trusted(p: &ConnectionProfile, max_concurrent: u32) -> ConnectResult 
         None,
         max_concurrent,
         None,
+        SshChannels::Full,
         tx,
     );
     match trust_requests().1.recv_timeout(Duration::from_secs(5)) {
@@ -88,6 +92,7 @@ fn connect_capturing_prompt(
         None,
         1,
         None,
+        SshChannels::Full,
         tx,
     );
     let prompt = trust_requests()

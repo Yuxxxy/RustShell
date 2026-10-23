@@ -643,8 +643,12 @@ struct TabMenuCtx {
     local: bool,
     /// SSH 会话是否已保存为连接配置（决定「复制 / 连接」是否可用）
     has_profile: bool,
+    /// 外部链接打开的临时连接（`ext:`）：不进连接库，也不能「复制」
+    ephemeral: bool,
     /// 终端已挂载（会话已建立）
     connected: bool,
+    /// 单通道 SFTP 会话已连接（没有终端，但会话是活的）
+    sftp: bool,
     /// 正在连接（占位态）
     connecting: bool,
     /// 标签总数（决定「关闭其他」是否可用）
@@ -669,11 +673,13 @@ struct TabMenuFlags {
 
 fn tab_menu_flags(ctx: &TabMenuCtx) -> TabMenuFlags {
     TabMenuFlags {
-        duplicate: ctx.local || ctx.has_profile,
+        // 临时连接没有可复制的目标：再复制一份只会多出一条同样不保存的连接。
+        duplicate: ctx.local || (ctx.has_profile && !ctx.ephemeral),
         // 本地 Shell 也要给这一项：会话恢复里启动失败的那一格会停在「已断开」，
         // 占位卡上写着「右键标签可重新连接」（`render_connect_placeholder`），
         // 不给菜单项就是那句提示在骗人。落点 `reconnect_tab` 已按 kind 分流。
-        connect: !ctx.connected && !ctx.connecting && (ctx.has_profile || ctx.local),
+        // SFTP 标签已经连着（只是没有终端），「连接」必须置灰。
+        connect: !ctx.connected && !ctx.connecting && !ctx.sftp && (ctx.has_profile || ctx.local),
         disconnect: ctx.connected,
         close_others: ctx.total > 1,
     }
@@ -867,7 +873,11 @@ impl MainView {
             .tabs
             .iter()
             .map(|tab| {
-                let status = TabStatus::of(tab.is_live(), tab.is_connecting(), tab.is_dead());
+                let status = TabStatus::of(
+                    tab.is_live() || tab.is_sftp_live(),
+                    tab.is_connecting(),
+                    tab.is_dead(),
+                );
                 let (color, filled) = status.dot(&t);
                 (tab.session.id.clone(), status, color, filled)
             })
@@ -910,14 +920,19 @@ impl MainView {
                 let sid = tab.session.id.clone();
 
                 // 右键菜单快照（菜单闭包要求 'static，故此处取好所有权）
+                let pid = tab.session.profile_id.as_deref();
                 let ctx = TabMenuCtx {
                     id: sid.clone(),
                     title,
                     local: tab.session.kind == rustshell_core::session::SessionKind::Local,
-                    has_profile: tab.session.profile_id.is_some(),
+                    has_profile: pid.is_some(),
+                    ephemeral: pid.is_some_and(|p| {
+                        p.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX)
+                    }),
                     // 断连态在标签栏必须**当未连接**：否则右键菜单给的动作会是
                     // 「断开」（点了没反应），而不是用户真正需要的「重新连接」。
                     connected: tab.is_live(),
+                    sftp: tab.is_sftp_live(),
                     connecting: tab.is_connecting(),
                     total,
                     in_split: self.is_split(),
@@ -1570,7 +1585,9 @@ mod tests {
                     title: "Terminal".into(),
                     local: true,
                     has_profile: false,
+                    ephemeral: false,
                     connected: true,
+                    sftp: false,
                     connecting: false,
                     total: 2,
                     in_split: false,
@@ -1681,7 +1698,9 @@ mod tests {
                 title: "Terminal".into(),
                 local: true,
                 has_profile: false,
+                ephemeral: false,
                 connected: true,
+                sftp: false,
                 connecting: false,
                 total: 1,
                 in_split: false,
@@ -2656,7 +2675,9 @@ mod tests {
             title: "t".into(),
             local,
             has_profile,
+            ephemeral: false,
             connected,
+            sftp: false,
             connecting,
             total,
             // 分屏开关只影响「取消分屏」菜单项的可用性，与本组判据无关
@@ -2720,6 +2741,26 @@ mod tests {
         assert!(!f.connect, "没有 profile 无法重连");
         assert!(f.disconnect);
         assert!(f.close_others);
+    }
+
+    /// 外部链接（`ssh://`）：断线后可原地重连，但没有可复制的配置。
+    #[test]
+    fn external_tab_is_reconnectable_but_not_duplicable() {
+        let mut c = ctx(false, true, false, false, 1);
+        c.ephemeral = true;
+        let f = tab_menu_flags(&c);
+        assert!(!f.duplicate, "临时连接不保存配置，复制没有目标");
+        assert!(f.connect, "断开的临时连接要能原地重连");
+    }
+
+    /// 单通道 SFTP 已连接：没有终端，但也不许再点「连接」。
+    #[test]
+    fn sftp_tab_is_already_connected() {
+        let mut c = ctx(false, true, false, false, 1);
+        c.sftp = true;
+        let f = tab_menu_flags(&c);
+        assert!(!f.connect, "SFTP 会话已经连着，不许再点「连接」");
+        assert!(!f.disconnect, "没有终端，无可断开");
     }
 
     /// 本地 Shell 停在「已断开」（会话恢复时启动失败的那一格）：连接项必须可用，
