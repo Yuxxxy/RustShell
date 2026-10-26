@@ -655,12 +655,15 @@ impl MainView {
         let credentials = v_flex()
             .gap_3()
             .debug_selector(|| "dlg-connect-credentials".to_string())
+            // 2026-10-21 用户要求「认证方式挪到用户名上面」：先选「怎么登录」，
+            // 再填「以谁登录」—— 这两行读起来是一条判断链，顺序颠倒时，
+            // 用户会先把用户名敲进去，再回头发现下面还有一组必选项。
+            .child(auth_row)
             .child(field(
                 rustshell_core::i18n::t("用户名"),
                 &self.io.dlg_user,
                 true,
             ))
-            .child(auth_row)
             .when(auth == AuthMode::Password, |d| {
                 // 整块包一层只为了挂量取钩子（`debug_bounds` 只认 debug_selector）：
                 // 「密码认证下私钥那一行确实不在场」这件事，只有量得出来才守得住。

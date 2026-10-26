@@ -154,20 +154,21 @@ pub fn apply_theme_mode(cx: &mut App, mode: ThemeMode) {
     // 状态栏：官方`StatusBar`取`tokens.status_bar`，此前完全未赋值
     colors.status_bar = to_hsla(t.bg_elevated);
     colors.status_bar_border = to_hsla(t.border_subtle);
-    // 列表行悬停 / 选中：**共用同一份淡底色**。
+    // 列表行悬停 / 选中：**两个不同的层次**。
     //
-    // 2026-09-18 用户要求「连接选中效果和连接 hover 效果改为一致」：此前 hover 取
-    // `bg_overlay`，浅色主题下它是纯白块（`bg_overlay == bg_base == #FFFFFF`），
-    // 与选中的 accent 淡底是两套配色 —— 同一行「划过」与「选中」看着像两个控件。
-    // 现在 hover 与选中同底（accent 18%），选中再多那圈 accent 外线
+    // 2026-09-18 用户先要求「连接选中效果和连接 hover 效果改为一致」；2026-10-21 又反馈
+    // 「选中和 hover 的颜色竟然是一致的，最好是不一致」—— 同色时「鼠标停在哪」与
+    // 「哪条被选中」分不开，而连接树恰恰是「先选中、再双击连」的列表，看错一行的代价
+    // 是连到另一台机器。
+    // 现在：hover 只有一层很淡的 accent（8%，只是「鼠标在这」的提示），
+    // 选中是同一色相的两倍多（18%）再加那圈 accent 外线
     // （`list_active_border`，由官方 `ListItem` 的 `active_highlight` 分支绘制，
-    // 圆角取行自身的 `corner_radii`）作为「哪个是选中」的标记。
+    // 圆角取行自身的 `corner_radii`）。
     //
     // 口径只有这一处：`tokens.list_hover` / `tokens.list_active` 在第 3 步由
     // `colors` 重建，二者不会再各自漂移。
-    let row_tint = to_hsla(t.accent).opacity(0.18);
-    colors.list_hover = row_tint;
-    colors.list_active = row_tint;
+    colors.list_hover = to_hsla(t.accent).opacity(0.08);
+    colors.list_active = to_hsla(t.accent).opacity(0.18);
     colors.list_active_border = to_hsla(t.accent);
 
     // primary / danger 变体按钮取色收口（2026-09-10 反馈：保存并连接按钮与主题不一致）。
@@ -555,15 +556,17 @@ mod tests {
         });
     }
 
-    /// 回归（2026-09-18 用户要求「连接选中效果和连接 hover 效果改为一致」）：
-    /// 列表行的 hover 与选中必须**同一份淡底色**，选中再叠那圈 accent 外线。
+    /// 回归（2026-10-21 用户反馈「连接树选中和 hover 的颜色竟然是一致的，最好是不一致」）：
+    /// hover 与选中必须是**两个不同深浅**的 accent 淡底。
     ///
     /// 官方 `ListItem` 的两条渲染分支：hover 取 `tokens.list_hover` 当底色；
     /// 选中取 `list_active` 当底色、`list_active_border` 当外线
     /// （`list.active_highlight` 为真时）。三条都是本应用的主题字段，
-    /// 所以「一致」只能在这一处收口 —— 断言「悬停底 == 选中底」正是它的定义。
+    /// 所以「不一样」只能在这一处收口 —— 断言「悬停底比选中底更淡」正是它的定义。
+    ///
+    /// 历史：2026-09-18 曾要求两者**一致**（当时反过来的），本条据此改写。
     #[gpui::test]
-    fn list_hover_matches_selection_tint(cx: &mut gpui::TestAppContext) {
+    fn list_hover_is_lighter_than_the_selection_tint(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             for (mode, token) in [
@@ -572,20 +575,28 @@ mod tests {
             ] {
                 apply_theme_mode(cx, mode);
                 let theme = Theme::global(cx);
+                assert!(
+                    theme.colors.list_hover.a < theme.colors.list_active.a,
+                    "{mode:?} 主题下 hover 底色不比选中更淡（{} vs {}）——\
+                     同一行「划过」与「选中」就分不出来了",
+                    theme.colors.list_hover.a,
+                    theme.colors.list_active.a
+                );
                 assert_eq!(
-                    theme.colors.list_hover, theme.colors.list_active,
-                    "{mode:?} 主题下 hover 底色与选中底色不一致（用户要求两者统一）"
+                    theme.colors.list_hover.h,
+                    theme.colors.list_active.h,
+                    "{mode:?} 主题下两者色相必须同源（都是 accent），只在深浅上分层"
                 );
                 assert_eq!(
                     theme.colors.list_active_border,
                     to_hsla(token.accent),
-                    "{mode:?} 主题下选中外线必须取 accent（它是「哪个被选中」的唯一标记）"
+                    "{mode:?} 主题下选中外线必须取 accent（它是「哪个被选中」的第二重标记）"
                 );
-                // 底色必须是**半透明**的 accent：不透明的 `bg_overlay` 正是旧口径
-                // （浅色主题下纯白块），断言它会挡住「又退回两套配色」的改动。
+                // 两者都必须**半透明**：不透明的 `bg_overlay` 正是更早的旧口径
+                // （浅色主题下纯白块），断言它挡住「又退回两套配色」的改动。
                 assert!(
-                    theme.colors.list_hover.a < 1.0,
-                    "{mode:?} 主题下 hover 底色是不透明色 —— 旧口径（bg_overlay）回来了"
+                    theme.colors.list_hover.a < 1.0 && theme.colors.list_active.a < 1.0,
+                    "{mode:?} 主题下出现了不透明行底色 —— 旧口径（bg_overlay）回来了"
                 );
             }
         });

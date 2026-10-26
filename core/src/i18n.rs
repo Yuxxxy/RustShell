@@ -125,7 +125,6 @@ fn translate(zh: &'static str) -> &'static str {
             "Invalid font name (too long or contains control chars)"
         }
         "全部连接" => "Connect All",
-        "复制服务器信息" => "Copy Server Info",
         "复制连接" => "Duplicate Connection",
         "编辑配置文件" => "Edit Config File",
         "打开设置" => "Open Settings",

@@ -314,12 +314,51 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     //
     // 2026-09-15 用户要求：取消树顶部的「服务器」标识，让分组/连接直接作为最上层。
     let mut col = v_flex().w_full().h_full();
+    let t = crate::theme::current(cx);
 
-    // 顶部一行：搜索框 + 右侧「新增连接」图标。
+    // 标题行（2026-10-21 用户要求「连接树增加标题栏，类似聊天记录的标题行，
+    // +新增也放标题行」）：结构与 `ai_history_panel` 的「聊天记录 ＋」一模一样 ——
+    // 左标题、右加号、一条下边框把标题与列表分开。
     //
-    // 2026-09-17 运行反馈「连接栏，新增按钮改为栏右侧一个图标」：原先贴在面板底部的
-    // 整条描边按钮（「+ 新建连接」）撤掉，改成一枚 `xsmall` ghost 图标按钮挂在栏右侧 ——
-    // 面板底部不再被一条常驻按钮占位，树的可见高度多出一行。
+    // 「新建连接」从此只在这条标题行上（此前它挂在搜索行右侧，那时还没有标题行，
+    // 一枚图标只能挤在输入框旁边）。搜索行因此回到「只做搜索」这一件事。
+    col = col.child(
+        h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(hex(t.border_subtle))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(hex(t.fg_muted))
+                    .child(rustshell_core::i18n::t("连接")),
+            )
+            // 外层 `div` 只为挂 `debug_selector`（宽高由内容决定，不改变布局）——
+            // 用例借它拿到这枚图标的真实矩形并模拟点击，从而覆盖 `on_click` 这条
+            // 路径（其余用例都直接调 `open_connect_dialog`，绕过了按钮本身）。
+            // 这正是「点了图标就闪退」能长期潜伏的原因。
+            .child(
+                div()
+                    .debug_selector(|| "new-connection-btn".to_string())
+                    .child(
+                        Button::new("new-connection")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Plus)
+                            .tooltip(rustshell_core::i18n::t("新建连接"))
+                            .on_click(cx.listener(|m, _e, w, cx| {
+                                m.open_connect_dialog(None, w, cx);
+                            })),
+                    ),
+            ),
+    );
+
+    // 搜索行：只剩搜索框（放大镜在框内左侧，见 `Input::prefix`）。
     //
     // 2026-10-21 运行反馈「连接栏搜索框消失」：搜索框原先只在 `profiles` 非空时渲染
     // （「没有可搜的东西，输入框只是噪音」），于是新建/清空连接库之后整条搜索框凭空
@@ -357,32 +396,13 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                             .child(
                                 Icon::new(IconName::Search)
                                     .xsmall()
-                                    .text_color(hex(crate::theme::current(cx).fg_muted)),
+                                    .text_color(hex(t.fg_muted)),
                             ),
                     )
                     .w_full(),
             ),
     );
-    col = col.child(
-        head.child(
-            // 外层 `div` 只为挂 `debug_selector`（宽高由内容决定，不改变布局）——
-            // 用例借它拿到这枚图标的真实矩形并模拟点击，从而覆盖 `on_click` 这条
-            // 此前**从未被测过**的路径（其余用例都直接调 `open_connect_dialog`，
-            // 绕过了按钮本身）。这正是「点了图标就闪退」能长期潜伏的原因。
-            div()
-                .debug_selector(|| "new-connection-btn".to_string())
-                .child(
-                    Button::new("new-connection")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Plus)
-                        .tooltip(rustshell_core::i18n::t("新建连接"))
-                        .on_click(cx.listener(|m, _e, w, cx| {
-                            m.open_connect_dialog(None, w, cx);
-                        })),
-                ),
-        ),
-    );
+    col = col.child(head);
 
     // 搜索无结果必须给可见原因：空树会让用户以为连接被删了。
     let body = if searching && plan.is_empty() {
@@ -560,7 +580,8 @@ fn render_tree_item(
             );
     }
 
-    // 服务器行：终端图标 + 名称 + user@host（无连接状态点；选中态由快照决定）
+    // 服务器行：终端图标 + 名称（`user@host` 已改为 hover 提示，见下方 tooltip）。
+    // 无连接状态点；选中态由快照决定。
     let pid = id.strip_prefix("prof:").unwrap_or("").to_string();
     let (selected, host_label, note) = cx
         .try_global::<ConnTreeSnapshot>()
@@ -600,14 +621,6 @@ fn render_tree_item(
                         .text_ellipsis()
                         .child(item.label.clone()),
                 )
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .text_size(px(10.))
-                        .text_color(hex(t.fg_muted))
-                        .child(SharedString::from(host_label)),
-                ),
         )
         // 拖拽源：把本服务器行拖到任意分组行即可移动归属
         .on_drag(
@@ -648,16 +661,18 @@ fn render_tree_item(
                 cx,
             );
         })
-        // 备注（2026-09-18 新增）：**非空才挂** hover 提示 —— 绝大多数连接没有备注，
-        // 给每一行都挂一个空 tooltip 只会让「鼠标划过每行都弹个空气泡」。
-        // 提示内容就是用户自己写的原文（保留换行），上面标一行「备注」小标题免得
-        // 让人误以为是主机名之类的系统信息。快照按 pid 查，渲染路径零 IO、零分配。
+        // hover 提示（2026-10-21 用户要求「连接树用户名 @//ip/ 改为 hover 显示」）：
+        // `user@host` 从**行内常显**改成 hover 才出现。
+        // 理由是宽度：地址往往比名字长得多（`root@192.168.100.200`），
+        // 常显时会先把名称挤成省略号 —— 而名称才是「这条是哪台机器」的第一线索。
+        // 地址与备注合并在同一个气泡里：两套 tooltip 会互相抢占，鼠标划过只能看到一个。
         //
         // 走 `Tooltip::element(..).build(..)` 而不是裸闭包：`.tooltip(closure)` 要求的
         // 返回类型是 `AnyView`（一个**视图实体**，见 `Tooltip::build`），不是元素；
-        // 想要多行富内容（小标题 + 正文两行）只能借 `Tooltip::element` 把元素包进去。
-        .when_some(note, |this, note| {
+        // 想要多行富内容（地址 + 备注）只能借 `Tooltip::element` 把元素包进去。
+        .when(!host_label.is_empty(), |this| {
             this.tooltip(move |w, cx| {
+                let host = host_label.clone();
                 let note = note.clone();
                 gpui_component::tooltip::Tooltip::element(move |_w, cx| {
                     let t = crate::theme::current(cx);
@@ -666,16 +681,25 @@ fn render_tree_item(
                         .gap_1()
                         .child(
                             div()
-                                .text_size(px(10.5))
-                                .text_color(hex(t.fg_muted))
-                                .child(SharedString::from(rustshell_core::i18n::t("备注"))),
-                        )
-                        .child(
-                            div()
                                 .text_size(px(12.))
                                 .text_color(hex(t.fg_primary))
-                                .child(SharedString::from(note.clone())),
+                                .whitespace_nowrap()
+                                .child(SharedString::from(host.clone())),
                         )
+                        .when_some(note.clone(), |d, note| {
+                            d.child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(hex(t.fg_muted))
+                                    .child(SharedString::from(rustshell_core::i18n::t("备注"))),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(hex(t.fg_secondary))
+                                    .child(SharedString::from(note)),
+                            )
+                        })
                 })
                 .build(w, cx)
             })
@@ -769,12 +793,6 @@ fn profile_menu(menu: PopupMenu, profile_id: &str, pos: (usize, usize)) -> Popup
         PopupMenuItem::new(rustshell_core::i18n::t("复制连接")).on_click({
             let id = profile_id.to_string();
             move |_, w, cx| super::main_view::ui_call(&id, MainView::duplicate_connection, w, cx)
-        }),
-    )
-    .item(
-        PopupMenuItem::new(rustshell_core::i18n::t("复制服务器信息")).on_click({
-            let id = profile_id.to_string();
-            move |_, _w, cx| super::main_view::copy_profile_summary(&id, cx)
         }),
     )
     // 同组内上下排序（首 / 末位对应置灰）
@@ -882,6 +900,50 @@ mod tests {
     use crate::test_support::prod;
     use rustshell_core::connections::{ConnectionGroup, ConnectionProfile, ConnectionStore};
 
+    /// 2026-10-26 用户要求「连接树用户名 @ip 改为 hover 显示」：行的正文里只剩
+    /// 图标与名称，`user@host` 移到 tooltip。
+    ///
+    /// 来源断言的理由：这一格是「有没有多出来一坨文字」，而文字在无头环境里无法
+    /// 逐字比对；但「行内还挂着 `SharedString::from(host_label)`」是它的唯一写法，
+    /// 反过来也存在唯一落点（tooltip 里的 `host.clone()`）。
+    #[test]
+    fn the_row_shows_the_host_only_on_hover() {
+        let code = prod(include_str!("connections_panel.rs"));
+        let at = code
+            .find("fn render_tree_item(")
+            .expect("找不到连接树行渲染函数");
+        let body = &code[at..];
+        let end = body.find("\n}").expect("找不到行渲染函数的结尾");
+        let body = &body[..end];
+
+        assert!(
+            !body.contains("SharedString::from(host_label)"),
+            "行内又把 `user@host` 常显出来了 —— 用户要求改成 hover 显示。"
+        );
+        assert!(
+            body.contains(".tooltip(") && body.contains("host.clone()"),
+            "地址没有进 hover 提示：`user@host` 既不在行内、也不在 tooltip 里，就是丢了。"
+        );
+    }
+
+    /// 2026-10-26 用户要求「连接树右键移除复制服务器信息」：那条菜单项不该再出现。
+    ///
+    /// 文案与 `copy_profile_summary` 的唯一落点都在 `profile_menu` 里，两者都不许回来。
+    /// （状态栏那条「复制当前会话摘要」走的是另一个函数 `ui_call_copy_server_info`，
+    /// 与本次撤下的这条无关。）
+    #[test]
+    fn the_connection_menu_no_longer_copies_the_server_info() {
+        let code = prod(include_str!("connections_panel.rs"));
+        assert!(
+            !code.contains("copy_profile_summary"),
+            "右键菜单又在调 `copy_profile_summary` —— 用户要求移除「复制服务器信息」。"
+        );
+        assert!(
+            !code.contains("复制服务器信息"),
+            "「复制服务器信息」这一项又回到连接树右键菜单里了。"
+        );
+    }
+
     /// 2026-10-21 用户要求「连接树文件夹增加展开关闭图标变化效果」：分组行的文件夹
     /// 图标必须随展开状态在 `FolderOpen` / `FolderClosed` 之间切换。
     ///
@@ -952,6 +1014,19 @@ mod tests {
         assert!(
             button < body,
             "新增入口必须在树容器**之前**渲染（顺序即布局）—— 落在之后就是又一条底部按钮。"
+        );
+        // 2026-10-26 用户要求「+新增也放标题行」：按钮必须在搜索框**之前**
+        // （标题行在搜索行之上），而不是又挂在搜索框右侧。
+        assert!(
+            button
+                < code
+                    .find("Input::new(&m.conn_ui.conn_search)")
+                    .expect("找不到连接搜索框"),
+            "新增按钮必须落在标题行里（搜索行之上），而不是挤回搜索框右侧"
+        );
+        assert!(
+            code.contains("justify_between"),
+            "标题行必须左标题、右加号（justify_between）"
         );
         let tail = &code[body + "col.child(body)".len()..];
         let fn_end = tail.find("\n}").expect("找不到 render 的结尾");
@@ -1078,6 +1153,19 @@ mod tests {
             icon_mid < box_mid,
             "放大镜落在了搜索框的右半边（x={icon_mid}，框中线={box_mid}）—— \
              用户要的是**左侧**图标。"
+        );
+
+        // 标题行（2026-10-26 用户要求「连接树增加标题栏，+新增也放标题行」）：
+        // 「+」的 y 必须落在搜索框**之上**。源码顺序断言只能证明「写在前面」，
+        // 布局是不是真的分两行（而不是又并回同一行右侧）只有量出来才知道。
+        let new_btn = vcx
+            .debug_bounds("new-connection-btn")
+            .expect("拿不到「+ 新建连接」的矩形");
+        assert!(
+            f32::from(new_btn.origin.y) < f32::from(bounds.origin.y),
+            "「+」不在标题行：按钮 y={}，搜索框 y={}（按钮应当更高、独占一行）",
+            f32::from(new_btn.origin.y),
+            f32::from(bounds.origin.y)
         );
     }
 

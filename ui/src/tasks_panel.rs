@@ -52,11 +52,15 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         .id("tasks-panel")
         .w_full()
         .h_full()
-        // 头部：标题 + 查询行（搜索框与它右侧的「新建」）
+        // 标题行（2026-10-21 用户要求「定时任务栏也要类似改动，+新增也放标题行」）：
+        // 与连接树 / 聊天记录同一版式 —— 左标题、右加号、下边框。
+        // 「新建 AI 巡检」从此在标题行上，搜索行只做搜索。
         .child(
-            v_flex()
+            h_flex()
                 .w_full()
-                .gap_1()
+                .items_center()
+                .justify_between()
+                .gap_2()
                 .px_3()
                 .py_2()
                 .border_b_1()
@@ -67,72 +71,68 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                         .text_color(hex(t.fg_muted))
                         .child(rustshell_core::i18n::t("定时任务")),
                 )
-                // 查询：任务一多（几十条）就得能按名字找 —— 列表里只有名字，
-                // 眼睛扫比打字慢得多。搜索框常驻（不藏进折叠区）：它有意义的
-                // 前提是用户知道它在。
-                //
-                // 2026-10-21 用户要求「定时任务搜索栏左侧增加放大镜图标」：
-                // 与连接树搜索框同一手法（`Input::prefix`，图标落在框内左侧、
-                // 随输入框高度居中）。此前这里明确撤掉过放大镜，现在是加回来。
-                // 「新建」仍在输入框**右侧**。
                 .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_1()
+                    Button::new("task-new-ai")
+                        .ghost()
+                        .xsmall()
+                        .flex_shrink_0()
+                        .icon(LucideIcon::Plus)
+                        .tooltip(rustshell_core::i18n::t("新建 AI 巡检"))
+                        .on_click(cx.listener(|m, _e, w, cx| {
+                            m.task_add_template(
+                                TaskAction::AiInspect {
+                                    target: TaskTarget::default(),
+                                    prompt: String::new(),
+                                    // 巡检项已撤下（查什么由模型按「AI 要求」决定）
+                                    checks: Vec::new(),
+                                    thresholds: None,
+                                    log_path: None,
+                                    log_level: Default::default(),
+                                },
+                                w,
+                                cx,
+                            );
+                        })),
+                ),
+        )
+        // 查询行：任务一多（几十条）就得能按名字找 —— 列表里只有名字，
+        // 眼睛扫比打字慢得多。搜索框常驻（不藏进折叠区）：它有意义的
+        // 前提是用户知道它在。
+        //
+        // 2026-10-21 用户要求「定时任务搜索栏左侧增加放大镜图标」：
+        // 与连接树搜索框同一手法（`Input::prefix`，图标落在框内左侧、
+        // 随输入框高度居中）。此前这里明确撤掉过放大镜，现在是加回来。
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .px_3()
+                .py_2()
+                .child(
+                    // 包装层挂「点框外失焦」（与连接栏同一手法）：点列表行、
+                    // 空白区这些不可聚焦的地方时，焦点也应当从搜索框松开。
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .debug_selector(|| "task-search-box".to_string())
+                        .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                            super::main_view::blur_input_on_outside_click(&m.io.task_search, w, cx)
+                        }))
                         .child(
-                            // 包装层挂「点框外失焦」（与连接栏同一手法）：点列表行、
-                            // 空白区这些不可聚焦的地方时，焦点也应当从搜索框松开。
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .debug_selector(|| "task-search-box".to_string())
-                                .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
-                                    super::main_view::blur_input_on_outside_click(
-                                        &m.io.task_search,
-                                        w,
-                                        cx,
-                                    )
-                                }))
-                                .child(
-                                    Input::new(&m.io.task_search)
-                                        .small()
-                                        .cleanable(true)
-                                        .prefix(
-                                            // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
-                                            div()
-                                                .debug_selector(|| "task-search-icon".to_string())
-                                                .child(
-                                                    Icon::new(LucideIcon::Search)
-                                                        .xsmall()
-                                                        .text_color(hex(t.fg_muted)),
-                                                ),
-                                        )
-                                        .w_full(),
-                                ),
-                        )
-                        .child(
-                            Button::new("task-new-ai")
-                                .ghost()
-                                .xsmall()
-                                .flex_shrink_0()
-                                .icon(LucideIcon::Plus)
-                                .tooltip(rustshell_core::i18n::t("新建 AI 巡检"))
-                                .on_click(cx.listener(|m, _e, w, cx| {
-                                    m.task_add_template(
-                                        TaskAction::AiInspect {
-                                            target: TaskTarget::default(),
-                                            prompt: String::new(),
-                                            // 巡检项已撤下（查什么由模型按「AI 要求」决定）
-                                            checks: Vec::new(),
-                                            thresholds: None,
-                                            log_path: None,
-                                            log_level: Default::default(),
-                                        },
-                                        w,
-                                        cx,
-                                    );
-                                })),
+                            Input::new(&m.io.task_search)
+                                .small()
+                                .cleanable(true)
+                                .prefix(
+                                    // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
+                                    div()
+                                        .debug_selector(|| "task-search-icon".to_string())
+                                        .child(
+                                            Icon::new(LucideIcon::Search)
+                                                .xsmall()
+                                                .text_color(hex(t.fg_muted)),
+                                        ),
+                                )
+                                .w_full(),
                         ),
                 ),
         )
@@ -653,10 +653,20 @@ mod tests {
             c.contains(".prefix("),
             "放大镜必须走 `Input::prefix` 落在框内左侧，而不是在外面拼一层 h_flex。"
         );
-        // 「新建」必须在搜索框所在的这一行、且在输入框**之后**（右侧）
+        // 「新建」在**标题行**（2026-10-26 用户要求「+新增也放标题行」，与连接树 /
+        // 聊天记录同一版式）。因此它在源码里出现在搜索框**之前**，且全文件只有这一枚。
+        assert_eq!(
+            c.matches("task-new-ai").count(),
+            1,
+            "「新建 AI 巡检」入口必须只有一个（标题行那一枚）"
+        );
         assert!(
-            c.find("Input::new(&m.io.task_search)").unwrap() < c.find("task-new-ai").unwrap(),
-            "「新建」按钮应在搜索框右侧"
+            c.find("task-new-ai").unwrap() < c.find("Input::new(&m.io.task_search)").unwrap(),
+            "新建按钮必须落在标题行（搜索行之上），而不是又挤回搜索框右侧"
+        );
+        assert!(
+            c.contains("justify_between"),
+            "标题行必须左标题、右加号（justify_between）"
         );
         // 过滤结果为空时必须走「没有匹配」那条分支，而不是照旧给模板入口
         assert!(

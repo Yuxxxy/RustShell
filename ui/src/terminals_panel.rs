@@ -27,17 +27,24 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         .h_full()
         .overflow_y_scrollbar()
         .child(
-            div()
+            // 标题行（2026-10-26 用户要求「终端侧边栏标题行增加线，类似于其他栏，
+            // 不统计数量」）：与连接树 / 定时任务 / 聊天记录同一版式 —— 只有标题 +
+            // 一条下边框。右侧原来挂的会话数（`tabs.len()`）撤掉：标签栏已经写着
+            // 有哪几个会话，这里再数一遍既挤又要在每次开关标签时重排。
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap_2()
                 .px_3()
                 .py_2()
-                .text_size(px(11.))
-                .text_color(hex(t.fg_muted))
+                .border_b_1()
+                .border_color(hex(t.border_subtle))
                 .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(rustshell_core::i18n::t("终端"))
-                        .child(SharedString::from(format!("{}", m.tabs_state.tabs.len()))),
+                    div()
+                        .text_size(px(11.))
+                        .text_color(hex(t.fg_muted))
+                        .child(rustshell_core::i18n::t("终端")),
                 ),
         );
 
@@ -189,4 +196,26 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 .on_click(cx.listener(|m, _e, _w, cx| m.open_local_shell(cx))),
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::prod;
+
+    /// 2026-10-26 用户要求「终端侧边栏标题行增加线，类似于其他栏，不统计数量」。
+    ///
+    /// 两条一起守：下边框必须在（与连接树 / 定时任务 / 聊天记录同一版式），
+    /// 会话数必须不在（标签栏已经写着有哪些会话，这里再数一遍是噪音）。
+    #[test]
+    fn the_title_row_has_a_divider_and_no_session_count() {
+        let code = prod(include_str!("terminals_panel.rs"));
+        assert!(
+            code.contains("border_b_1"),
+            "终端面板标题行没有下边框 —— 与其它三栏不一致。"
+        );
+        assert!(
+            !code.contains("tabs_state.tabs.len()"),
+            "标题行又统计会话数了：用户要求不显示数量。"
+        );
+    }
 }
