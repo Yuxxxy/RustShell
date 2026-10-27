@@ -1,0 +1,21 @@
+# 本机资源上限（2026-10-27）
+#
+# 症状：`cargo build` 报
+#   error: crate `gpui_windows` required to be available in rlib format, but was not found in this form
+#   error: crate `accesskit_consumer` required to be available in rlib format, ...
+#
+# 真因不是代码、也不是依赖图：**rustc 死了**。同一台机器上跑
+# `cargo check -p rustshell --all-targets`（默认并行度 = 16 核）时，编译
+# `windows 0.62.2`（gpui-fast-windows / accesskit 的底层）的那个 rustc 以
+# `exit code: 0xc0000409, STATUS_STACK_BUFFER_OVERRUN`（Windows 上的 fail-fast，
+# 本质是提交内存/分配失败）退出。它负责的 rlib 因此**只写了一半或根本没写**，
+# 后续谁要用这两个 crate 链接，看到的就是上面那句「不在 rlib 这种形态里」。
+#
+# 同一台机器实测：默认 `-j 16` 崩，`-j 2` 一条命令跑完整图（1m55s）。
+# 14 GB 物理内存 / 约 5.7 GB 可用提交量，扛不住十几个 rustc 同时展开
+# 100 MB 级的 rlib。
+#
+# `jobs` 不参与指纹，改它**不会**让任何产物失效；需要更快时用 `cargo build -j 8`
+# 临时覆盖（内存够的前提下）。
+[build]
+jobs = 4
