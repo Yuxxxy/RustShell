@@ -128,7 +128,6 @@ impl MainView {
             return;
         };
         self.io.files_loading = true;
-        self.io.files_error = None;
         self.io.files_loaded_session = Some(sid);
         self.panel_ui.panel = PanelKind::Files;
         self.panel_ui.sidebar_collapsed = false;

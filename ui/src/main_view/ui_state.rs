@@ -713,8 +713,8 @@ pub struct DialogIoState {
 
     pub files_loading: bool,
 
-    pub files_error: Option<String>,
-
+    /// 传输队列。**没有** `files_error` 了（2026-10-27）：目录读取失败、上传被拒、
+    /// 传输失败这些提示一律走消息框（`crate::notice`），不在列表里画一行字。
     pub files_transfers: Vec<TransferState>,
 
     /// 已加载过目录的会话 id（切换会话后重扫）
@@ -727,8 +727,6 @@ pub struct DialogIoState {
     pub sftp_local_rows: Vec<crate::sftp_tab::LocalRow>,
     /// 行缓存对应的目录（`None` = 需要重读）
     pub sftp_local_for: Option<String>,
-    /// 读本地目录失败的原因（画在窗格里，而不是让它变成一张空目录）
-    pub sftp_local_error: Option<String>,
     /// 本地窗格里被单击选中的项（「上传」吃它）
     pub sftp_local_sel: Option<String>,
     /// 远端窗格里被单击选中的项（「下载」吃它）

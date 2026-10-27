@@ -565,7 +565,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
             ),
     );
 
-    // 加载/错误提示
+    // 加载提示（错误不再画在这里：2026-10-27 起一律走右上角消息框）
     if m.io.files_loading {
         root = root.child(
             div()
@@ -574,16 +574,6 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 .text_size(px(11.))
                 .text_color(hex(t.fg_muted))
                 .child(rustshell_core::i18n::t("加载中…")),
-        );
-    }
-    if let Some(err) = &m.io.files_error {
-        // 读目录失败等错误走官方`Alert`（error 变体）：此前只有一行红字，
-        // 既没有图标也没有可辨认的边界，在文件列表里容易被当成普通行。
-        root = root.child(
-            div().px_1().py_1().child(
-                crate::notice::NoticeKind::Error
-                    .compact("files-error", SharedString::from(err.clone())),
-            ),
         );
     }
 
@@ -604,7 +594,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                                         // 而侧栏宽度在拖拽结束时就写回了 `settings`，与渲染用的是同一个数。
     let show_perm = room_for_perm_cols(m.settings.sidebar_width_for(m.panel_ui.panel.key()));
     if rows.is_empty() {
-        if !m.io.files_loading && m.io.files_error.is_none() {
+        if !m.io.files_loading {
             root = root.child(
                 div()
                     .px_3()
@@ -664,6 +654,32 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
             } else {
                 hex(t.accent)
             };
+            // 取消入口：只在「还在跑、且没在取消中」的行上出现
+            // （2026-10-27 用户要求「支持取消任务」）。
+            let id = tr.id;
+            let cancel = (!tr.done && !tr.cancelling).then(|| {
+                Button::new(SharedString::from(format!("tr-cancel-{id}")))
+                    .ghost()
+                    .xsmall()
+                    .flex_shrink_0()
+                    .icon(IconName::Close)
+                    .tooltip(rustshell_core::i18n::t("取消任务"))
+                    .on_click(cx.listener(move |m, _e, _w, cx| {
+                        m.sftp_cancel_transfer(id, cx);
+                    }))
+            });
+            // 状态字：完成 / 失败 / 取消中 / 百分比（取消中是「等 core 回报终态」的中间态）
+            let state_text = if tr.done {
+                if tr.ok {
+                    rustshell_core::i18n::t("完成").to_string()
+                } else {
+                    rustshell_core::i18n::t("失败").to_string()
+                }
+            } else if tr.cancelling {
+                rustshell_core::i18n::t("取消中…").to_string()
+            } else {
+                format!("{pct:.2}%")
+            };
             root = root.child(
                 v_flex()
                     .px_3()
@@ -681,16 +697,9 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                                     .child(SharedString::from(tr.name.clone())),
                             )
                             .child(div().text_size(px(10.)).text_color(color).child(
-                                SharedString::from(if tr.done {
-                                    if tr.ok {
-                                        rustshell_core::i18n::t("完成").to_string()
-                                    } else {
-                                        rustshell_core::i18n::t("失败").to_string()
-                                    }
-                                } else {
-                                    format!("{pct:.2}%")
-                                }),
-                            )),
+                                SharedString::from(state_text),
+                            ))
+                            .children(cancel),
                     )
                     .child(
                         // 官方 Progress（审计表 #7：统一样式与确定/不确定态）
@@ -925,7 +934,6 @@ fn send_list(tx: &flume::Sender<SftpCmd>, path: String, cx: &mut gpui::App) {
     let main = hub.main.clone();
     let _ = main.update(cx, |m, cx| {
         m.io.files_loading = true;
-        m.io.files_error = None;
         cx.notify();
     });
 }
@@ -1096,6 +1104,33 @@ mod tests {
     use super::*;
     use crate::test_support::prod;
     use rustshell_core::theme::ThemeTokens;
+
+    /// 2026-10-27：传输队列要有取消入口，列表里不再画提示文字。
+    ///
+    /// 两条都是「界面上看起来正常、但用户的要求没满足」的那种退化：
+    /// 取消按钮漏了 = 大文件传错只能等它传完；提示回到列表里 = 又变成一条像
+    /// 目录条目的灰字，还会把列表顶下去。
+    #[test]
+    fn transfer_rows_can_be_cancelled_and_messages_left_the_list() {
+        let code = prod(include_str!("files_panel.rs"));
+
+        assert!(
+            code.contains("m.sftp_cancel_transfer(id, cx)"),
+            "文件面板的传输队列没有取消入口 —— 用户要求「支持取消任务」"
+        );
+        assert!(
+            code.contains(r#"t("取消任务")"#) && code.contains("tr-cancel-"),
+            "取消按钮要有 tooltip 与独立的元素 id（同名 id 会让多行抢同一份状态）"
+        );
+        assert!(
+            code.contains(r#"t("取消中…")"#),
+            "点了取消要立刻有反馈（取消一个排队中的传输不会立即生效）"
+        );
+        assert!(
+            !code.contains("files_error"),
+            "`files_error` 已被移除：目录/上传的错误一律走消息框，不再画进列表"
+        );
+    }
 
     /// 每个大类都得落到**各自的**图标上，且兜底分支不能吞掉任何已登记的类型。
     ///

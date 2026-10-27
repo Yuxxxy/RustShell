@@ -1129,6 +1129,14 @@ pub struct MainView {
     /// 与 `quick_toast_seq` **分开**：两者寿命不同（4s / 2s），共用一个代次会让
     /// 短提示的定时器把长提示提前收走。
     pub no_session_notice_seq: u64,
+
+    /// 待弹出的**消息框**队列（2026-10-27 用户要求：提示一律走消息框）。
+    ///
+    /// 为什么要有队列：SFTP 事件在 `poll` 里收敛，那里只有 `&mut Context`、
+    /// 没有 `Window`，而 `push_notification` 是窗口级 API。所以后台只往这里攒，
+    /// 由 [`MainView::flush_notices`] 在 `render` 开头统一推出去 —— 攒与弹之间
+    /// 最多隔一帧，观感上仍是「点了就弹」。
+    pub notices: Vec<(crate::notice::NoticeKind, String)>,
 }
 
 impl Focusable for MainView {
@@ -1834,7 +1842,6 @@ impl MainView {
                 files_entries: Vec::new(),
                 files_rows: std::rc::Rc::new(Vec::new()),
                 files_loading: false,
-                files_error: None,
                 files_transfers: Vec::new(),
                 files_loaded_session: None,
                 // 本地窗格从本机 home 开始（没有 home 就退到当前目录 / 根）。
@@ -1843,7 +1850,6 @@ impl MainView {
                 sftp_local_path: sftp_home,
                 sftp_local_rows: Vec::new(),
                 sftp_local_for: None,
-                sftp_local_error: None,
                 sftp_local_sel: None,
                 sftp_remote_sel: None,
                 sftp_path_input,
@@ -1888,6 +1894,7 @@ impl MainView {
             local_metrics,
             dialog: None,
             no_session_notice_seq: 0,
+            notices: Vec::new(),
         };
         // 展开态存的是分组 id（与 TreeItem 节点 id 同源）
         for g in view.conn_store.groups.clone() {
@@ -2152,7 +2159,6 @@ impl MainView {
                                 .and_then(|t| t.session.sftp_tx.clone())
                             {
                                 self.io.files_loading = true;
-                                self.io.files_error = None;
                                 self.io.files_loaded_session = Some(id.clone());
                                 let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
                             }
@@ -3098,6 +3104,16 @@ impl Render for MainView {
         // 命令面板（浮层，M3 Command 双源）
         if self.panel_ui.palette_state.is_some() {
             root = root.child(self.render_command_palette(cx));
+        }
+
+        // 消息框：本轮攒下的提示（后台事件、以及本帧渲染过程中子视图报的）在这里
+        // 推出去。放在**帧末**而不是帧首：子视图的 render 也在本函数里跑，
+        // 它报的错（如「读不到本地目录」）帧首时还没出现。
+        //
+        // 用 `defer_in` 而不是就地 `push_notification`：后者要更新 Root 的浮层实体，
+        // 属于「绘制期改别人的状态」；推迟到本帧的 effect 阶段更稳，弹出仍是同一帧。
+        if !self.notices.is_empty() {
+            cx.defer_in(window, |this, window, cx| this.flush_notices(window, cx));
         }
 
         crate::perf_probe::frame(__perf_t0.elapsed());

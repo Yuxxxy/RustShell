@@ -28,6 +28,16 @@
 //! - 远端右键：下载到本地 / 下载… / 打开 / 重命名 / 删除 / 新建文件 / 新建文件夹 / 复制路径；
 //!   本地右键：上传到远端 / 新建文件 / 新建文件夹 / 重命名。
 //!
+//! # 2026-10-27 第三轮（用户四点要求）
+//!
+//! 1. **传输可取消**：底部队列每条还在跑的行右侧一枚 ✕（`sftp_cancel_transfer`）；
+//!    点了立刻变灰显示「取消中…」，core 回报终态后落成「失败/完成」。
+//! 2. **传完刷新远端**：`SftpCmd::Upload` 在 core 里发 `SftpEvent::Refresh`，
+//!    本视图读的 `files_rows` 由 `poll` 重扫时更新（本文件不自己发 `List`）。
+//! 3. **点别处失焦**：两条路径框各挂一层 `on_mouse_down_out`（点列表行也算「别处」），
+//!    草稿随之还原成真实目录。
+//! 4. **提示走消息框**：本视图不再画错误行（`hint_line` 只剩「正在读取…」这种状态字）。
+//!
 //! 圆角与底色由外层窗格提供，本视图只画内容。
 
 use std::path::{Path, PathBuf};
@@ -247,10 +257,20 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
     if m.io.sftp_local_for.as_deref() != Some(local_path.as_str()) {
         let (rows, err) = read_local_dir(Path::new(&local_path));
         m.io.sftp_local_rows = rows;
-        m.io.sftp_local_error = err;
         m.io.sftp_local_for = Some(local_path.clone());
         // 换了目录，旧的选中项就不属于这里了
         m.io.sftp_local_sel = None;
+        // 读不到就说一句话（2026-10-27：不再在列表里画一行灰字 —— 那行字与目录行
+        // 混在一起，既容易被当成条目，又会被后续刷新覆盖掉）。只在这里报，不每帧报。
+        if let Some(err) = err {
+            m.queue_notice(
+                crate::notice::NoticeKind::Error,
+                rustshell_core::i18n::ts(
+                    format!("读取本地目录失败：{err}"),
+                    format!("Failed to read local directory: {err}"),
+                ),
+            );
+        }
     }
 
     let tx = m
@@ -262,7 +282,6 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
     let remote_path = m.io.files_path.clone();
     let remote_rows = m.io.files_rows.clone();
     let remote_loading = m.io.files_loading;
-    let remote_error = m.io.files_error.clone();
     let local_sel = m.io.sftp_local_sel.clone();
     let remote_sel = m.io.sftp_remote_sel.clone();
     // 远端条目的右键菜单要现读设置（与文件面板同一口径）
@@ -289,19 +308,31 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         .child(
             // 直角输入框（用户要求「不要圆角输入框」）：`Input` 的圆角来自主题
             // token，这里就地压到 0；两侧同款。
-            div().flex_1().min_w_0().child(
-                Input::new(&m.io.sftp_local_path_input)
-                    .small()
-                    .rounded(px(0.))
-                    .w_full()
-                    .prefix(
-                        div().child(
-                            Icon::new(LucideIcon::Folder)
-                                .xsmall()
-                                .text_color(hex(t.fg_muted)),
+            //
+            // 外层这层 `on_mouse_down_out` 是 2026-10-27 用户要求的「点文件之类的地方
+            // 要失焦」：官方 `Input` 只在点到**另一个可聚焦元素**时才换焦点，
+            // 点列表行（普通 div）不会松手 —— 焦点与草稿就都赖在路径框里。
+            // `on_mouse_down_out` 只在「框外按下」时触发，所以挂在这个小包装上
+            // （挂在整个标签页根上就永远不会触发：行也是「内部」）。
+            div()
+                .flex_1()
+                .min_w_0()
+                .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                    super::main_view::blur_input_on_outside_click(&m.io.sftp_local_path_input, w, cx)
+                }))
+                .child(
+                    Input::new(&m.io.sftp_local_path_input)
+                        .small()
+                        .rounded(px(0.))
+                        .w_full()
+                        .prefix(
+                            div().child(
+                                Icon::new(LucideIcon::Folder)
+                                    .xsmall()
+                                    .text_color(hex(t.fg_muted)),
+                            ),
                         ),
-                    ),
-            ),
+                ),
         )
         .child(
             Button::new("sftp-refresh-local")
@@ -313,7 +344,6 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                 .on_click(cx.listener(|m, _e, _w, cx| {
                     // 本地没有「重新 List」这种命令：把行缓存作废，下一帧就重读盘。
                     m.io.sftp_local_for = None;
-                    m.io.sftp_local_error = None;
                     cx.notify();
                 })),
         );
@@ -327,19 +357,26 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         .border_b_1()
         .border_color(hex(t.border_subtle))
         .child(
-            div().flex_1().min_w_0().child(
-                Input::new(&m.io.sftp_path_input)
-                    .small()
-                    .rounded(px(0.))
-                    .w_full()
-                    .prefix(
-                        div().child(
-                            Icon::new(LucideIcon::Globe)
-                                .xsmall()
-                                .text_color(hex(t.fg_muted)),
+            // 与左栏同款：框外一按就松手（见上面 local_bar 的注释）
+            div()
+                .flex_1()
+                .min_w_0()
+                .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                    super::main_view::blur_input_on_outside_click(&m.io.sftp_path_input, w, cx)
+                }))
+                .child(
+                    Input::new(&m.io.sftp_path_input)
+                        .small()
+                        .rounded(px(0.))
+                        .w_full()
+                        .prefix(
+                            div().child(
+                                Icon::new(LucideIcon::Globe)
+                                    .xsmall()
+                                    .text_color(hex(t.fg_muted)),
+                            ),
                         ),
-                    ),
-            ),
+                ),
         )
         .child(
             Button::new("sftp-refresh-remote")
@@ -351,7 +388,6 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                 .on_click(cx.listener(|m, _e, _w, cx| {
                     // 重扫当前目录。手输中的草稿要让位 —— 刷新就是「以真实目录为准」。
                     m.io.sftp_path_typed = false;
-                    m.io.files_error = None;
                     if let Some(tx) = m.active_sftp_tx() {
                         m.io.files_loading = true;
                         let _ = tx.try_send(SftpCmd::List {
@@ -430,9 +466,6 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
             }),
             menu,
         ));
-    }
-    if let Some(err) = m.io.sftp_local_error.clone() {
-        local_rows = local_rows.child(hint_line(err, &t));
     }
 
     // ---- 右：远端 ----
@@ -565,7 +598,6 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                     if let Some(tx) = &tx_open {
                         let _ = tx.try_send(SftpCmd::List { path: path.clone() });
                         m.io.files_loading = true;
-                        m.io.files_error = None;
                         m.io.sftp_path_typed = false;
                     }
                 } else {
@@ -577,13 +609,13 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         ));
     }
     if remote_loading {
+        // 读取中仍然就地显示：它不是「提示」（没有说完就走的语义），
+        // 而是一块**状态** —— 换成消息框反而每次进目录都闪一下。
+        // 错误则一律走消息框（`SftpEvent::Error` 在 poll 里就已入队）。
         remote_rows_el = remote_rows_el.child(hint_line(
             rustshell_core::i18n::t("正在读取…").to_string(),
             &t,
         ));
-    }
-    if let Some(err) = remote_error {
-        remote_rows_el = remote_rows_el.child(hint_line(err, &t));
     }
 
     // ---- 两栏 + 可拖拽分隔线 ----
@@ -649,8 +681,19 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                 t.danger
             } else if tr.done {
                 t.success
+            } else if tr.cancelling {
+                t.fg_muted
             } else {
                 t.fg_secondary
+            };
+            // 取消按钮只给「还在跑、且没在取消中」的行（2026-10-27 用户要求「支持取消任务」）。
+            // 已结束的行放一枚按不动的 ✕ 只会让人误以为还能撤；取消中的行留着它则会连点。
+            let id = tr.id;
+            let show_cancel = !tr.done && !tr.cancelling;
+            let note = if tr.cancelling && !tr.done {
+                Some(rustshell_core::i18n::t("取消中…").to_string())
+            } else {
+                tr.note.clone()
             };
             col = col.child(
                 h_flex()
@@ -667,13 +710,26 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                             .text_ellipsis()
                             .child(SharedString::from(text)),
                     )
-                    .when_some(tr.note.clone(), |d, note| {
+                    .when_some(note, |d, note| {
                         d.child(
                             div()
                                 .flex_shrink_0()
                                 .text_size(px(10.))
                                 .text_color(hex(t.fg_muted))
                                 .child(SharedString::from(note)),
+                        )
+                    })
+                    .when(show_cancel, |d| {
+                        d.child(
+                            Button::new(SharedString::from(format!("sftp-cancel-{id}")))
+                                .ghost()
+                                .xsmall()
+                                .flex_shrink_0()
+                                .icon(LucideIcon::Close)
+                                .tooltip(rustshell_core::i18n::t("取消任务"))
+                                .on_click(cx.listener(move |m, _e, _w, cx| {
+                                    m.sftp_cancel_transfer(id, cx);
+                                })),
                         )
                     }),
             );
@@ -1163,6 +1219,52 @@ mod tests {
         assert!(
             code.contains(r#"t("上传到远端")"#) && code.contains(r#"t("下载到本地")"#),
             "撤图标不等于撤能力：上传 / 下载必须仍在右键菜单里"
+        );
+    }
+
+    /// 2026-10-27 第三轮用户要求（四条，各自独立、少一条界面照样跑但不合要求）：
+    /// 传输行能取消、点列表失焦、提示走消息框。
+    ///
+    /// 「上传后刷新远端」那一条在 core 侧（`upload_asks_the_ui_to_rescan_the_remote_directory`）
+    /// —— 事件是 core 发的，UI 只负责按 Refresh 重扫。
+    #[test]
+    fn the_sftp_tab_wires_cancel_blur_and_toasts() {
+        let code = crate::test_support::prod(include_str!("sftp_tab.rs"));
+
+        // ① 取消：队列行的 ✕ 落到 `sftp_cancel_transfer`，且只在运行中的行上出现
+        assert!(
+            code.contains("m.sftp_cancel_transfer(id, cx)"),
+            "传输队列没有取消入口 —— 用户要求「支持取消任务」"
+        );
+        assert!(
+            code.contains(r#"t("取消任务")"#),
+            "取消按钮缺 tooltip（一枚孤零零的 ✕ 看不出是干什么的）"
+        );
+        assert!(
+            code.contains("let show_cancel = !tr.done && !tr.cancelling;"),
+            "取消按钮的显示条件不对：已结束的行不该还能点，取消中的行不该能连点"
+        );
+
+        // ② 失焦：两个路径框各挂一处「框外按下就松手」
+        assert_eq!(
+            code.matches(".on_mouse_down_out(").count(),
+            2,
+            "两个路径框都必须在框外按下时失焦（用户要求「点击文件之类的地方要失焦」）"
+        );
+        assert!(
+            code.contains("blur_input_on_outside_click(&m.io.sftp_path_input")
+                && code.contains("blur_input_on_outside_click(&m.io.sftp_local_path_input"),
+            "失焦必须走既有的 `blur_input_on_outside_click`（它只在焦点真在本框上时才收）"
+        );
+
+        // ③ 提示：列表里不再画错误行
+        assert!(
+            !code.contains("hint_line(err, &t)"),
+            "文件列表里不得再有「一行灰字/红字」式的提示 —— 一律走消息框"
+        );
+        assert!(
+            code.contains("m.queue_notice(") && code.contains("NoticeKind::Error"),
+            "本地目录读取失败必须弹消息框（否则用户只看到一张空列表）"
         );
     }
 

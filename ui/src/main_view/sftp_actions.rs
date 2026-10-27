@@ -30,7 +30,6 @@ impl MainView {
         let target = rustshell_core::sftp::normalize_remote_input(&raw)
             .unwrap_or_else(|| self.io.files_path.clone());
         self.io.files_loading = true;
-        self.io.files_error = None;
         let _ = tx.try_send(SftpCmd::List { path: target });
         cx.notify();
     }
@@ -117,25 +116,31 @@ impl MainView {
     /// 那一行，读选中项会在「右键 A、删了 B」这种操作上错得毫无提示。
     ///
     /// 目录上传 v1 不做（与文件面板的 `enqueue_uploads` 同一口径）：静默跳过会让人
-    /// 以为传过了，所以在远端窗格上给一句可见的说明。
+    /// 以为传过了，所以给一条**消息框**说明 —— 不再往远端列表里塞一行红字
+    /// （2026-10-27 用户要求「提示不要在原来的位置显示」）。
     pub(crate) fn sftp_upload_path(&mut self, local: String, cx: &mut Context<Self>) {
         let Some(tx) = self.active_sftp_tx() else {
+            self.queue_notice(
+                crate::notice::NoticeKind::Warning,
+                rustshell_core::i18n::t("需要 SSH 会话"),
+            );
             return;
         };
         let path = std::path::PathBuf::from(&local);
         if path.is_dir() {
-            self.io.files_error = Some(
-                rustshell_core::i18n::t("暂不支持上传整个文件夹，请展开后逐个上传").to_string(),
+            self.queue_notice(
+                crate::notice::NoticeKind::Warning,
+                rustshell_core::i18n::t("暂不支持上传整个文件夹，请展开后逐个上传"),
             );
-            cx.notify();
             return;
         }
         let dir = self.io.files_path.clone();
         let (queued, _skipped) = crate::files_panel::enqueue_uploads(&[path], &dir, &tx);
         if queued == 0 {
-            self.io.files_error = Some(rustshell_core::i18n::t("没有可上传的文件").to_string());
-        } else {
-            self.io.files_error = None;
+            self.queue_notice(
+                crate::notice::NoticeKind::Warning,
+                rustshell_core::i18n::t("没有可上传的文件"),
+            );
         }
         cx.notify();
     }
@@ -196,9 +201,36 @@ impl MainView {
             })
         };
         if sent.is_err() {
-            self.io.files_error = Some(rustshell_core::i18n::t("传输命令没发出去").to_string());
-        } else {
-            self.io.files_error = None;
+            self.queue_notice(
+                crate::notice::NoticeKind::Error,
+                rustshell_core::i18n::t("传输命令没发出去"),
+            );
+        }
+        cx.notify();
+    }
+
+    /// 取消一条在途传输（传输队列行上的 ✕）。
+    ///
+    /// 命令只带 `transfer_id`：core 侧的登记表负责找到正在跑的那条命令，
+    /// 因此这里**不需要**判断它排到没有（排队中的那条会在开工的第一个分片前退出，
+    /// 见 core 的 `cancel_slot` 注释「预取消」）。
+    pub(crate) fn sftp_cancel_transfer(&mut self, transfer_id: u64, cx: &mut Context<Self>) {
+        let Some(tx) = self.active_sftp_tx() else {
+            return;
+        };
+        if tx.try_send(SftpCmd::Cancel { transfer_id }).is_err() {
+            self.queue_notice(
+                crate::notice::NoticeKind::Warning,
+                rustshell_core::i18n::t("取消请求没发出去，传输可能已经结束"),
+            );
+        } else if let Some(tr) = self
+            .io
+            .files_transfers
+            .iter_mut()
+            .find(|t| t.id == transfer_id)
+        {
+            // 立刻给反馈：排队中的那条要等闸门放行才会真正退出（见 `TransferState::cancelling`）
+            tr.cancelling = true;
         }
         cx.notify();
     }

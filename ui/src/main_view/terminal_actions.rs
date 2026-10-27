@@ -150,7 +150,6 @@ impl MainView {
         let sid = tab.session.id.clone();
         if self.io.files_loaded_session.as_deref() != Some(&sid) {
             self.io.files_loading = true;
-            self.io.files_error = None;
             self.io.files_loaded_session = Some(sid);
             // 首扫落在**远端登录用户的家目录**（绝对路径）。这个路径 UI 侧算不出来
             // —— 它是本机进程，只有服务器知道自己的用户名与 home —— 所以发
@@ -202,7 +201,6 @@ impl MainView {
         let target = rustshell_core::sftp::normalize_remote_input(&raw)
             .unwrap_or_else(|| self.io.files_path.clone());
         self.io.files_loading = true;
-        self.io.files_error = None;
         let _ = tx.try_send(rustshell_core::sftp::SftpCmd::List { path: target });
         cx.notify();
     }
@@ -252,11 +250,12 @@ impl MainView {
                     self.io.files_entries = entries;
                     self.rebuild_files_rows();
                     self.io.files_loading = false;
-                    self.io.files_error = None;
                 }
                 SftpEvent::Error { message } => {
+                    // 2026-10-27：错误不再画在文件列表里（那是「看起来像一条目录条目」
+                    // 的老问题），统一走右上角消息框。
                     self.io.files_loading = false;
-                    self.io.files_error = Some(message);
+                    self.queue_notice(crate::notice::NoticeKind::Error, message);
                 }
                 SftpEvent::TransferQueued {
                     transfer_id,
@@ -271,6 +270,7 @@ impl MainView {
                         done: false,
                         ok: false,
                         note: None,
+                        cancelling: false,
                     });
                 }
                 SftpEvent::Progress { transfer_id, bytes } => {
@@ -299,10 +299,23 @@ impl MainView {
                     {
                         tr.done = true;
                         tr.ok = ok;
-                        if !ok {
-                            tr.name = message;
-                        }
                     }
+                    // 本地窗格作废缓存 ⇒ 下一帧重读盘：下载落地（或失败留下半成品）
+                    // 都会让本地目录内容变了，但那边没有「远端 Refresh」这条回路。
+                    // 一次 `read_dir` 换「刚下载的文件立刻看得见」，值。
+                    self.io.sftp_local_for = None;
+                    // 2026-10-27：结果文案不再顶掉队列里的文件名（那是「提示挤掉了
+                    // 这条传输的唯一标识」），改为一条消息框；队列行只留「完成 / 失败」
+                    // 这个状态字。
+                    let kind = if ok {
+                        crate::notice::NoticeKind::Success
+                    } else if message.contains(rustshell_core::sftp::CANCELLED) {
+                        // 用户自己点的取消不是错误，别用红框吓人
+                        crate::notice::NoticeKind::Warning
+                    } else {
+                        crate::notice::NoticeKind::Error
+                    };
+                    self.queue_notice(kind, message);
                 }
                 SftpEvent::TransferMeta { transfer_id, total } => {
                     // P2-21：下载 total 由远端 stat 回填，进度条按百分比工作
@@ -326,10 +339,18 @@ impl MainView {
                     }
                 }
                 SftpEvent::Refresh { path } => {
-                    // 操作完成后重扫该目录
-                    if let Some(tab) = self.active_tab() {
-                        if let Some(tx) = tab.session.sftp_tx.clone() {
-                            let _ = tx.try_send(rustshell_core::sftp::SftpCmd::List { path });
+                    // 操作完成后重扫该目录 —— 但只在「用户正看着这个目录」时才扫。
+                    //
+                    // 上传是长动作：发起时在 A 目录，传完时用户完全可能已经在 B 目录
+                    // 浏览。无条件 `List` 会把窗格拽回 A（典型症状：「看了一眼别的
+                    // 目录，自己跳回去了」）。目录没变时刷新才有意义。
+                    let cur = self.io.files_path.trim_end_matches('/');
+                    if path.trim_end_matches('/') == cur {
+                        if let Some(tx) = self.active_sftp_tx() {
+                            self.io.files_loading = true;
+                            let _ = tx.try_send(rustshell_core::sftp::SftpCmd::List {
+                                path: path.clone(),
+                            });
                         }
                     }
                 }

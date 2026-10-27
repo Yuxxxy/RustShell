@@ -271,7 +271,6 @@ impl MainView {
                     .and_then(|t| t.session.sftp_tx.clone())
                 {
                     self.io.files_loading = true;
-                    self.io.files_error = None;
                     self.io.files_loaded_session = Some(sid);
                     let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
                 }

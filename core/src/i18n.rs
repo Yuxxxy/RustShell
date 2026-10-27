@@ -222,6 +222,12 @@ fn translate(zh: &'static str) -> &'static str {
         "传输" => "Transfer",
         "已有传输在进行" => "A transfer is already running",
         "传输已取消" => "Transfer cancelled",
+        // 取消在途传输（2026-10-27 用户要求「支持取消任务」）
+        "取消任务" => "Cancel transfer",
+        "取消中…" => "Cancelling…",
+        "取消请求没发出去，传输可能已经结束" => {
+            "The cancel request could not be sent; the transfer may have finished already"
+        }
         "会话已断开，无法发送" => "Session closed, cannot send",
         "API 端点" => "API Endpoint",
         "模型名称" => "Model",

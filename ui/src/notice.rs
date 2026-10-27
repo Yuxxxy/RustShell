@@ -15,10 +15,11 @@
 //! 这里改写成一张表是为了让两者可被单测覆盖 到 官方构造器把配对写进了函数体，
 //! 外部无从断言；拆成两张表后「级别 到 变体 / 级别 到 图标」各自只有一处。
 
-use gpui::{px, ElementId, SharedString, Styled as _};
+use gpui::{px, ElementId, SharedString, Styled as _, Window};
 use gpui_component::{
     alert::{Alert, AlertVariant},
-    IconName, Sizable as _,
+    notification::Notification,
+    IconName, Sizable as _, WindowExt as _,
 };
 
 /// 提示的语义级别（唯一真源：调用点只选级别，不选颜色与图标）。
@@ -76,6 +77,57 @@ impl NoticeKind {
     /// （不压字号时走官方 `text_sm` 的 14px，在 40px 高的快捷命令栏里会撑破行高。）
     pub fn compact(self, id: impl Into<ElementId>, msg: impl Into<SharedString>) -> Alert {
         self.bar(id, msg).xsmall().text_size(px(11.))
+    }
+
+    /// 该级别对应的官方**消息框**（`Notification`，窗口右上角浮层，可手动关）。
+    ///
+    /// 2026-10-27 用户要求「提示不要在原来的位置显示，改为消息框」：
+    /// 文件列表里那几行灰字 / 红条既容易被当成目录条目，又会把列表顶下去 ——
+    /// 提示应当脱离业务布局，浮在上面说完就走。
+    pub fn notification(self, msg: impl Into<SharedString>) -> Notification {
+        let msg: SharedString = msg.into();
+        match self {
+            Self::Info => Notification::info(msg),
+            Self::Success => Notification::success(msg),
+            Self::Warning => Notification::warning(msg),
+            Self::Error => Notification::error(msg),
+        }
+    }
+}
+
+// ── 消息框的两个入口（业务侧只调这两个）──────────────────────────────────
+
+impl crate::main_view::MainView {
+    /// 攒一条消息框，下一帧 `render` 开头统一弹出。
+    ///
+    /// 为什么需要「攒」：SFTP 事件是在 `poll` 里收敛的（300ms 心跳），那里只有
+    /// `&mut Context`，**没有 `Window`** —— 而 `push_notification` 是窗口级 API。
+    /// 于是后台只负责攒，落地统一放在 [`Self::flush_notices`]。
+    pub(crate) fn queue_notice(&mut self, kind: NoticeKind, msg: impl Into<String>) {
+        let msg = msg.into();
+        if msg.is_empty() {
+            return;
+        }
+        self.notices.push((kind, msg));
+    }
+
+    /// 把攒下的消息框推出去（`MainView::render` 的第一件事）。
+    ///
+    /// 同一批里**完全重复**的消息只弹一条：一次失败常在两条路径上各报一次
+    /// （动作返回 + 事件回到 poll），连弹两个一模一样的框看着像卡了两次。
+    pub(crate) fn flush_notices(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.notices.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut self.notices);
+        let mut seen: Vec<&(NoticeKind, String)> = Vec::new();
+        for item in &batch {
+            if seen.iter().any(|(k, m)| *k == item.0 && m == &item.1) {
+                continue;
+            }
+            seen.push(item);
+            window.push_notification(item.0.notification(item.1.clone()), cx);
+        }
     }
 }
 
