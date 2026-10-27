@@ -244,6 +244,10 @@ impl MainView {
                     if !self.io.files_path_typed {
                         self.io.files_path_sync = Some(path.clone());
                     }
+                    // SFTP 标签页的路径框也要跟上（手输中不回填）
+                    if !self.io.sftp_path_typed {
+                        self.io.sftp_path_sync = Some(path.clone());
+                    }
                     self.io.files_path = path;
                     self.io.files_entries = entries;
                     self.rebuild_files_rows();

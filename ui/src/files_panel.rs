@@ -221,6 +221,10 @@ pub struct FileRow {
     pub mode: SharedString,
     /// 属主串（`user:group`，只有数字 id 时退成 `0:0`）；同上，未知即空串
     pub owner: SharedString,
+    /// 原始字节数：**排序用**。按展示串排是错的（「9 KB」会排在「1 MB」后面）。
+    pub size_bytes: u64,
+    /// 原始 mtime（unix 秒），同样只给排序用
+    pub mtime_secs: u64,
 }
 
 impl FileRow {
@@ -241,6 +245,8 @@ impl FileRow {
             // 数字 id 回退这些约定），UI 只负责把它放进一条定宽列里。
             mode: SharedString::from(rustshell_core::sftp::entry_mode(e)),
             owner: SharedString::from(rustshell_core::sftp::entry_owner(e)),
+            size_bytes: e.size,
+            mtime_secs: e.modified,
             path,
         }
     }
@@ -785,7 +791,7 @@ fn drop_uploads(paths: Vec<std::path::PathBuf>, w: &mut gpui::Window, cx: &mut g
 ///
 /// 返回 `(入队数, 跳过的目录数)`：目录 v1 不支持递归上传，调用方据此给可见提示 ——
 /// 「静默跳过」会让用户以为已经传过了。
-fn enqueue_uploads(
+pub(crate) fn enqueue_uploads(
     paths: &[std::path::PathBuf],
     dir: &str,
     tx: &flume::Sender<SftpCmd>,
@@ -821,7 +827,7 @@ fn enqueue_uploads(
 }
 
 /// 单个条目的右键菜单（闭包内即用即克隆，保持 Fn 兼容）。
-fn build_entry_menu(
+pub(crate) fn build_entry_menu(
     menu: PopupMenu,
     tx: &flume::Sender<SftpCmd>,
     full: &str,

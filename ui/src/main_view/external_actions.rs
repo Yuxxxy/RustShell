@@ -104,7 +104,16 @@ impl MainView {
         self.connect_profile_now(profile, cx);
     }
 
-    /// `sftp://` 连上后的首扫：切到文件面板并列出链接里的路径（缺省 = 家目录）。
+    /// 单通道 SFTP 会话连上后的落地：切到文件面板并列出目标目录（缺省 = 家目录）。
+    ///
+    /// 两条来路共用它：
+    /// - 外部 `sftp://` 链接（`path` = 链接里的路径）；
+    /// - 2026-10-26 起：连接树右键「打开 SFTP」对**已保存**的连接发起的那条
+    ///   （`path` = `None`，从家目录开始）。
+    ///
+    /// 用 `active_tab()` 取通道：调用点都刚把目标 Tab 设为激活（见
+    /// `connect_results` 的 `sftp_only` 分支与 [`super::MainView::open_sftp`]），
+    /// 所以这里不需要再传 session id。
     pub(super) fn external_sftp_first_scan(
         &mut self,
         path: Option<String>,

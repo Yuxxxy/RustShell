@@ -11,6 +11,7 @@ pub mod notice;
 pub mod perf_probe;
 pub mod plot_chart;
 pub mod quick_commands_bar;
+pub mod sftp_tab;
 pub mod tab_bar;
 pub mod tasks_panel;
 pub mod terminal_scrollbar;

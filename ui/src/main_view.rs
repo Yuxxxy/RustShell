@@ -32,6 +32,7 @@ mod zmodem_actions;
 // 外部链接（`ssh://` / `sftp://`，Xshell / WinSCP / JumpServer 的启动方式）：
 // 临时连接、单通道、口令只留内存。单实例转交的 argv 也在这里汇入 `poll`。
 mod external_actions;
+mod sftp_actions;
 pub use external_actions::ui_install_launch_requests;
 // 命令补全浮层（C-1）：Ctrl+Space 唤起、边打字边过滤、↑↓ 选、Tab/Enter 采纳。
 // 状态留在 `MainView::completion`，本模块只放渲染壳（见 `CompletionBarView` 文档）。
@@ -1170,6 +1171,20 @@ impl MainView {
         let dlg_notes = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 6));
         // 代理（F-10）的四个输入框：与上面那批 dlg_* 同一条创建管线。
         // 口令掩码显示（与连接口令同一个处理）。
+        // SFTP 标签页的远端路径框（2026-10-26）：**可编辑**，回车跳转。
+        // 与文件面板那个 `files_path_input` 分开建：两个视图可能同帧渲染，
+        // 共用同一个 `InputState` 会让焦点与内容互相干扰。
+        let sftp_path_input = cx.new(|cx| InputState::new(window, cx));
+        // 本地路径框同理（左右两边都要能手改）。
+        //
+        // **初值必须是本机 home**：新建标签时 `sftp_local_path_sync` 还是 `None`
+        // （回填只在「进目录」时排队），框里就会是空的 —— 2026-10-27 用户反馈的
+        // 「新打开 sftp，左侧的本地路径不显示」就是这一步漏了。状态里的
+        // `sftp_local_path` 用同一个变量，两边不会对不上。
+        let sftp_home = crate::sftp_tab::home_dir();
+        let sftp_local_path_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(sftp_home.clone())
+        });
         let dlg_proxy_host = cx.new(|cx| InputState::new(window, cx).placeholder("127.0.0.1"));
         let dlg_proxy_port = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1474,6 +1489,34 @@ impl MainView {
         )
         .detach();
 
+        // SFTP 标签页顶部的远端路径框（2026-10-26 用户要求「路径可以修改输入」）：
+        // 回车跳转、手输时暂停回填、失焦把草稿还原成当前真实目录 ——
+        // 与文件面板路径栏同一套口径（上一段的 `files_path_input`）。
+        cx.subscribe_in(
+            &sftp_path_input,
+            window,
+            |m: &mut Self, _input, ev: &InputEvent, w, cx| match ev {
+                InputEvent::Change => m.io.sftp_path_typed = true,
+                InputEvent::PressEnter { .. } => m.sftp_goto_typed_path(cx),
+                InputEvent::Blur => m.sftp_path_blur(w, cx),
+                _ => {}
+            },
+        )
+        .detach();
+
+        // 本地路径框：同一套三段（手输暂停回填 / 回车跳转 / 失焦还原）
+        cx.subscribe_in(
+            &sftp_local_path_input,
+            window,
+            |m: &mut Self, _input, ev: &InputEvent, w, cx| match ev {
+                InputEvent::Change => m.io.sftp_local_path_typed = true,
+                InputEvent::PressEnter { .. } => m.sftp_local_goto_typed_path(cx),
+                InputEvent::Blur => m.sftp_local_path_blur(w, cx),
+                _ => {}
+            },
+        )
+        .detach();
+
         // 失焦降频（，10 节 监控开销 <1% CPU）：窗口失活时本地采样降至 5s，激活恢复
         cx.observe_window_activation(window, |m, window, cx| {
             m.sync_metrics_focus(window);
@@ -1634,6 +1677,7 @@ impl MainView {
             conn_ui: ConnUiState {
                 expanded_groups: HashSet::new(),
                 external: std::collections::HashMap::new(),
+                sftp_only_profiles: std::collections::HashSet::new(),
                 conn_tree_key: None,
                 tree_state,
                 selected_profile: None,
@@ -1793,6 +1837,22 @@ impl MainView {
                 files_error: None,
                 files_transfers: Vec::new(),
                 files_loaded_session: None,
+                // 本地窗格从本机 home 开始（没有 home 就退到当前目录 / 根）。
+                // 与上面 `sftp_local_path_input` 的初值是**同一个** `sftp_home`
+                // —— 两处各自调一次 `home_dir()` 也能对得上，但那样只是碰巧。
+                sftp_local_path: sftp_home,
+                sftp_local_rows: Vec::new(),
+                sftp_local_for: None,
+                sftp_local_error: None,
+                sftp_local_sel: None,
+                sftp_remote_sel: None,
+                sftp_path_input,
+                sftp_path_sync: None,
+                sftp_path_typed: false,
+                sftp_local_path_input,
+                sftp_local_path_sync: None,
+                sftp_local_path_typed: false,
+                sftp_sort: crate::sftp_tab::SortSpec::default(),
                 group_name_body,
                 // 定时任务：定义与运行记录从磁盘读，不在这里起调度线程 ——
                 // 调度线程首次显示任务面板（或立即执行）时才懒建，避免只想用终端的
@@ -2068,16 +2128,42 @@ impl MainView {
                                 dead: None,
                                 retry: None,
                             });
-                            self.tabs_state.active = Some(id);
+                            // `id` 后面还要给 sftp 首扫用（`sftp_only` 分支），
+                            // 这里 clone 一份，别把整条连接结果的所有权吃掉。
+                            self.tabs_state.active = Some(id.clone());
                         }
                     }
                     if sftp_only {
-                        // 链接里带了路径就开到那个目录，否则从远端家目录开始。
-                        let path = result_pid
+                        // 两条来路，落地不同：
+                        // - 外部 `sftp://` 链接（临时连接）：切到左侧「文件」面板，
+                        //   那是它在本应用里的固有形态；
+                        // - 连接树右键「打开 SFTP」（已保存连接，2026-10-26）：
+                        //   **留在自己的标签页**里 —— 那张标签页本身就是双窗格
+                        //   （`crate::sftp_tab`），切到左侧面板反而把它藏起来了。
+                        let saved_sftp_tab = result_pid
                             .as_deref()
-                            .and_then(|pid| self.conn_ui.external.get(pid))
-                            .and_then(|e| e.path.clone());
-                        self.external_sftp_first_scan(path, cx);
+                            .is_some_and(|pid| self.conn_ui.sftp_only_profiles.contains(pid));
+                        if saved_sftp_tab {
+                            if let Some(tx) = self
+                                .tabs_state
+                                .tabs
+                                .iter()
+                                .find(|t| t.session.id == id)
+                                .and_then(|t| t.session.sftp_tx.clone())
+                            {
+                                self.io.files_loading = true;
+                                self.io.files_error = None;
+                                self.io.files_loaded_session = Some(id.clone());
+                                let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
+                            }
+                        } else {
+                            // 链接里带了路径就开到那个目录，否则从远端家目录开始。
+                            let path = result_pid
+                                .as_deref()
+                                .and_then(|pid| self.conn_ui.external.get(pid))
+                                .and_then(|e| e.path.clone());
+                            self.external_sftp_first_scan(path, cx);
+                        }
                     }
                     self.tabs_state.pending_focus = true;
                 }
@@ -2387,6 +2473,24 @@ impl Render for MainView {
         // 内部绘制阶段执行，另有 PtyResize 打点）。卡住时看门狗会报出本阶段。
         crate::watchdog::enter(crate::watchdog::Phase::Render);
         let __perf_t0 = std::time::Instant::now();
+        // SFTP 标签页路径栏的回填：`SftpEvent::Listing` 在 `poll` 里到达（那里没有
+        // `Window`，写不进输入框），排队到这里落地。用户正在手输时不回填 ——
+        // 否则目录一刷新，半截输入就被顶掉了。
+        if let Some(v) = self.io.sftp_path_sync.take() {
+            if !self.io.sftp_path_typed {
+                self.io
+                    .sftp_path_input
+                    .update(cx, |s, cx| s.set_value(v, window, cx));
+            }
+        }
+        // 本地路径框同理：进目录后把真实路径写回输入框
+        if let Some(v) = self.io.sftp_local_path_sync.take() {
+            if !self.io.sftp_local_path_typed {
+                self.io
+                    .sftp_local_path_input
+                    .update(cx, |s, cx| s.set_value(v, window, cx));
+            }
+        }
         let t = crate::theme::current(cx);
         use crate::theme::to_hsla as hex;
 

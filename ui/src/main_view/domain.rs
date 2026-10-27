@@ -156,11 +156,17 @@ pub(crate) enum DialogMode {
     /// 已经隔了一次事件循环，只有枚举里的值才是可读回的事实来源。
     SftpMkdir {
         base: String,
+        /// `true` = 在**本地**磁盘上建（SFTP 标签页的左窗格），`false` = 远端
+        local: bool,
+        /// `true` = 建空文件，`false` = 建目录
+        file: bool,
     },
     /// SFTP 重命名：`from` 原路径、`dir` 所在目录（新路径 = `dir` + 新名字）。
     SftpRename {
         from: String,
         dir: String,
+        /// `true` = 本地磁盘上的重命名（`std::fs::rename`），`false` = 远端
+        local: bool,
     },
     /// 定时任务编辑：内为 task id。表单状态在 `MainView::task_draft` 与
     /// 一组 `dlg_task_*` 输入框里（与快捷命令对话框同一手法）。

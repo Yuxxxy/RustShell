@@ -1260,7 +1260,11 @@ impl MainView {
                 .profile(&id)
                 .is_some_and(|p| p.password.is_some() || p.key_path.is_some());
             if ready {
-                self.connect_profile(&id, w, cx);
+                // 走 `connect_profile_request` 而不是 `connect_profile`：后者会**清掉**
+                // 「只要 SFTP」的意图，而这条路径恰恰要延续它 —— 右键「打开 SFTP」
+                // 撞上「这条连接还没有凭据」时，补完凭据后仍应当只开 SFTP 通道。
+                // 普通连接进来的这条路上该标记本来就是空的，行为与从前一致。
+                self.connect_profile_request(&id, w, cx);
             }
         }
         cx.notify();
@@ -2634,15 +2638,36 @@ impl MainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_sftp_mkdir_at(base, false, false, window, cx);
+    }
+
+    /// 参数化的「新建」：`local` 决定落在本机还是远端，`file` 决定建文件还是目录
+    /// （2026-10-27 用户要求「支持新建文件夹 文件，重命名之类的」）。
+    pub fn open_sftp_mkdir_at(
+        &mut self,
+        base: String,
+        local: bool,
+        file: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // 开框即清空名称框：与「新建分组」同一口径 —— 同一个正文视图也承载
         // 重命名，上一个框里留下的名字还在，用户按确定就会建成一个他没打过的目录。
         self.io.group_name_body.update(cx, |v, cx| {
-            v.set_label(rustshell_core::i18n::t("目录名称"));
+            v.set_label(if file {
+                rustshell_core::i18n::t("文件名称")
+            } else {
+                rustshell_core::i18n::t("目录名称")
+            });
             v.set_value(String::new(), window, cx);
             v.open(cx);
         });
         self.io.dlg_error = None;
-        self.present_dialog(DialogMode::SftpMkdir { base }, window, cx);
+        self.present_dialog(
+            DialogMode::SftpMkdir { base, local, file },
+            window,
+            cx,
+        );
     }
 
     /// 打开「重命名」对话框：预填的是**名字**（不含路径），与文件管理器一致 ——
@@ -2654,14 +2679,40 @@ impl MainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = from.rsplit('/').next().unwrap_or(&from).to_string();
+        self.open_sftp_rename_at(from, dir, false, window, cx);
+    }
+
+    /// 参数化的「重命名」：`local` 决定改的是本机路径还是远端路径。
+    ///
+    /// 名字的取法两边不同：远端是 POSIX 字符串（`/`），本机要走 `Path::file_name`
+    /// —— Windows 的分隔符是 `\`，用 `rsplit('/')` 会把整条路径当成名字。
+    pub fn open_sftp_rename_at(
+        &mut self,
+        from: String,
+        dir: String,
+        local: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = if local {
+            std::path::Path::new(&from)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| from.clone())
+        } else {
+            from.rsplit('/').next().unwrap_or(&from).to_string()
+        };
         self.io.group_name_body.update(cx, |v, cx| {
             v.set_label(rustshell_core::i18n::t("新名称"));
             v.set_value(name, window, cx);
             v.open(cx);
         });
         self.io.dlg_error = None;
-        self.present_dialog(DialogMode::SftpRename { from, dir }, window, cx);
+        self.present_dialog(
+            DialogMode::SftpRename { from, dir, local },
+            window,
+            cx,
+        );
     }
 
     /// 「新建目录 / 重命名」共用的对话框：只差标题与按钮文案，正文是同一个
@@ -2677,13 +2728,20 @@ impl MainView {
         cx: &mut Context<Self>,
     ) -> Dialog {
         let t = crate::theme::current(cx);
-        let mkdir = matches!(self.dialog, Some(DialogMode::SftpMkdir { .. }));
+        let (mkdir, new_file) = match self.dialog {
+            Some(DialogMode::SftpMkdir { file, .. }) => (true, file),
+            _ => (false, false),
+        };
 
         let header = div()
             .text_size(px(14.))
             .font_weight(gpui::FontWeight::BOLD)
             .child(if mkdir {
-                rustshell_core::i18n::t("新建目录")
+                if new_file {
+                    rustshell_core::i18n::t("新建文件")
+                } else {
+                    rustshell_core::i18n::t("新建目录")
+                }
             } else {
                 rustshell_core::i18n::t("重命名")
             });
@@ -2775,12 +2833,41 @@ impl MainView {
     /// 一口径）：关掉再开一次会让用户刚敲的名字消失，而错误的输入还在那里等着重敲。
     fn sftp_mkdir_save(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let name = self.io.group_name_body.read(cx).value(cx);
-        let Some(DialogMode::SftpMkdir { base }) = self.dialog.clone() else {
+        let Some(DialogMode::SftpMkdir {
+            base,
+            local,
+            file,
+        }) = self.dialog.clone()
+        else {
             return;
         };
         if let Err(why) = rustshell_core::sftp::check_entry_name(&name) {
             self.io.dlg_error = Some(sftp_name_check_text(why).to_string());
             cx.notify();
+            return;
+        }
+        // 本机：直接落盘（`create_dir` / `File::create`）。
+        // 建完把本地缓存作废，否则列表还是旧的那一份（看着像「没建成」）。
+        if local {
+            let target = std::path::Path::new(&base).join(&name);
+            let res = if file {
+                std::fs::File::create(&target).map(|_| ())
+            } else {
+                std::fs::create_dir(&target)
+            };
+            match res {
+                Ok(()) => {
+                    self.io.sftp_local_for = None;
+                    self.close_dialog_ui(w, cx);
+                }
+                Err(e) => {
+                    self.io.dlg_error = Some(rustshell_core::i18n::ts(
+                        format!("本机创建失败：{e}"),
+                        format!("Could not create locally: {e}"),
+                    ));
+                    cx.notify();
+                }
+            }
             return;
         }
         let Some(tx) = self.active_tab().and_then(|t| t.session.sftp_tx.clone()) else {
@@ -2789,22 +2876,80 @@ impl MainView {
             cx.notify();
             return;
         };
-        let _ = tx.try_send(rustshell_core::sftp::SftpCmd::Mkdir {
-            path: rustshell_core::sftp::join_remote(&base, &name),
-            refresh: base,
-        });
+        let remote = rustshell_core::sftp::join_remote(&base, &name);
+        if file {
+            // SFTP 协议没有「创建空文件」：先在本机临时目录写一个 0 字节文件，
+            // 再走 Upload 传过去。临时文件**不删** —— 传输是异步的，此刻可能还没
+            // 打开它；放在系统临时目录里，由系统回收（比删早了导致传输失败划算）。
+            let tmp = std::env::temp_dir().join(format!(
+                "rustshell-new-{}-{name}",
+                rustshell_core::sftp::new_transfer_id()
+            ));
+            if let Err(e) = std::fs::write(&tmp, b"") {
+                self.io.dlg_error = Some(rustshell_core::i18n::ts(
+                    format!("本机临时文件写入失败：{e}"),
+                    format!("Could not write the temporary file: {e}"),
+                ));
+                cx.notify();
+                return;
+            }
+            let id = rustshell_core::sftp::new_transfer_id();
+            let _ = rustshell_core::sftp::sftp_events().0.send(
+                rustshell_core::sftp::SftpEvent::TransferQueued {
+                    transfer_id: id,
+                    name: rustshell_core::i18n::ts(
+                        format!("新建 {name}"),
+                        format!("Create {name}"),
+                    ),
+                    total: 0,
+                },
+            );
+            let _ = tx.try_send(rustshell_core::sftp::SftpCmd::Upload {
+                local: tmp,
+                remote,
+                transfer_id: id,
+                total: 0,
+            });
+        } else {
+            let _ = tx.try_send(rustshell_core::sftp::SftpCmd::Mkdir {
+                path: remote,
+                refresh: base,
+            });
+        }
         self.close_dialog_ui(w, cx);
     }
 
     /// 落库「重命名」：校验名字 → 发 `SftpCmd::Rename` → 关窗。
     fn sftp_rename_save(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let name = self.io.group_name_body.read(cx).value(cx);
-        let Some(DialogMode::SftpRename { from, dir }) = self.dialog.clone() else {
+        let Some(DialogMode::SftpRename { from, dir, local }) = self.dialog.clone() else {
             return;
         };
         if let Err(why) = rustshell_core::sftp::check_entry_name(&name) {
             self.io.dlg_error = Some(sftp_name_check_text(why).to_string());
             cx.notify();
+            return;
+        }
+        // 本机重命名：`std::fs::rename`（同一卷内是原子操作）。
+        if local {
+            let to = std::path::Path::new(&dir).join(&name);
+            if to.to_string_lossy() == from {
+                self.close_dialog_ui(w, cx);
+                return;
+            }
+            match std::fs::rename(&from, &to) {
+                Ok(()) => {
+                    self.io.sftp_local_for = None;
+                    self.close_dialog_ui(w, cx);
+                }
+                Err(e) => {
+                    self.io.dlg_error = Some(rustshell_core::i18n::ts(
+                        format!("重命名失败：{e}"),
+                        format!("Rename failed: {e}"),
+                    ));
+                    cx.notify();
+                }
+            }
             return;
         }
         let to = rustshell_core::sftp::join_remote(&dir, &name);
@@ -3825,6 +3970,36 @@ pub(in crate::main_view) mod tests {
             read(vcx).0,
             "localhost",
             "重开新建框时主机又带出了上一条的值 —— 默认值应当每次都重新落上"
+        );
+    }
+
+    /// 2026-10-26「右键打开 SFTP」：意图标记的**读写必须分得开** ——
+    /// `open_sftp` 置位（这条连接只要 SFTP 通道），普通「连接」清除
+    /// （用户点正常连接就是要终端）。
+    ///
+    /// 用不存在的 profile id 驱动：两条路径都在 `lookup_profile` 处就返回了，
+    /// 不会真的发起连接（不碰网络、不建会话），但标记的读写都发生了。
+    #[gpui::test]
+    fn sftp_intent_is_set_by_open_sftp_and_cleared_by_connect(cx: &mut gpui::TestAppContext) {
+        let (main, vcx) = build_main(cx);
+        let has = |vcx: &mut gpui::VisualTestContext, id: &str| {
+            main.read_with(vcx, |m, _| {
+                m.conn_ui.sftp_only_profiles.contains(id)
+            })
+        };
+
+        main.update_in(vcx, |m, window, cx| m.open_sftp("ghost-id", window, cx));
+        assert!(
+            has(vcx, "ghost-id"),
+            "「打开 SFTP」没有置上「只要 SFTP」的意图：这条连接会被当成普通连接，\
+             开出一条带终端的会话"
+        );
+
+        main.update_in(vcx, |m, window, cx| m.connect_profile("ghost-id", window, cx));
+        assert!(
+            !has(vcx, "ghost-id"),
+            "普通「连接」没有清掉 SFTP 意图：上次右键「打开 SFTP」的残留会让这次连接\
+             莫名其妙没有终端"
         );
     }
 

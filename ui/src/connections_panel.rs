@@ -770,6 +770,14 @@ fn profile_menu(menu: PopupMenu, profile_id: &str, pos: (usize, usize)) -> Popup
             move |_, w, cx| super::main_view::ui_call(&id, MainView::connect_profile, w, cx)
         }),
     )
+    // 「打开 SFTP」（2026-10-26，参考 shell-rs）：对**这条**连接开一条只带 SFTP
+    // 子系统的会话，并直接落到文件面板。已有会话时只切过去，不重复连。
+    .item(
+        PopupMenuItem::new(rustshell_core::i18n::t("打开 SFTP")).on_click({
+            let id = profile_id.to_string();
+            move |_, w, cx| super::main_view::ui_call(&id, MainView::open_sftp, w, cx)
+        }),
+    )
     .item(
         // 标签里带上快捷键：这是连接树上唯一有固定键位的动作，不写出来没人会去按 F2
         PopupMenuItem::new(rustshell_core::i18n::ts(
@@ -941,6 +949,25 @@ mod tests {
         assert!(
             !code.contains("复制服务器信息"),
             "「复制服务器信息」这一项又回到连接树右键菜单里了。"
+        );
+    }
+
+    /// 2026-10-26「右键打开 SFTP」（参考 shell-rs 的独立 SFTP 连接）：
+    /// 菜单项必须在，且必须走 `MainView::open_sftp`。
+    ///
+    /// 行为面的两条分支（复用已有会话 / 新建只带 SFTP 的会话）由
+    /// `main_view::dialogs::tests::sftp_intent_is_set_by_open_sftp_and_cleared_by_connect`
+    /// 与「连上后自动切文件面板」的既有路径覆盖。
+    #[test]
+    fn the_connection_menu_offers_open_sftp() {
+        let code = prod(include_str!("connections_panel.rs"));
+        assert!(
+            code.contains(r#"t("打开 SFTP")"#),
+            "连接右键菜单少了「打开 SFTP」—— 用户要求的入口。"
+        );
+        assert!(
+            code.contains("MainView::open_sftp"),
+            "「打开 SFTP」必须走 `MainView::open_sftp`（它负责复用已有会话与只开 SFTP 通道）。"
         );
     }
 

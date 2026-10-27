@@ -216,6 +216,89 @@ impl MainView {
     }
 
     pub fn connect_profile(&mut self, profile_id: &str, w: &mut Window, cx: &mut Context<Self>) {
+        // 普通「连接」入口：用户要的是一条正常连接（有终端），所以顺手撤掉
+        // 「只要 SFTP」的意图 —— 否则上次右键「打开 SFTP」后取消的那条会残留下来，
+        // 下次点「连接」莫名其妙没有终端。
+        self.conn_ui.sftp_only_profiles.remove(profile_id);
+        self.connect_profile_request(profile_id, w, cx);
+    }
+
+    /// 右键「打开 SFTP」（2026-10-26，参考 shell-rs 的独立 SFTP 连接）。
+    ///
+    /// 两条路径，优先复用：
+    /// 1. **已有可用会话**（该 profile 的 Tab 已连上且带 SFTP 通道）→ 直接切过去。
+    ///    复用的是哪种会话决定落点：**独立 SFTP 标签页**留在原地补一次首扫；
+    ///    **普通终端会话**则切到左侧「文件」面板（终端标签里没有文件窗格）。
+    /// 2. **没有会话** → 置「只要 SFTP 通道」意图后走正常连接收口：
+    ///    `connect_in_background` 只申请 sftp 子系统（服务器上不需要 shell，
+    ///    堡垒机那种只放 SFTP 的环境也能用）。连上后 `connect_results` 的
+    ///    `sftp_only` 分支会发现这是「已保存连接的 SFTP 意图」，于是**留在自己的
+    ///    标签页**里 —— 那一页本身就是 WinSCP 式双窗格（`crate::sftp_tab`）。
+    ///
+    /// 缺凭据时仍走「打开连接对话框 + 保存后接着连」那条既有路径（意图已置位，
+    /// 保存后由 `dialog_save` 带着它再发起连接）。
+    pub fn open_sftp(&mut self, profile_id: &str, w: &mut Window, cx: &mut Context<Self>) {
+        // 1) 复用已有会话
+        let live = self
+            .tabs_state
+            .tabs
+            .iter()
+            .find(|t| {
+                t.session.profile_id.as_deref() == Some(profile_id)
+                    && t.session.sftp_tx.is_some()
+                    && t.session.state == SessionState::Connected
+            })
+            .map(|t| t.session.id.clone());
+        if let Some(sid) = live {
+            // 复用的是哪种会话，决定「打开 SFTP」往哪儿落：
+            // - **独立 SFTP 标签页**：留在它自己那张标签里（它本身就是双窗格），
+            //   只补一次首扫；
+            // - **普通终端会话**：终端标签里没有文件窗格，按旧口径切到左侧「文件」面板。
+            let sftp_tab = self
+                .tabs_state
+                .tabs
+                .iter()
+                .find(|t| t.session.id == sid)
+                .is_some_and(|t| t.is_sftp_live());
+            self.tabs_state.active = Some(sid.clone());
+            self.tabs_state.pending_focus = true;
+            if sftp_tab {
+                if let Some(tx) = self
+                    .tabs_state
+                    .tabs
+                    .iter()
+                    .find(|t| t.session.id == sid)
+                    .and_then(|t| t.session.sftp_tx.clone())
+                {
+                    self.io.files_loading = true;
+                    self.io.files_error = None;
+                    self.io.files_loaded_session = Some(sid);
+                    let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
+                }
+                cx.notify();
+            } else {
+                // 与外部 `sftp://` 连上后的落地完全同一手法：切到文件面板 + 扫家目录。
+                self.external_sftp_first_scan(None, cx);
+            }
+            return;
+        }
+        // 2) 没有会话：置意图后走正常连接
+        self.conn_ui
+            .sftp_only_profiles
+            .insert(profile_id.to_string());
+        self.connect_profile_request(profile_id, w, cx);
+    }
+
+    /// 真正发起一次连接（`connect_profile` 与 `open_sftp` 的共同下半段）。
+    ///
+    /// 与 `connect_profile` 分开的原因是「意图清理」：普通入口要先撤掉 SFTP 意图，
+    /// 而 `open_sftp` 恰恰要带着它进来。
+    pub(super) fn connect_profile_request(
+        &mut self,
+        profile_id: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(p) = self.lookup_profile(profile_id) else {
             return;
         };
@@ -285,10 +368,18 @@ impl MainView {
         // 外部链接（`ext:`）：单通道 + 不写会话日志。判定放在这里而不是各入口：
         // 「连接对话框补完凭据后再连」也必须守住同一条纪律，而它同样走本函数。
         let ephemeral = self.conn_ui.external.get(&p.id);
-        let channels = match ephemeral.map(|e| e.kind) {
-            Some(rustshell_core::launch::LaunchKind::Sftp) => SshChannels::SftpOnly,
-            Some(rustshell_core::launch::LaunchKind::Ssh) => SshChannels::ShellOnly,
-            None => SshChannels::Full,
+        // 通道判定：外部链接按链接类型，已保存的连接看「只要 SFTP」的意图
+        // （2026-10-26 右键「打开 SFTP」——参考 shell-rs 的独立 SFTP 连接：
+        // 只申请 sftp 子系统，服务器上不需要 shell）。
+        let sftp_only = self.conn_ui.sftp_only_profiles.contains(&p.id);
+        let channels = if sftp_only {
+            SshChannels::SftpOnly
+        } else {
+            match ephemeral.map(|e| e.kind) {
+                Some(rustshell_core::launch::LaunchKind::Sftp) => SshChannels::SftpOnly,
+                Some(rustshell_core::launch::LaunchKind::Ssh) => SshChannels::ShellOnly,
+                None => SshChannels::Full,
+            }
         };
         let log_path = match ephemeral {
             Some(_) => None,
@@ -1413,10 +1504,17 @@ impl MainView {
             return;
         };
         // 外部链接重连仍守「一条连接一个通道」：`sftp://` 只要 sftp、`ssh://` 只要 shell。
-        let channels = match self.conn_ui.external.get(&pid).map(|e| e.kind) {
-            Some(rustshell_core::launch::LaunchKind::Sftp) => SshChannels::SftpOnly,
-            Some(rustshell_core::launch::LaunchKind::Ssh) => SshChannels::ShellOnly,
-            None => SshChannels::Full,
+        // 已保存的连接同理：右键「打开 SFTP」发起的那条不是外部链接，它的意图记在
+        // `sftp_only_profiles` 里 —— 重连时必须跟着走，否则重连成功会突然长出终端。
+        let sftp_only = self.conn_ui.sftp_only_profiles.contains(&pid);
+        let channels = if sftp_only {
+            SshChannels::SftpOnly
+        } else {
+            match self.conn_ui.external.get(&pid).map(|e| e.kind) {
+                Some(rustshell_core::launch::LaunchKind::Sftp) => SshChannels::SftpOnly,
+                Some(rustshell_core::launch::LaunchKind::Ssh) => SshChannels::ShellOnly,
+                None => SshChannels::Full,
+            }
         };
         let external = self.conn_ui.external.contains_key(&pid);
 

@@ -125,6 +125,7 @@ fn translate(zh: &'static str) -> &'static str {
             "Invalid font name (too long or contains control chars)"
         }
         "全部连接" => "Connect All",
+        "打开 SFTP" => "Open SFTP",
         "复制连接" => "Duplicate Connection",
         "编辑配置文件" => "Edit Config File",
         "打开设置" => "Open Settings",
@@ -202,6 +203,22 @@ fn translate(zh: &'static str) -> &'static str {
         // ZMODEM 窗格浮层与拖放上传（协议在引擎字节泵里，文案归这里）
         "下载" => "Download",
         "上传" => "Upload",
+        // 独立 SFTP 标签页（WinSCP 式双窗格，2026-10-26）
+        "上传到远端" => "Upload to remote",
+        "下载到本地" => "Download to local",
+        "大小" => "Size",
+        "修改时间" => "Modified",
+        "权限" => "Permissions",
+        "所有者" => "Owner",
+        "新建文件夹" => "New folder",
+        "新建文件" => "New file",
+        "文件名称" => "File name",
+        "正在读取…" => "Loading…",
+        "没有可上传的文件" => "No files to upload",
+        "传输命令没发出去" => "The transfer command could not be sent",
+        "暂不支持上传整个文件夹，请展开后逐个上传" => {
+            "Whole-folder upload is not supported yet — open it and upload files individually"
+        }
         "传输" => "Transfer",
         "已有传输在进行" => "A transfer is already running",
         "传输已取消" => "Transfer cancelled",

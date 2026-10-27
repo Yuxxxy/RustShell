@@ -436,6 +436,19 @@ impl MainView {
         let tok = crate::theme::current(cx);
         let pane_focused = self.tabs_state.active.as_deref() == Some(session_id);
 
+        // 独立 SFTP 标签页（2026-10-26）：单通道会话没有 PTY，窗格里画的是
+        // WinSCP 式双窗格，而不是「连接失败 / 正在连接」那张占位卡。
+        // 判定放在取数据之前 —— 下面整段都是给终端窗格准备的。
+        if self
+            .tabs_state
+            .tabs
+            .iter()
+            .find(|t| t.session.id == session_id)
+            .is_some_and(|t| t.is_sftp_live())
+        {
+            return crate::sftp_tab::render(self, session_id, cx);
+        }
+
         // 先在不可变借用里取好渲染所需数据；后面构建浮层要`&mut self`
         let (term, placeholder, scroll, dead) = match self
             .tabs_state

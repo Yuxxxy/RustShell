@@ -103,6 +103,17 @@ pub struct ConnUiState {
     /// 外部链接打开的临时连接，键 = `ext:` 开头的 profile id。
     pub external: std::collections::HashMap<String, ExternalConn>,
 
+    /// 「这条连接只要 SFTP 通道」的意图（2026-10-26 右键「打开 SFTP」）。
+    ///
+    /// 与 `external` 的 `kind == Sftp` 是同一件事的两种来路：那边是**临时** profile
+    /// （`sftp://` 链接），这边是**已保存**的连接 —— 不另造 profile，会话仍归原条目。
+    ///
+    /// 生命周期刻意做成「持久到用户正常连接它为止」：
+    /// - 置位：`open_sftp`；
+    /// - 清除：任何普通「连接」入口（`connect_profile`）—— 用户点正常连接就是要终端；
+    /// - 重连不必看它：`reconnect_tab` 另有 `is_sftp_live()` 可从 tab 自身判定。
+    pub sftp_only_profiles: HashSet<String>,
+
     /// 连接树官方状态实体（gpui-component Tree：展开/选中/键盘导航由组件持有）
     pub tree_state: gpui::Entity<gpui_component::tree::TreeState>,
 
@@ -708,6 +719,37 @@ pub struct DialogIoState {
 
     /// 已加载过目录的会话 id（切换会话后重扫）
     pub files_loaded_session: Option<String>,
+
+    // ---- 独立 SFTP 标签页（2026-10-26）----
+    /// 本地窗格当前目录（绝对路径）。初始 = 本机 home。
+    pub sftp_local_path: String,
+    /// 本地窗格的行缓存；`sftp_local_for` 记着它是哪个目录的，换了目录才重读。
+    pub sftp_local_rows: Vec<crate::sftp_tab::LocalRow>,
+    /// 行缓存对应的目录（`None` = 需要重读）
+    pub sftp_local_for: Option<String>,
+    /// 读本地目录失败的原因（画在窗格里，而不是让它变成一张空目录）
+    pub sftp_local_error: Option<String>,
+    /// 本地窗格里被单击选中的项（「上传」吃它）
+    pub sftp_local_sel: Option<String>,
+    /// 远端窗格里被单击选中的项（「下载」吃它）
+    pub sftp_remote_sel: Option<String>,
+
+    /// SFTP 标签页顶部的远端路径输入框：可编辑，回车跳转（2026-10-26 用户要求）。
+    pub sftp_path_input: Entity<InputState>,
+    /// 待回填的远端目录（`SftpEvent::Listing` 在 `poll` 里到达，没有 `Window`；
+    /// 下一帧由 `render` 落进输入框）
+    pub sftp_path_sync: Option<String>,
+    /// 用户正在这个框里手输 —— 此时不回填，免得把半截输入顶掉
+    pub sftp_path_typed: bool,
+
+    /// 本地窗格的路径输入框（2026-10-27 用户要求「左右两边路径都可以手动改动」）
+    pub sftp_local_path_input: Entity<InputState>,
+    /// 本地路径框的待回填值（同 `sftp_path_sync`：poll 里排队、render 里落进输入框）
+    pub sftp_local_path_sync: Option<String>,
+    /// 用户正在本地路径框里手输
+    pub sftp_local_path_typed: bool,
+    /// 两个窗格共用的排序口径（点列头切换）。用户要求按时间 / 名称 / 大小排。
+    pub sftp_sort: crate::sftp_tab::SortSpec,
 
     /// 分组名对话框正文视图（自带名称输入框，见 `GroupNameDialogView`）
     pub group_name_body: Entity<GroupNameDialogView>,
