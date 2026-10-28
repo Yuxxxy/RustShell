@@ -95,12 +95,42 @@ pub(crate) fn strip_comments(src: &str) -> String {
             i += 1;
             continue;
         }
+        // 原始字符串（`r"…"` / `r#"…"#`）必须**整段照抄**：里面的反斜杠不是转义。
+        // 按普通字符串处理时，`r"\\?\UNC\"` 这种**以反斜杠结尾**的原始串会被读成
+        // 「字符串还没结束」，一路吞到下一个引号 —— 中间夹着的注释于是被当成代码
+        // （2026-10-28 实测：`clean_local_path` 的三个 `r"…"` 让 sftp_tab 的结构护栏
+        // 读到注释里的「新建」，误报「行菜单里还有新建」）。
+        if c == 'r' {
+            let mut hashes = 0usize;
+            let mut k = i + 1;
+            while chars.get(k) == Some(&'#') {
+                hashes += 1;
+                k += 1;
+            }
+            if chars.get(k) == Some(&'"') {
+                let mut j = k + 1;
+                let mut end = None;
+                while j < chars.len() {
+                    if chars[j] == '"' && (0..hashes).all(|h| chars.get(j + 1 + h) == Some(&'#')) {
+                        end = Some(j + 1 + hashes);
+                        break;
+                    }
+                    j += 1;
+                }
+                if let Some(end) = end {
+                    for &ch in &chars[i..end] {
+                        out.push(ch);
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+        }
         if c == '/' && next == Some('/') {
             in_line = true;
             i += 2;
             continue;
-        }
-        if c == '/' && next == Some('*') {
+        }        if c == '/' && next == Some('*') {
             in_block = 1;
             i += 2;
             continue;
@@ -234,6 +264,27 @@ impl Drop for EnvRestore {
 #[cfg(test)]
 mod tests {
     use super::{prod, strip_comments};
+
+    /// 原始字符串必须整段照抄 —— 尤其**以反斜杠结尾**的那种。
+    ///
+    /// `r"\\?\UNC\"` 是 Windows verbatim 路径的字面量写法；按普通字符串解析时，
+    /// 结尾的 `\"` 会被当成「转义的引号」，字符串永远不闭合，后面几十行里夹着的
+    /// **注释**就被当成代码读进去了（2026-10-28：sftp_tab 的结构护栏因此误报
+    /// 「行菜单里还有新建」）。`r#"…"#` 同理。
+    #[test]
+    fn strip_comments_keeps_raw_strings_verbatim() {
+        let src = "let a = r\"\\\\?\\UNC\\\";\n// 这行注释必须被剥掉\nlet b = r#\"含 \" 与 // 的原始串\"#;\n";
+        let stripped = strip_comments(src);
+        assert!(
+            stripped.contains(r#"r"\\?\UNC\""#),
+            "原始字符串被改写了：{stripped:?}"
+        );
+        assert!(!stripped.contains("必须被剥掉"), "原始串之后的注释没被剥掉");
+        assert!(
+            stripped.contains(r##"r#"含 " 与 // 的原始串"#"##),
+            "带井号的原始串被截断了：{stripped:?}"
+        );
+    }
 
     /// 非 ASCII（中文）内容必须原样保留。
     ///
