@@ -194,4 +194,9 @@ pub(crate) enum DialogMode {
     PasteConfirm {
         session: rustshell_core::session::SessionId,
     },
+    /// 在线更新（2026-10-28）：标题栏徽标点开的那一层。
+    ///
+    /// 无参数：版本号 / 阶段 / 已下载的文件都在 `io.update_*` 里 —— 对话框
+    /// 每帧重跑 builder，读的就是那份真值；存进枚举只多一份会漂移的副本。
+    Update,
 }

@@ -532,6 +532,37 @@ impl AuthMode {
 // `settings_panel`、`files_panel`、`task_actions` 这四组代码碰它们。
 // 之前它们混在 `MainView` 里，害得「连接相关状态」要在一堆 `dlg_*` 之间找。
 
+/// 更新流程的阶段（2026-10-28）。
+///
+/// 仿 shell-rs 的 `Phase`，但用**一个枚举**而不是几个 bool：`checking` /
+/// `downloading` / `ready` 天然互斥，写成 bool 迟早出现「正在下载又说已就绪」
+/// 这种自相矛盾的组合，而界面只会照着画。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum UpdatePhase {
+    /// 还没查过，或自动检查静默失败（用户没主动问，不该被弹窗打扰）。
+    #[default]
+    Idle,
+    /// 正在请求 GitHub。
+    Checking,
+    /// 已是最新版本。
+    UpToDate,
+    /// 有新版本可用，尚未下载。
+    Available,
+    /// 正在下载产物。
+    Downloading,
+    /// 已就绪：Windows 上文件已换好（重启生效）；mac / linux 已把安装包交给系统。
+    Ready,
+    /// 失败原因（一句话，直接给界面）。
+    Failed(String),
+}
+
+impl UpdatePhase {
+    /// 正在跑（检查 / 下载）：按钮置灰、徽标显示进度，避免连点。
+    pub fn is_busy(&self) -> bool {
+        matches!(self, Self::Checking | Self::Downloading)
+    }
+}
+
 pub struct DialogIoState {
     pub dlg_name: Entity<InputState>,
 
@@ -680,11 +711,26 @@ pub struct DialogIoState {
     /// 提示语义：true = 成功/信息（accent 色），false = 校验错误（danger 色）
     pub set_hint_ok: bool,
 
-    /// 「关于」页正在检查更新（按钮置灰，避免连点）。
-    pub update_checking: bool,
+    /// 更新流程走到哪一步（2026-10-28，仿 shell-rs 的 `Phase`）。
+    ///
+    /// 只用一个枚举而不是「若干个 bool」：`checking` / `downloading` / `ready`
+    /// 互相排斥，写成 bool 迟早出现「同时在下载又说已就绪」的脏状态。
+    pub update_phase: UpdatePhase,
 
     /// 最近一次检查得到的最新发布；None = 还没查过或上次失败。
-    pub update_latest: Option<rustshell_core::update::LatestRelease>,
+    pub update_release: Option<rustshell_core::update::LatestRelease>,
+
+    /// 启动时的自动检查是否已经发起过。
+    ///
+    /// 不能用 `update_phase == Idle` 代替：自动检查**失败**之后阶段会回到 Idle，
+    /// 那样每帧都会再发一次请求（渲染路径里跑定时任务，CPU 与网络都会被打满）。
+    pub update_auto_started: bool,
+
+    /// 已下载到本地的产物（`.exe` / `.deb` / `.dmg`）。
+    ///
+    /// 与 `update_phase` 分开存：`Ready` 需要它在，而失败时也要能告诉用户
+    /// 「刚才存到哪儿了」（半截文件在 [`rustshell_core::update::download`] 里已删）。
+    pub update_artifact: Option<std::path::PathBuf>,
 
     /// 设置面板打开时的快照（SP-SAVE-01）：取消 / ESC / 点遮罩 / 右上角 X 一律回滚，让「取消」名副其实（此前只有主题等少数字段能回滚）。
     pub(super) set_snapshot: Option<settings_panel::SettingSnapshot>,

@@ -916,8 +916,16 @@ fn translate(zh: &'static str) -> &'static str {
         "检查更新" => "Check for Updates",
         "正在检查…" => "Checking…",
         "打开发布页" => "Open release page",
-        "从 GitHub Releases 获取最新版本并与当前版本比较。" => {
-            "Fetch the latest GitHub release and compare it with the current version."
+        // 在线更新（2026-10-28）：检查 → 下载 → 安装 → 重启
+        "软件更新" => "Software Update",
+        "立即更新" => "Update Now",
+        "正在下载…" => "Downloading…",
+        "重启以完成更新" => "Restart to Finish",
+        "稍后" => "Later",
+        "详情" => "Details",
+        "选择 OpenSSH 配置文件" => "Select an OpenSSH config file",
+        "依据 GitHub 上的版本标签判断；有新版时标题栏右侧会显示提示。" => {
+            "Compares against the version tags on GitHub; when a newer one exists a badge appears on the right of the title bar."
         }
         "RustShell 是一款基于 Rust 与 GPUI 构建的跨平台 SSH / SFTP 终端，支持多标签与分屏、文件传输、AI 助手和批量命令执行。" => {
             "RustShell is a cross-platform SSH / SFTP terminal built with Rust and GPUI, with tabs and split panes, file transfer, an AI assistant, and batch command execution."

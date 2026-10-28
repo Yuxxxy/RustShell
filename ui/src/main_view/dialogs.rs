@@ -136,6 +136,8 @@ impl MainView {
             DialogMode::PasteConfirm { session } => {
                 self.render_paste_confirm_dialog(dialog, &session, w, cx)
             }
+            // 在线更新：正文/按钮全部现读 `io.update_*`（同一条真值，不存副本）
+            DialogMode::Update => self.render_update_dialog(dialog, w, cx),
         }
     }
 
@@ -1160,6 +1162,10 @@ impl MainView {
             }
             Some(DialogMode::SftpMkdir { .. }) | Some(DialogMode::SftpRename { .. }) => {
                 unreachable!("SFTP 建目录/重命名走 render_sftp_name_dialog，不经此处")
+            }
+            // 更新对话框没有「保存」语义：它的按钮各自调动作，不经 `dialog_save`。
+            Some(DialogMode::Update) => {
+                unreachable!("更新对话框不保存，走 render_update_dialog 里的按钮")
             }
             Some(DialogMode::Edit(id)) => {
                 if let Some(p) = self.conn_store.profiles.iter_mut().find(|p| p.id == id) {
@@ -2512,8 +2518,161 @@ impl MainView {
             )
     }
 
-    /// 粘贴确认（F-5，规格 §1.5）：告诉用户「要粘几行、长什么样」，再让他决定。
+    /// 在线更新对话框（2026-10-28）：版本对比 + 发布说明 + 一个主操作。
     ///
+    /// 正文/按钮**全部现读** `io.update_*`：下载进度、已下载的包、失败原因都在那儿，
+    /// 对话框每帧重跑 builder 就能跟上；存副本只会在状态机换挡时对不上。
+    fn render_update_dialog(
+        &mut self,
+        dialog: Dialog,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Dialog {
+        use gpui::Styled as _;
+        let theme = crate::theme::current(cx);
+        let phase = self.io.update_phase.clone();
+        let latest = self
+            .io
+            .update_release
+            .as_ref()
+            .map(|r| r.version.clone())
+            .unwrap_or_default();
+        let notes = self
+            .io
+            .update_release
+            .as_ref()
+            .map(|r| release_notes_excerpt(&r.notes))
+            .unwrap_or_default();
+        let release_url = self
+            .io
+            .update_release
+            .as_ref()
+            .map(|r| r.url.clone())
+            .unwrap_or_else(|| rustshell_core::update::RELEASES_URL.to_string());
+
+        let header = div()
+            .text_size(px(14.))
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(rustshell_core::i18n::t("软件更新"));
+
+        let (status, trouble) = self.update_status_line();
+        let mut body = v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(hex(if trouble {
+                        theme.danger
+                    } else {
+                        theme.fg_primary
+                    }))
+                    .child(SharedString::from(status)),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(hex(theme.fg_muted))
+                    .child(rustshell_core::i18n::ts(
+                        format!(
+                            "当前 v{}，最新 v{}。",
+                            rustshell_core::APP_VERSION,
+                            if latest.is_empty() {
+                                "-"
+                            } else {
+                                latest.as_str()
+                            }
+                        ),
+                        format!(
+                            "You are on v{}, latest is v{}.",
+                            rustshell_core::APP_VERSION,
+                            if latest.is_empty() {
+                                "-"
+                            } else {
+                                latest.as_str()
+                            }
+                        ),
+                    )),
+            );
+        if !notes.is_empty() {
+            body = body.child(
+                div()
+                    .max_h(px(180.))
+                    .overflow_hidden()
+                    .text_size(px(11.5))
+                    .text_color(hex(theme.fg_secondary))
+                    .child(SharedString::from(notes)),
+            );
+        }
+        // 已下载但没自动装（mac / linux 的 dmg / deb）：告诉用户东西在哪，
+        // 否则「已就绪」三个字会让人以为按一下就好，实际安装器已经弹出来了。
+        if matches!(phase, super::UpdatePhase::Ready) {
+            if let Some(path) = self.io.update_artifact.clone() {
+                body = body.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(hex(theme.fg_muted))
+                        .child(SharedString::from(
+                            path.to_string_lossy().to_string(),
+                        )),
+                );
+            }
+        }
+
+        let primary_label = match phase {
+            super::UpdatePhase::Available => rustshell_core::i18n::t("立即更新"),
+            super::UpdatePhase::Downloading => rustshell_core::i18n::t("正在下载…"),
+            super::UpdatePhase::Ready => rustshell_core::i18n::t("重启以完成更新"),
+            super::UpdatePhase::Failed(_) => rustshell_core::i18n::t("重试"),
+            _ => rustshell_core::i18n::t("检查更新"),
+        };
+        let busy = phase.is_busy();
+
+        let footer = h_flex()
+            .gap_2()
+            .justify_end()
+            .pt_1()
+            .child(
+                Button::new("update-release-page")
+                    .small()
+                    .ghost()
+                    .label(rustshell_core::i18n::t("打开发布页"))
+                    .on_click(move |_e, _w, cx: &mut gpui::App| cx.open_url(&release_url)),
+            )
+            .child(
+                Button::new("update-later")
+                    .small()
+                    .label(rustshell_core::i18n::t("稍后"))
+                    .on_click(cx.listener(|m, _e, w, cx| m.close_dialog_ui(w, cx))),
+            )
+            .child(
+                Button::new("update-primary")
+                    .small()
+                    .primary()
+                    .label(primary_label)
+                    .disabled(busy)
+                    .on_click(cx.listener(|m, _e, w, cx| m.update_primary_action(w, cx))),
+            );
+
+        let view = cx.entity();
+        dialog
+            .w(px(480.))
+            .bg(hex(theme.bg_overlay))
+            .title(header)
+            .child(body)
+            .footer(footer)
+            .button_props(
+                DialogButtonProps::default()
+                    // Enter = 主操作（与右下的按钮同义）。业务侧不回关窗：
+                    // 下载 / 重启都要留在框里看状态。
+                    .on_ok(move |_, w, cx| {
+                        view.update(cx, |m, cx| m.update_primary_action(w, cx));
+                        false
+                    })
+                    .on_cancel(|_, _w, _cx| true),
+            )
+    }
+
+    /// 粘贴确认（F-5，规格 §1.5）：告诉用户「要粘几行、长什么样」，再让他决定。    ///
     /// 正文里的行数与预览都**现取自终端实体上的挂起请求**（唯一真值），
     /// 不在对话框里存副本 —— 会话在弹框期间断连时引擎会清掉挂起，
     /// 渲染期 [`super::MainView::paste_prompt_prune`] 随即把框收掉。
@@ -3565,6 +3724,20 @@ impl MainView {
         window.close_dialog(cx);
         cx.notify();
     }
+}
+
+/// 发布说明截一段给对话框。
+///
+/// GitHub 的 `body` 是 Markdown 原文，可能是长篇 changelog：全塞进对话框既撑爆
+/// 高度也读不出「这个版本改了什么」。截前 700 字 + 一行省略足够判断要不要更新。
+fn release_notes_excerpt(notes: &str) -> String {
+    const LIMIT: usize = 700;
+    let trimmed = notes.trim();
+    if trimmed.chars().count() <= LIMIT {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(LIMIT).collect();
+    format!("{head}…")
 }
 
 #[cfg(test)]

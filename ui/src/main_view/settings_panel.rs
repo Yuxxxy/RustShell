@@ -979,9 +979,9 @@ impl MainView {
                                                 ))
                                                 .on_click({
                                                     let me = me_openssh.clone();
-                                                    move |_e, w, cx| {
+                                                    move |_e, _w, cx| {
                                                         me.update(cx, |m, cx| {
-                                                            m.import_openssh_config(w, cx)
+                                                            m.import_openssh_pick_file(cx)
                                                         });
                                                     }
                                                 }),
@@ -1047,52 +1047,72 @@ impl MainView {
                             SettingItem::new(
                                 t("检查更新"),
                                 SettingField::render(move |_options, _w, cx| {
-                                    let (checking, latest) = {
+                                    let (status, trouble, phase) = {
                                         let m = me_status.read(cx);
-                                        (m.io.update_checking, m.io.update_latest.clone())
+                                        let (line, trouble) = m.update_status_line();
+                                        (line, trouble, m.io.update_phase.clone())
                                     };
-                                    let mut row = h_flex().gap_2().items_center().child(
-                                        Button::new("about-check-update")
-                                            .small()
-                                            .primary()
-                                            .label(if checking {
-                                                t("正在检查…")
-                                            } else {
-                                                t("检查更新")
-                                            })
-                                            .disabled(checking)
-                                            .on_click({
-                                                let me = me_check.clone();
-                                                move |_e, _w, cx: &mut App| {
-                                                    me.update(cx, |m, cx| {
-                                                        m.check_for_updates(cx)
-                                                    });
-                                                }
-                                            }),
-                                    );
-                                    // 只有「确实更新」才给下载入口：最新发布等于当前版本时，
-                                    // 多一枚按钮只会让人以为还有别的东西可点。
-                                    if let Some(release) = latest.filter(|r| {
-                                        rustshell_core::update::is_newer(
-                                            &r.version,
-                                            rustshell_core::APP_VERSION,
+                                    let tok = crate::theme::current(cx);
+                                    let busy = phase.is_busy();
+                                    // 一枚按钮按状态换语义：没查过 = 检查；有新版 = 立即更新；
+                                    // 已就绪 = 重启；失败 = 重试。与标题栏徽标同一套判定。
+                                    let primary = match phase {
+                                        super::UpdatePhase::Available => t("立即更新"),
+                                        super::UpdatePhase::Ready => t("重启以完成更新"),
+                                        super::UpdatePhase::Failed(_) => t("重试"),
+                                        super::UpdatePhase::Downloading => t("正在下载…"),
+                                        super::UpdatePhase::Checking => t("正在检查…"),
+                                        _ => t("检查更新"),
+                                    };
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_size(px(11.5))
+                                                .text_color(hex(if trouble {
+                                                    tok.danger
+                                                } else {
+                                                    tok.fg_secondary
+                                                }))
+                                                .child(SharedString::from(status)),
                                         )
-                                    }) {
-                                        row = row.child(
-                                            Button::new("about-open-release")
+                                        .child(
+                                            Button::new("about-check-update")
+                                                .small()
+                                                .primary()
+                                                .label(primary)
+                                                .disabled(busy)
+                                                .on_click({
+                                                    let me = me_check.clone();
+                                                    move |_e, w, cx: &mut App| {
+                                                        me.update(cx, |m, cx| {
+                                                            m.update_primary_action(w, cx)
+                                                        });
+                                                    }
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("about-update-details")
                                                 .small()
                                                 .outline()
-                                                .label(t("打开发布页"))
-                                                .on_click(move |_e, _w, cx: &mut App| {
-                                                    cx.open_url(&release.url)
+                                                .label(t("详情"))
+                                                .on_click({
+                                                    let me = me_check.clone();
+                                                    move |_e, w, cx: &mut App| {
+                                                        me.update(cx, |m, cx| {
+                                                            m.open_update_dialog(w, cx)
+                                                        });
+                                                    }
                                                 }),
-                                        );
-                                    }
-                                    row.into_any_element()
+                                        )
+                                        .into_any_element()
                                 }),
                             )
                             .description(t(
-                                "从 GitHub Releases 获取最新版本并与当前版本比较。",
+                                "依据 GitHub 上的版本标签判断；有新版时标题栏右侧会显示提示。",
                             )),
                         ),
                 )
@@ -2354,7 +2374,9 @@ mod tests {
             "RustShell 是一款基于 Rust 与 GPUI 构建的跨平台 SSH / SFTP 终端",
             "about-github",
             "about-check-update",
-            "check_for_updates",
+            // 2026-10-28：按钮改走「一枚按钮按状态换语义」的统一入口
+            // （检查 / 立即更新 / 重启 / 重试），不再是固定的 `check_for_updates`。
+            "update_primary_action",
         ] {
             assert!(
                 page.contains(needle),

@@ -886,24 +886,6 @@ impl MainView {
 
     // OpenSSH `~/.ssh/config` 导入（F-1）
 
-    /// 入口：从默认 `~/.ssh/config` 发起导入（解析 → 预览）。
-    ///
-    /// 主文件读不到时不静默失败：给出一条可见提示，用户可改用设置里的「导入连接…」
-    /// 或手选文件（`import_openssh_pick_file`）。
-    pub fn import_openssh_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(home) = rustshell_core::openssh::user_home_dir() else {
-            self.set_info(
-                rustshell_core::i18n::t("未找到 OpenSSH 配置").to_string(),
-                false,
-            );
-            cx.notify();
-            return;
-        };
-        let ssh_dir = rustshell_core::openssh::default_ssh_dir(&home);
-        let config = rustshell_core::openssh::config_path(&ssh_dir);
-        self.load_openssh_config(config, ssh_dir, home, window, cx);
-    }
-
     /// 解析指定 config 并建立预览（`read_error` 时提示并中止，不弹空对话框）。
     ///
     /// `pub(super)`：异步选文件的回填由父模块 `main_view` 的 `render` 兑现
@@ -950,7 +932,12 @@ impl MainView {
         }
     }
 
-    /// 默认 config 缺失时的手动补救：系统「打开」对话框另选一个 config 文件。
+    /// 入口（设置 › 导入导出「从 OpenSSH 导入」）：**先弹系统「打开」对话框选文件**。
+    ///
+    /// 2026-10-28 用户要求改成手动选文件，不再自动去读 `~/.ssh/config`。理由：那个
+    /// 路径只是**最常见**的一个 —— `config.d/*`、备份文件、从别的机器拷来的配置都值得
+    /// 导入，自动读会让「导入」变成「悄悄读了某一个文件」，用户既不知道读了什么，
+    /// 也换不了源。预览层里的「选择文件…」也走这里（换源）。
     ///
     /// 选文件回调拿不到 `Window`，故只把载荷落到 `openssh_pick_sync`，
     /// 由 `render` 兑现弹预览（与本仓既有的两段式同一手法）。
@@ -959,7 +946,7 @@ impl MainView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: None,
+            prompt: Some(rustshell_core::i18n::t("选择 OpenSSH 配置文件").into()),
         });
         cx.spawn(async move |this, cx| {
             match rx.await {

@@ -33,6 +33,7 @@ mod zmodem_actions;
 // 临时连接、单通道、口令只留内存。单实例转交的 argv 也在这里汇入 `poll`。
 mod external_actions;
 mod sftp_actions;
+mod update_actions;
 pub use external_actions::ui_install_launch_requests;
 // 命令补全浮层（C-1）：Ctrl+Space 唤起、边打字边过滤、↑↓ 选、Tab/Enter 采纳。
 // 状态留在 `MainView::completion`，本模块只放渲染壳（见 `CompletionBarView` 文档）。
@@ -98,7 +99,9 @@ mod tab_model;
 //
 // 改写由 `scripts/coverage/split_mainview_fields.py` 完成（可重跑，带覆盖完整性断言）。
 mod ui_state;
-pub use ui_state::{AiUiState, AuthMode, ConnUiState, DialogIoState, PanelUiState, TabsState};
+pub use ui_state::{
+    AiUiState, AuthMode, ConnUiState, DialogIoState, PanelUiState, TabsState, UpdatePhase,
+};
 // 公开面：`TabEntry` 等被 `files_panel.rs` 等模块按 `main_view::TabEntry` 引用；
 // `DialogMode` / `chat_title_from` / `take_due_retries` / `display_tab_title`
 // 原本就是 crate 内可见（`pub(crate)` 或私有），不进公开 API。
@@ -246,6 +249,55 @@ const TITLE_BAR_CMD_DY: f32 = 4.;
 /// `HitboxBehavior::BlockMouse` 是唯一能让 `hit_test` **提前 break** 的行为，
 /// 祖先命中框因此不进 `ids`，Drag 也就不会被上报 —— 等于在拖动区里挖出一个
 /// 可点击的洞。其余部分仍可拖动窗口。
+/// 标题栏右侧的更新徽标（2026-10-28，位置对齐 shell-rs）。
+///
+/// **只在「有新版 / 已就绪 / 失败」三种状态下出现**，其余时候不画任何东西 ——
+/// 标题栏不该常驻一枚「检查更新」，那是「设置 › 关于」的事。这条分工抄的是
+/// shell-rs：它的 `UpdateBadge` 只在这三种状态返回 `Some`，平时不占位置。
+fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElement {
+    use crate::theme::to_hsla as hex;
+
+    let t = crate::theme::current(cx);
+    // 直接读 `&MainView`，不要 `cx.entity().read(cx)`：`render` 期间实体正被
+    // 可变更新，再从里面 read 自己会 panic（「cannot read MainView while it is
+    // already being updated」—— 2026-10-28 实测，一挂上这个函数整片 UI 用例全红）。
+    let Some((label, trouble)) = m.update_badge() else {
+        // 没有要说的：留空元素（不占宽度），标题栏保持干净。
+        return div().into_any_element();
+    };
+    let color = if trouble { t.danger } else { t.accent };
+    h_flex()
+        .id("titlebar-update-badge")
+        // 量取钩子：用例靠它确认徽标真的落在标题栏里（`debug_bounds` 只认 selector）。
+        .debug_selector(|| "titlebar-update-badge".to_string())
+        // 标题栏整块是拖动区：不加 `occlude()` 时点击会被 `WM_NCHITTEST` 当成拖动，
+        // 按钮就「点不动」（与命令入口同一手法，见 `title_bar_command_entry` 上方注释）。
+        .occlude()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .rounded(px(5.))
+        .bg(hex(t.bg_base))
+        .border_1()
+        .border_color(hex(color))
+        .cursor_pointer()
+        .hover(|s| s.border_color(hex(t.accent)))
+        .on_click(cx.listener(|m, _e, w, cx| m.open_update_dialog(w, cx)))
+        .child(
+            Icon::new(gpui_kit_assets::IconName::ArrowDown)
+                .xsmall()
+                .text_color(hex(color)),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(hex(color))
+                .child(SharedString::from(label)),
+        )
+        .into_any_element()
+}
+
 fn title_bar_command_entry(cx: &mut Context<MainView>) -> impl IntoElement {
     use crate::theme::to_hsla as hex;
 
@@ -1836,8 +1888,10 @@ impl MainView {
                 dlg_qc_newline: true,
                 set_hint: None,
                 set_hint_ok: false,
-                update_checking: false,
-                update_latest: None,
+                update_phase: ui_state::UpdatePhase::Idle,
+                update_release: None,
+                update_artifact: None,
+                update_auto_started: false,
                 set_snapshot: None,
                 files_path: rustshell_core::sftp::DEFAULT_REMOTE_PATH.into(),
                 files_path_input,
@@ -2465,6 +2519,10 @@ impl Render for MainView {
         // 内部绘制阶段执行，另有 PtyResize 打点）。卡住时看门狗会报出本阶段。
         crate::watchdog::enter(crate::watchdog::Phase::Render);
         let __perf_t0 = std::time::Instant::now();
+        // 启动后查一次更新（内部有 8s 延迟与「只发起一次」的闩）。
+        // 挂在 render 首帧而不是 `new` 里：`cx.new(|cx| ..)` 期间拿不到实体，
+        // 也就没法 `cx.spawn` 到自身。
+        self.update_auto_check(cx);
         // SFTP 标签页路径栏的回填：`SftpEvent::Listing` 在 `poll` 里到达（那里没有
         // `Window`，写不进输入框），排队到这里落地。用户正在手输时不回填 ——
         // 否则目录一刷新，半截输入就被顶掉了。
@@ -2833,7 +2891,16 @@ impl Render for MainView {
                                 ),
                         )
                         .child(title_bar_command_entry(cx))
-                        .child(div().flex_1()),
+                        // 右侧：更新徽标靠右贴住窗口控制按钮（`justify_end`），
+                        // 外层仍是 `flex_1` ⇒ 中段命令入口的居中不被打破。
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .items_center()
+                                .justify_end()
+                                .child(update_badge_entry(self, cx)),
+                        ),
                 ),
         );
 
