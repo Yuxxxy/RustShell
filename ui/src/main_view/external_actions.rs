@@ -17,7 +17,7 @@ use rustshell_core::connections::ConnectionProfile;
 use rustshell_core::launch::{parse_args, LaunchTarget, EXTERNAL_PROFILE_PREFIX};
 
 use super::ui_state::ExternalConn;
-use super::{MainView, PanelKind};
+use super::MainView;
 
 /// 单实例转交过来的启动参数通道（主实例持接收端）。
 pub struct LaunchRequests(pub flume::Receiver<Vec<String>>);
@@ -104,12 +104,15 @@ impl MainView {
         self.connect_profile_now(profile, cx);
     }
 
-    /// 单通道 SFTP 会话连上后的落地：切到文件面板并列出目标目录（缺省 = 家目录）。
+    /// 单通道 SFTP 会话连上后的首扫：列出目标目录（缺省 = 家目录）。
     ///
     /// 两条来路共用它：
     /// - 外部 `sftp://` 链接（`path` = 链接里的路径）；
     /// - 2026-10-26 起：连接树右键「打开 SFTP」对**已保存**的连接发起的那条
     ///   （`path` = `None`，从家目录开始）。
+    ///
+    /// **不再切侧栏**（2026-10-28 撤掉「文件」面板）：这条会话的标签页本身就是
+    /// 双窗格（`crate::sftp_tab`），画面已经在用户眼前，切面板反而是往回退一步。
     ///
     /// 用 `active_tab()` 取通道：调用点都刚把目标 Tab 设为激活（见
     /// `connect_results` 的 `sftp_only` 分支与 [`super::MainView::open_sftp`]），
@@ -129,8 +132,6 @@ impl MainView {
         };
         self.io.files_loading = true;
         self.io.files_loaded_session = Some(sid);
-        self.panel_ui.panel = PanelKind::Files;
-        self.panel_ui.sidebar_collapsed = false;
         let _ = match path.filter(|p| !p.is_empty()) {
             Some(path) => tx.try_send(rustshell_core::sftp::SftpCmd::List { path }),
             None => tx.try_send(rustshell_core::sftp::SftpCmd::ListHome),

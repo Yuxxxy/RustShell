@@ -2049,7 +2049,7 @@ mod tests {
     ///
     /// 与通知页同理：`SettingField` 的 getter/setter 闭包顺手写成一份 UI 私有的
     /// 临时状态时，面板上改得动、落盘的却不是这一份 —— 而「下载后校验」是发起时
-    /// **现读**的（`files_panel::render` 每帧快照进右键菜单），断在这条线上会表现为
+    /// **现读**的（`sftp_tab::render` 每帧快照进右键菜单），断在这条线上会表现为
     /// 「勾了也没校验」，界面看不出任何异常。并发数同理，它只在建链时被读一次。
     #[test]
     fn transfer_settings_bind_to_the_settings_struct() {

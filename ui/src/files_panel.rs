@@ -755,7 +755,11 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
 /// 落点目录与发送端都在这条回调里**现取**，不在渲染期快照：拖拽可能悬停好几秒，
 /// 期间用户完全可能换了目录或切了 Tab —— 快照会让文件落到「拖进来那一刻」的目录，
 /// 那是用户看不见的旧状态。
-fn drop_uploads(paths: Vec<std::path::PathBuf>, w: &mut gpui::Window, cx: &mut gpui::App) {
+pub(crate) fn drop_uploads(
+    paths: Vec<std::path::PathBuf>,
+    w: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
     use super::main_view::UiHub;
     let Some(hub) = cx.try_global::<UiHub>() else {
         return;
@@ -1701,7 +1705,11 @@ mod tests {
 
     /// F-13 验收要点 5（拖拽）：拖进来的本地文件**直接**变成上传命令，落点是当前远端目录。
     ///
-    /// 为什么必须端到端：落点靠面板根上的 `can_drop` / `drag_over` / `on_drop` 三件套，
+    /// 2026-10-28 起落点从「左侧文件面板」搬到了 **SFTP 标签页**（侧栏那块面板已撤，
+    /// 能力接在同一套 `can_drop` / `drag_over` / `on_drop` 上）—— 断言本身不变，
+    /// 变的只是挂载点，所以这条 e2e 继续守着「拖进去真的发命令」。
+    ///
+    /// 为什么必须端到端：落点靠根节点的 `can_drop` / `drag_over` / `on_drop` 三件套，
     /// 「挂对了没有」只有真派发一次平台级 `FileDropEvent` 才看得见 —— 挂到某个更小的
     /// 子盒子上、或者干脆漏挂，用户侧都是「拖进来什么都没发生」，而把 `enqueue_uploads`
     /// 单独拿来调永远发现不了。
@@ -1711,7 +1719,7 @@ mod tests {
     /// ③删掉 `enqueue_uploads` 里 `f.is_dir()` 那段跳过 ⇒「只该有一条命令」红。
     #[gpui::test]
     fn dropping_local_files_uploads_into_the_current_directory(cx: &mut gpui::TestAppContext) {
-        use crate::main_view::{AppShell, MainView, PanelKind, TabEntry};
+        use crate::main_view::{AppShell, MainView, TabEntry};
         use gpui::{AppContext as _, FileDropEvent};
         use rustshell_core::session::{SessionHandle, SessionKind, SessionState};
 
@@ -1763,7 +1771,8 @@ mod tests {
                     retry: None,
                 });
                 m.tabs_state.active = Some("drop-e2e".to_string());
-                m.panel_ui.panel = PanelKind::Files;
+                // 假会话是「无终端 + 已连上 + 有 sftp_tx」⇒ 这个标签页渲染的就是
+                // 双窗格 SFTP 视图（`TabEntry::is_sftp_live`）。
                 m.io.files_path = "/srv/app".to_string();
                 cx.notify();
             });
@@ -1777,13 +1786,19 @@ mod tests {
         });
         vcx.run_until_parked();
         let panel = vcx
-            .debug_bounds("files-panel")
-            .expect("文件面板没有进渲染帧");
+            .debug_bounds("sftp-tab")
+            .expect("SFTP 标签页没有进渲染帧");
         assert!(
             f32::from(panel.size.width) > 0. && f32::from(panel.size.height) > 0.,
-            "文件面板尺寸为零，落点等于不存在：{panel:?}"
+            "SFTP 标签页尺寸为零，落点等于不存在：{panel:?}"
         );
-        let at = panel.center();
+        // 落点取右窗格里的**空白处**，不用 `panel.center()`：标签页正中间就是那条
+        // 拖拽分隔线，它的 hitbox 会挡住祖先的拖放（2026-10-28 实测：落点落在中线上，
+        // `can_drop` 收不到 `Entered`，命令一条都发不出来，断言只报「实际 0 条」）。
+        let at = gpui::point(
+            panel.origin.x + panel.size.width * 0.75,
+            panel.origin.y + panel.size.height * 0.60,
+        );
 
         // 真本地路径：一个文件 + 一个目录。目录 v1 不支持递归，必须跳过并给提示。
         let base = std::env::temp_dir().join(format!("rustshell-drop-e2e-{}", std::process::id()));
@@ -1827,7 +1842,7 @@ mod tests {
                 assert_eq!(local, &file, "上传的不是拖进来的那个本地文件");
                 assert_eq!(
                     remote, "/srv/app/hello.txt",
-                    "落点目录必须是面板**当前**的远端目录"
+                    "落点目录必须是右窗格**当前**的远端目录"
                 );
                 assert_eq!(*total, 5, "总字节数应当取本地文件长度");
             }
@@ -1841,24 +1856,12 @@ mod tests {
             "拖入目录必须给提示，实际提示：{toast:?}"
         );
 
-        // ③ 没有 SFTP 会话时同样不许静默忽略：面板照收拖拽，但要说清为什么没传
-        vcx.update(|_w, cx| {
-            main.update(cx, |m, cx| {
-                m.tabs_state.tabs[0].session.sftp_tx = None;
-                cx.notify();
-            });
-        });
-        vcx.run_until_parked();
-        drop_now(vcx, at, vec![file.clone()]);
-        assert!(rx.try_recv().is_err(), "没有 SFTP 会话时不该发出上传命令");
-        let toast = main.read_with(vcx, |m, _| m.ai_ui.quick_toast.clone());
-        assert!(
-            toast
-                .as_deref()
-                .is_some_and(|s| s.contains("需要 SSH 会话")),
-            "没有会话时拖入文件必须给提示（静默忽略会被当成「拖拽坏了」），\
-             实际提示：{toast:?}"
-        );
+        // ③ 原来这里还有一段「剥掉 sftp_tx 后再拖一次，必须提示『需要 SSH 会话』」。
+        // 2026-10-28 起它测不到了，也没有对应场景：SFTP 标签页的判定是
+        // `TabEntry::is_sftp_live()`（无终端 + 已连上 + 有 sftp_tx），通道一撤，
+        // 这个标签页就不再是 SFTP 视图、整块换成占位卡 —— 拖拽落点**根本不存在**了，
+        // 也就不存在「拖进去却没反应」。`drop_uploads` 里那句提示仍保留（防御性：
+        // 会话中途丢通道时还能说清原因）。
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -39,7 +39,6 @@ pub fn panel_icon(p: PanelKind) -> IconName {
         PanelKind::Dashboard => IconName::LayoutDashboard,
         PanelKind::Connections => IconName::Globe,
         PanelKind::Terminals => IconName::SquareTerminal,
-        PanelKind::Files => IconName::Folder,
         PanelKind::Ai => IconName::Bot,
         // `Calendar`（不是 `CalendarClock`）：`shell/assets/icons/` 只随包了前者，
         // 写一个没有对应 svg 的名字**不会报错**，只在界面上留一片空白
@@ -53,9 +52,8 @@ pub fn panel_hotkey(p: PanelKind) -> usize {
         PanelKind::Dashboard => 1,
         PanelKind::Connections => 2,
         PanelKind::Terminals => 3,
-        PanelKind::Files => 4,
-        PanelKind::Ai => 5,
-        PanelKind::Tasks => 6,
+        PanelKind::Ai => 4,
+        PanelKind::Tasks => 5,
     }
 }
 
@@ -252,9 +250,6 @@ fn rail_item(
             } else {
                 m.panel_ui.panel = panel;
                 m.panel_ui.sidebar_collapsed = false;
-                if panel == PanelKind::Files {
-                    m.files_open(cx); // SFTP 首扫
-                }
                 if panel == PanelKind::Ai {
                     // 2026-09-18 运行反馈「点击 AI 助手，聊天界面显示在终端右侧」：
                     // 左侧栏那一列现在放的是**聊天记录**，对话正文在终端右侧。
@@ -271,9 +266,9 @@ fn rail_item(
 
     div()
         .relative()
-        // 每枚图标各自一个**稳定** selector（`rail-files` 等）：测试靠它量出
+        // 每枚图标各自一个**稳定** selector（`rail-connections` 等）：测试靠它量出
         // 「谁排在第一格」。面板一多，用序号定位（`rail-item-0`）就会随排序漂移，
-        // 量到的永远是"第一格"而不是"Files 那枚"。
+        // 量到的永远是"第一格"而不是"连接那枚"。
         //
         // selector 取 `PanelKind::key()` 而不是显示名：后者走 i18n，
         // 英文环境下会变成 `rail-Connections`，测试就找不到它了。

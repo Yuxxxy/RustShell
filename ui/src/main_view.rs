@@ -884,18 +884,21 @@ pub enum PanelKind {
     Dashboard,
     Connections,
     Terminals,
-    Files,
     Ai,
-    /// 定时任务与运维预警（左侧栏第 6 项）。
+    /// 定时任务与运维预警（左侧栏第 5 项）。
     Tasks,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 6] = [
+    /// 竖栏自上而下的**固定**次序。
+    ///
+    /// 2026-10-28 撤掉了 `Files`（用户要求「sftp 功能已有，移除侧边栏-文件」）：
+    /// 独立 SFTP 标签页已经承担了文件浏览 / 上传下载，侧栏再挂一份是重复入口，
+    /// 而且它只服务「当前会话」、越过 SFTP 标签页还会让人以为两个面板不同步。
+    pub const ALL: [PanelKind; 5] = [
         PanelKind::Dashboard,
         PanelKind::Connections,
         PanelKind::Terminals,
-        PanelKind::Files,
         PanelKind::Ai,
         PanelKind::Tasks,
     ];
@@ -905,7 +908,6 @@ impl PanelKind {
             PanelKind::Dashboard => rustshell_core::i18n::t("概览"),
             PanelKind::Connections => rustshell_core::i18n::t("连接"),
             PanelKind::Terminals => rustshell_core::i18n::t("终端"),
-            PanelKind::Files => rustshell_core::i18n::t("文件"),
             PanelKind::Ai => "AI",
             PanelKind::Tasks => rustshell_core::i18n::t("定时"),
         };
@@ -917,12 +919,14 @@ impl PanelKind {
     /// 刻意不复用 `label()` —— 那走 i18n，中文环境下是 `"连接"`、英文环境下是
     /// `"Connections"`；一旦拿它当键，用户切一次界面语言，拖出来的宽度就查不回来了。
     /// 同理这些字符串**不许改名**：改了等于把用户已存的宽度丢掉。
+    ///
+    /// 已下线的 `"files"` 键不再出现：老的 `settings.json` 里可能还留着那条宽度，
+    /// 读进来没人认领，下次保存时自然被丢掉（不需要写迁移）。
     pub fn key(self) -> &'static str {
         match self {
             PanelKind::Dashboard => "dashboard",
             PanelKind::Connections => "connections",
             PanelKind::Terminals => "terminals",
-            PanelKind::Files => "files",
             PanelKind::Ai => "ai",
             PanelKind::Tasks => "tasks",
         }
@@ -2141,35 +2145,17 @@ impl MainView {
                         }
                     }
                     if sftp_only {
-                        // 两条来路，落地不同：
-                        // - 外部 `sftp://` 链接（临时连接）：切到左侧「文件」面板，
-                        //   那是它在本应用里的固有形态；
-                        // - 连接树右键「打开 SFTP」（已保存连接，2026-10-26）：
-                        //   **留在自己的标签页**里 —— 那张标签页本身就是双窗格
-                        //   （`crate::sftp_tab`），切到左侧面板反而把它藏起来了。
-                        let saved_sftp_tab = result_pid
+                        // 落地只有一条了（2026-10-28 撤掉左侧「文件」面板）：
+                        // **留在自己的标签页**里 —— 那张标签页本身就是双窗格
+                        // （`crate::sftp_tab`），此前「外部链接切到左侧面板」那条
+                        // 分支已随面板一起消失。
+                        //
+                        // 有路径就开到那个目录（`sftp://host/srv/app`），否则从远端家目录开始。
+                        let path = result_pid
                             .as_deref()
-                            .is_some_and(|pid| self.conn_ui.sftp_only_profiles.contains(pid));
-                        if saved_sftp_tab {
-                            if let Some(tx) = self
-                                .tabs_state
-                                .tabs
-                                .iter()
-                                .find(|t| t.session.id == id)
-                                .and_then(|t| t.session.sftp_tx.clone())
-                            {
-                                self.io.files_loading = true;
-                                self.io.files_loaded_session = Some(id.clone());
-                                let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
-                            }
-                        } else {
-                            // 链接里带了路径就开到那个目录，否则从远端家目录开始。
-                            let path = result_pid
-                                .as_deref()
-                                .and_then(|pid| self.conn_ui.external.get(pid))
-                                .and_then(|e| e.path.clone());
-                            self.external_sftp_first_scan(path, cx);
-                        }
+                            .and_then(|pid| self.conn_ui.external.get(pid))
+                            .and_then(|e| e.path.clone());
+                        self.external_sftp_first_scan(path, cx);
                     }
                     self.tabs_state.pending_focus = true;
                 }
@@ -3226,11 +3212,11 @@ mod tests {
         use super::{AppShell, MainView, PanelKind};
 
         /// 图标栏自上而下的**固定**次序（= `PanelKind::ALL` 的 key 次序）。
-        const RAIL_KEYS: [&str; 6] = [
+        /// 2026-10-28 去掉 `rail-files`：左侧「文件」面板已撤，SFTP 用独立标签页。
+        const RAIL_KEYS: [&str; 5] = [
             "rail-dashboard",
             "rail-connections",
             "rail-terminals",
-            "rail-files",
             "rail-ai",
             "rail-tasks",
         ];
@@ -3558,7 +3544,7 @@ mod tests {
         // 只在首帧生效的直接后果，见 `main_split_id`），拿它量会量到旧值。
         // 兜底值 `sidebar_width` 刻意设成第三个不相干的数字：两个面板都必须用它
         // **自己**记的那份，而不是回落到兜底。
-        const FILES_W: f32 = 380.0;
+        const TERMS_W: f32 = 380.0;
         const TASKS_W: f32 = 200.0;
         const FALLBACK_W: f32 = 240.0;
         vcx.update(|_w, cx| {
@@ -3568,10 +3554,10 @@ mod tests {
                 m.settings.sidebar_width = FALLBACK_W;
                 m.settings.sidebar_widths.clear();
                 m.settings
-                    .remember_sidebar_width(PanelKind::Files.key(), FILES_W);
+                    .remember_sidebar_width(PanelKind::Terminals.key(), TERMS_W);
                 m.settings
                     .remember_sidebar_width(PanelKind::Tasks.key(), TASKS_W);
-                m.panel_ui.panel = PanelKind::Files;
+                m.panel_ui.panel = PanelKind::Terminals;
                 cx.notify();
             })
         });
@@ -3589,9 +3575,9 @@ mod tests {
         // 见 render 里的 `pad`）。两边同减同一个常数 ⇒ 差值就是两个面板宽度之差。
         const CARD_INSET: f32 = super::CARD_GAP * 1.5;
 
-        let w_files = card_w(vcx);
+        let w_terms = card_w(vcx);
 
-        // 切到「定时」—— 宽度必须换成它自己记的 200，而不是沿用「文件」的 380。
+        // 切到「定时」—— 宽度必须换成它自己记的 200，而不是沿用「终端」的 380。
         vcx.update(|_w, cx| {
             main.update(cx, |m, cx| {
                 m.panel_ui.panel = PanelKind::Tasks;
@@ -3601,19 +3587,19 @@ mod tests {
         vcx.run_until_parked();
         let w_tasks = card_w(vcx);
 
-        let delta = w_files - w_tasks;
+        let delta = w_terms - w_tasks;
         assert!(
-            (delta - (FILES_W - TASKS_W)).abs() <= 3.0,
-            "切侧栏面板后宽度没有跟着换：files={w_files:?} tasks={w_tasks:?}\n\
+            (delta - (TERMS_W - TASKS_W)).abs() <= 3.0,
+            "切侧栏面板后宽度没有跟着换：terms={w_terms:?} tasks={w_tasks:?}\n\
              （差 {delta:?}，期望 {:?}）。多半是面板组仍共用一个 keyed state ——\n\
              `resizable_panel().size(..)` 只在首帧生效，之后再改也不参与布局。",
-            FILES_W - TASKS_W
+            TERMS_W - TASKS_W
         );
 
         // 绝对值也要对：各自用的必须是**自己**记的那份，而不是统一兜底值。
         assert!(
-            (w_files - (FILES_W - CARD_INSET)).abs() <= 3.0,
-            "「文件」面板宽度不是它自己记的 {FILES_W:?}（实宽 {w_files:?}，\
+            (w_terms - (TERMS_W - CARD_INSET)).abs() <= 3.0,
+            "「终端」面板宽度不是它自己记的 {TERMS_W:?}（实宽 {w_terms:?}，\
              统一兜底值 {FALLBACK_W:?} 对应的卡片宽是 {:?}）",
             FALLBACK_W - CARD_INSET
         );
@@ -3625,15 +3611,15 @@ mod tests {
         // 切回来必须回到原来那个宽度（每个面板各记各的，不互相污染）。
         vcx.update(|_w, cx| {
             main.update(cx, |m, cx| {
-                m.panel_ui.panel = PanelKind::Files;
+                m.panel_ui.panel = PanelKind::Terminals;
                 cx.notify();
             })
         });
         vcx.run_until_parked();
         let w_back = card_w(vcx);
         assert!(
-            (w_back - w_files).abs() <= 1.0,
-            "切回「文件」后宽度没有回到 {w_files:?}，实际 {w_back:?} ——\n\
+            (w_back - w_terms).abs() <= 1.0,
+            "切回「终端」后宽度没有回到 {w_terms:?}，实际 {w_back:?} ——\n\
              两个面板的记忆互相污染了。"
         );
     }
@@ -4567,7 +4553,7 @@ mod tests {
     /// `List { path: <某个字面量> }`，默认落点就与本机或写死的值绑死，
     /// 不再是服务器上的家目录。
     #[test]
-    fn files_panel_default_path_resolves_the_remote_home() {
+    fn sftp_first_scan_resolves_the_remote_home() {
         // 兜底仍是根：拿不到 home 时宁可落在 `/` —— 多按一次「上级」，
         // 也不要把用户扔到一个来路不明的目录里。
         assert_eq!(
@@ -4575,7 +4561,9 @@ mod tests {
             "/",
             "`DEFAULT_REMOTE_PATH` 现在是 home 解析失败时的兜底，应为文件系统根 `/`。"
         );
-        let actions = prod(include_str!("main_view/terminal_actions.rs"));
+        // 首扫现在只在 `external_sftp_first_scan` 里（左侧「文件」面板已撤，
+        // 原来的 `files_open` 随之删除，见 2026-10-28）。
+        let actions = prod(include_str!("main_view/external_actions.rs"));
         assert!(
             actions.contains("SftpCmd::ListHome"),
             "首扫必须发 `SftpCmd::ListHome`：远端家目录只有服务器知道，\

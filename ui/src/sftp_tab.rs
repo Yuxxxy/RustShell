@@ -24,9 +24,11 @@
 //!   （2026-10-27 用户要求「拖动线要延伸到地址栏」）；
 //! - 每条地址栏**只有一个刷新按钮**，上传 / 下载图标已撤（同一轮用户要求），
 //!   能力改挂右键菜单：本地「上传到远端」、远端「下载到本地」；
-//! - 列头可点：名称 / 大小 / 修改时间 三列排序，再点同列翻转方向（两侧共用一套口径）；
-//! - 远端右键：下载到本地 / 下载… / 打开 / 重命名 / 删除 / 新建文件 / 新建文件夹 / 复制路径；
-//!   本地右键：上传到远端 / 新建文件 / 新建文件夹 / 重命名。
+//! - 列头可点：名称 / 大小 / 修改时间 三列排序，再点同列翻转方向（两侧共用一套口径），
+//!   方向由列头右侧一对小箭头指示（被选中的那一侧点亮）；
+//! - **右键分两种**（2026-10-28 用户要求）：行上 = 对这一行做什么
+//!   （远端：下载到本地 / 下载… / 打开 / 重命名 / 删除 / 复制路径；
+//!   本地：上传到远端 / 重命名），空白处 = 对这个目录做什么（新建文件 / 新建文件夹）。
 //!
 //! # 2026-10-27 第三轮（用户四点要求）
 //!
@@ -43,7 +45,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, AnyElement, Context, InteractiveElement as _,
+    div, prelude::FluentBuilder as _, px, AnyElement, Context, ExternalPaths, InteractiveElement as _,
     IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
 };
 use gpui_component::{
@@ -511,15 +513,14 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         let dir_now = remote_path.clone();
         let menu_path = row.path.clone();
         let menu_name = row.name.to_string();
-        let menu_dir = dir_now.clone();
         let menu: Option<EntryMenu> = tx_menu.map(|tx| {
             Box::new(
                 move |menu: PopupMenu,
                       _w: &mut gpui::Window,
                       _cx: &mut gpui::Context<'_, PopupMenu>| {
                     // 远端菜单 = 「下载到本地」+ 文件面板那一份（下载 / 打开 / 重命名 /
-                    // 删除 / 复制路径）+ 两条「新建」（文件面板的工具栏另有新建入口，
-                    // 这里没有，而 SFTP 标签页只有右键这一条路）。
+                    // 删除 / 复制路径）。**新建不在这里**（2026-10-28 用户要求）：
+                    // 它挪到空白处右键，见 `blank_menu`。
                     //
                     // 「下载到本地」放**第一条**：双窗格里这是最常按的一项。文件面板那条
                     // 「下载…」要你选保存位置 —— 这里左边正看着哪个目录就是想去的地方。
@@ -538,7 +539,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                             },
                         ),
                     );
-                    let base_ok = crate::files_panel::build_entry_menu(
+                    crate::files_panel::build_entry_menu(
                         menu,
                         &tx,
                         &menu_path,
@@ -546,38 +547,6 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                         &menu_name,
                         is_dir,
                         verify,
-                    );
-                    let mk_dir = menu_dir.clone();
-                    let mk_file = menu_dir.clone();
-                    base_ok.separator().item(
-                        PopupMenuItem::new(rustshell_core::i18n::t("新建文件夹")).on_click(
-                            move |_, w, cx| {
-                                let base = mk_dir.clone();
-                                super::main_view::ui_call(
-                                    "",
-                                    move |m, _id, w, cx| {
-                                        m.open_sftp_mkdir_at(base.clone(), false, false, w, cx)
-                                    },
-                                    w,
-                                    cx,
-                                );
-                            },
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::new(rustshell_core::i18n::t("新建文件")).on_click(
-                            move |_, w, cx| {
-                                let base = mk_file.clone();
-                                super::main_view::ui_call(
-                                    "",
-                                    move |m, _id, w, cx| {
-                                        m.open_sftp_mkdir_at(base.clone(), false, true, w, cx)
-                                    },
-                                    w,
-                                    cx,
-                                );
-                            },
-                        ),
                     )
                 },
             ) as EntryMenu
@@ -618,6 +587,23 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         ));
     }
 
+    // ---- 空白处右键 = 新建（2026-10-28 用户要求）----
+    //
+    // 挂在**列表容器**上，不挂在行上：右键落在行内时，行的 `context_menu` 会
+    // `stop_propagation()`（官方 `menu/context_menu.rs` 的 bubble 分支），
+    // 所以两者互斥 —— 行上是「这一行能做什么」，空白是「这个目录能做什么」。
+    let local_list = local_rows
+        .context_menu(blank_menu(local_path.clone(), true))
+        .into_any_element();
+    // 远端还没拿到目录时不给「新建」：base 是空串，建出来的路径没有意义。
+    let remote_list = if remote_path.is_empty() {
+        remote_rows_el.into_any_element()
+    } else {
+        remote_rows_el
+            .context_menu(blank_menu(remote_path.clone(), false))
+            .into_any_element()
+    };
+
     // ---- 两栏 + 可拖拽分隔线 ----
     //
     // 官方 `h_resizable`：分隔线自带 hairline，hover 时变成可抓的胶囊。
@@ -639,7 +625,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                             .w_full()
                             .child(local_bar)
                             .child(local_header(&t, sort, cx))
-                            .child(local_rows),
+                            .child(local_list),
                     ),
                 )
                 .child(
@@ -649,7 +635,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                             .w_full()
                             .child(remote_bar)
                             .child(remote_header(&t, sort, cx))
-                            .child(remote_rows_el),
+                            .child(remote_list),
                     ),
                 ),
         );
@@ -739,8 +725,19 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
 
     v_flex()
         .id("sftp-tab")
+        // 测试钩子：拖拽 e2e 要拿这块几何派发 `FileDropEvent`
+        // （`debug_bounds` 只认 `debug_selector`，`id` 不算）。
+        .debug_selector(|| "sftp-tab".to_string())
         .w_full()
         .h_full()
+        // 拖入落点（2026-10-28）：左侧「文件」面板撤掉后，它原来的拖拽上传落点
+        // 也没了 —— 能力在这里接住，用的还是同一个 `files_panel::drop_uploads`
+        // （落进 `io.files_path`，即右窗格正看着的目录）。
+        .can_drop(|value, _, _| value.is::<ExternalPaths>())
+        .drag_over::<ExternalPaths>(move |style, _paths, _, _| style.bg(hex(t.bg_elevated)))
+        .on_drop::<ExternalPaths>(|paths: &ExternalPaths, w, cx| {
+            crate::files_panel::drop_uploads(paths.paths().to_vec(), w, cx);
+        })
         .child(panes)
         .children(queue)
         .into_any_element()
@@ -876,7 +873,7 @@ fn remote_header(
 
 /// 一个列头格子：`width = None` 表示吃剩余空间（名称列）。
 ///
-/// `sort_key = Some(..)` 时这格可点：同一列再点翻转方向，当前排序列显示 ▲/▼。
+/// `sort_key = Some(..)` 时这格可点：同一列再点翻转方向，右侧一对小箭头指示方向。
 fn head_cell(
     label: &'static str,
     width: Option<f32>,
@@ -886,18 +883,18 @@ fn head_cell(
     cx: &mut Context<MainView>,
 ) -> AnyElement {
     let active = sort_key.is_some_and(|k| k == sort.key);
-    let text = if active {
-        format!("{label} {}", if sort.asc { "▲" } else { "▼" })
-    } else {
-        label.to_string()
-    };
+    // 列头上不再拼 ▲/▼ 字符（2026-10-28 用户要求「改成上下两个箭头那种，参考 shell-rs」）：
+    // 字符箭头随字体变形、宽窄不一，两列挨着时对不齐；换成一对小图标，被选中的那一侧
+    // 用 accent 点亮，其余留成弱化色 —— 一眼就能看出「按哪列、哪个方向」。
+    let active_dir = if active { Some(sort.asc) } else { None };
     let cell = h_flex()
         .items_center()
         .gap_1()
         .text_size(px(10.))
         .text_color(hex(if active { t.fg_primary } else { t.fg_muted }))
         .whitespace_nowrap()
-        .child(SharedString::from(text));
+        .child(SharedString::from(label))
+        .children(sort_key.map(|_| sort_arrows(active_dir, t)));
     let cell = match width {
         Some(w) => cell.w(px(w)).flex_shrink_0(),
         None => cell.flex_1().min_w_0(),
@@ -915,6 +912,36 @@ fn head_cell(
             .into_any_element(),
         None => cell.into_any_element(),
     }
+}
+
+/// 列头右侧那对上下箭头（Explorer / shell-rs 的形态）。
+///
+/// `active_dir`：`Some(true)` = 这列正按升序排（点亮上箭头）、`Some(false)` = 降序
+/// （点亮下箭头）、`None` = 这列可排序但不是当前排序列（两个都弱化）。
+///
+/// 尺寸压到 7px：两个叠起来 14px，仍在 10px 列头文字 + `py_1` 那一行里，
+/// 列头不会因为多了一对箭头比数据行高出一截。
+/// 比数据行高出一截。
+fn sort_arrows(
+    active_dir: Option<bool>,
+    t: &rustshell_core::theme::ThemeTokens,
+) -> AnyElement {
+    let asc = active_dir == Some(true);
+    let desc = active_dir == Some(false);
+    v_flex()
+        .flex_shrink_0()
+        .items_center()
+        .child(
+            Icon::new(LucideIcon::ChevronUp)
+                .with_size(px(7.))
+                .text_color(hex(if asc { t.accent } else { t.fg_muted })),
+        )
+        .child(
+            Icon::new(LucideIcon::ChevronDown)
+                .with_size(px(7.))
+                .text_color(hex(if desc { t.accent } else { t.fg_muted })),
+        )
+        .into_any_element()
 }
 
 /// 本地列表的一行：图标 + 名称 / 大小 / 修改时间。
@@ -1048,17 +1075,18 @@ fn hint_line(text: String, t: &rustshell_core::theme::ThemeTokens) -> AnyElement
         .into_any_element()
 }
 
-/// 本地条目的右键菜单：上传到远端 / 新建文件夹 / 新建文件 / 重命名。
+/// 本地条目的右键菜单：上传到远端 / 重命名。
 ///
-/// 「上传到远端」是 2026-10-27 地址栏撤掉上传图标后的**唯一**入口。
-/// 只对文件出现：目录上传 v1 不做（`sftp_upload_path` 会明确报一句，但没必要
-/// 摆一个点了必然失败的东西）。
+/// **新建不在行上**（2026-10-28 用户要求）：新建文件 / 新建文件夹挪到窗格空白处的
+/// 右键菜单（[`blank_menu`]）。理由很实际 —— 新建是「在这个目录里加东西」，
+/// 与「这一行」无关；挂在文件行上会让人以为新文件建在该文件所在的位置。
+///
+/// 「上传到远端」仍在这里：它是唯一的上传入口（2026-10-27 撤了地址栏图标），
+/// 且天然是针对某一行的动作。只对文件出现：目录上传 v1 不做。
 ///
 /// 本地不做「删除」：删本地文件是不可逆的（本应用没有回收站接口），误点一次就没了 ——
 /// 要删请用系统的文件管理器。
 fn local_entry_menu(menu: PopupMenu, dir: &str, full: &str, name: &str, is_dir: bool) -> PopupMenu {
-    let dir_mk = dir.to_string();
-    let dir_file = dir.to_string();
     let from = full.to_string();
     let dir_ren = dir.to_string();
     let upload = full.to_string();
@@ -1077,30 +1105,8 @@ fn local_entry_menu(menu: PopupMenu, dir: &str, full: &str, name: &str, is_dir: 
         )
         .separator()
     })
-    .item(
-        PopupMenuItem::new(rustshell_core::i18n::t("新建文件夹")).on_click(move |_, w, cx| {
-            let base = dir_mk.clone();
-            super::main_view::ui_call(
-                "",
-                move |m, _id, w, cx| m.open_sftp_mkdir_at(base.clone(), true, false, w, cx),
-                w,
-                cx,
-            );
-        }),
-    )
-    .item(
-        PopupMenuItem::new(rustshell_core::i18n::t("新建文件")).on_click(move |_, w, cx| {
-            let base = dir_file.clone();
-            super::main_view::ui_call(
-                "",
-                move |m, _id, w, cx| m.open_sftp_mkdir_at(base.clone(), true, true, w, cx),
-                w,
-                cx,
-            );
-        }),
-    )
     .when(has_name, |m_| {
-        m_.separator().item(
+        m_.item(
             PopupMenuItem::new(rustshell_core::i18n::t("重命名…")).on_click(move |_, w, cx| {
                 let from = from.clone();
                 let dir = dir_ren.clone();
@@ -1109,6 +1115,43 @@ fn local_entry_menu(menu: PopupMenu, dir: &str, full: &str, name: &str, is_dir: 
                     move |m, _id, w, cx| {
                         m.open_sftp_rename_at(from.clone(), dir.clone(), true, w, cx)
                     },
+                    w,
+                    cx,
+                );
+            }),
+        )
+    })
+}
+
+/// 窗格**空白处**的右键菜单：新建文件夹 / 新建文件。
+///
+/// `base` 是这个窗格当前所在的目录（远端是 POSIX 路径，本地是本机路径），
+/// `local` 决定落在哪一侧 —— 与 `DialogMode::SftpMkdir { local, file }` 同一套语义。
+///
+/// 挂在列表容器上而不是每一行上：官方 `context_menu` 在 bubble 阶段
+/// `cx.stop_propagation()`（`menu/context_menu.rs`），所以右键行 = 行的菜单、
+/// 右键空白 = 这个菜单，不会两个一起弹。
+fn blank_menu(base: String, local: bool) -> EntryMenu {
+    Box::new(move |menu, _w, _cx| {
+        let dir_new = base.clone();
+        let file_new = base.clone();
+        menu.item(
+            PopupMenuItem::new(rustshell_core::i18n::t("新建文件夹")).on_click(move |_, w, cx| {
+                let base = dir_new.clone();
+                super::main_view::ui_call(
+                    "",
+                    move |m, _id, w, cx| m.open_sftp_mkdir_at(base.clone(), local, false, w, cx),
+                    w,
+                    cx,
+                );
+            }),
+        )
+        .item(
+            PopupMenuItem::new(rustshell_core::i18n::t("新建文件")).on_click(move |_, w, cx| {
+                let base = file_new.clone();
+                super::main_view::ui_call(
+                    "",
+                    move |m, _id, w, cx| m.open_sftp_mkdir_at(base.clone(), local, true, w, cx),
                     w,
                     cx,
                 );
@@ -1353,14 +1396,37 @@ mod tests {
             );
         }
 
-        // ⑤ 右键新建 / 重命名
+        // ⑤ 新建在**空白处**右键，行上没有（2026-10-28 用户要求）
+        let blank_at = code.find("fn blank_menu(").expect("找不到空白处菜单");
         assert!(
-            code.contains("t(\"新建文件夹\")") && code.contains("t(\"新建文件\")"),
-            "右键菜单缺「新建文件夹 / 新建文件」"
+            code[blank_at..].contains("t(\"新建文件夹\")")
+                && code[blank_at..].contains("t(\"新建文件\")"),
+            "空白处右键必须有「新建文件夹 / 新建文件」"
+        );
+        let local_menu_at = code.find("fn local_entry_menu(").expect("找不到本地行菜单");
+        assert!(
+            !code[local_menu_at..blank_at].contains("新建"),
+            "本地行菜单里不该再有「新建」—— 它属于空白处"
         );
         assert!(
             code.contains("open_sftp_rename_at("),
             "右键菜单缺本地重命名入口"
+        );
+        // 两份空白菜单：本地一次、远端一次，且必须真的挂在列表容器上
+        assert_eq!(
+            code.matches(".context_menu(blank_menu(").count(),
+            2,
+            "两个窗格的空白处都要挂新建菜单"
+        );
+
+        // ⑥ 排序方向用「上下两个箭头」图标，不再拼 ▲/▼ 字符
+        assert!(
+            code.contains("LucideIcon::ChevronUp") && code.contains("LucideIcon::ChevronDown"),
+            "列头的排序指示必须是两个箭头图标（用户要求参考 shell-rs）"
+        );
+        assert!(
+            !code.contains('▲') && !code.contains('▼'),
+            "列头不许再拼 ▲/▼ 字符：字形宽窄不一，两列挨着时对不齐"
         );
     }
 }

@@ -22,8 +22,7 @@ use gpui_component::{input::InputState, v_flex, Sizable as _};
 
 use super::{MainView, PanelKind};
 use crate::{
-    ai_history_panel, ai_panel, connections_panel, dashboard_panel, files_panel, tasks_panel,
-    terminals_panel,
+    ai_history_panel, ai_panel, connections_panel, dashboard_panel, tasks_panel, terminals_panel,
 };
 
 /// 窗口外壳视图：挂载官方 Dialog / Sheet 层。
@@ -386,12 +385,15 @@ impl Render for TermSearchBarView {
 /// 注意 `PanelKind::Ai` 分到的是**聊天记录**（会话列表）而不是对话正文：2026-09-18
 /// 运行反馈「点击 AI 助手，聊天界面显示在终端右侧，原 AI 助手侧边栏改为聊天记录」。
 /// 对话正文由终端右侧的 `AiChatPanelView` 渲染（同一个 `ai_panel::render`）。
+///
+/// 2026-10-28 起这里没有「文件」这一块：用户要求「sftp 功能已有，移除侧边栏-文件」。
+/// `files_panel` 模块本身仍在（`FileRow` / `build_entry_menu` / `enqueue_uploads`
+/// 被 SFTP 标签页与 zmodem 复用），只是不再作为侧栏面板渲染。
 fn render_sidebar_panel(m: &mut MainView, cx: &mut Context<MainView>) -> gpui::AnyElement {
     match m.panel_ui.panel {
         PanelKind::Dashboard => dashboard_panel::render(m, cx).into_any_element(),
         PanelKind::Connections => connections_panel::render(m, cx).into_any_element(),
         PanelKind::Terminals => terminals_panel::render(m, cx).into_any_element(),
-        PanelKind::Files => files_panel::render(m, cx).into_any_element(),
         PanelKind::Ai => ai_history_panel::render(m, cx).into_any_element(),
         PanelKind::Tasks => tasks_panel::render(m, cx).into_any_element(),
     }

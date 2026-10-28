@@ -141,24 +141,9 @@ impl MainView {
         out
     }
 
-    /// 打开文件面板（竖栏点击）：对当前 SSH 会话发起首扫
-    pub fn files_open(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab() else { return };
-        let Some(sftp_tx) = tab.session.sftp_tx.clone() else {
-            return;
-        };
-        let sid = tab.session.id.clone();
-        if self.io.files_loaded_session.as_deref() != Some(&sid) {
-            self.io.files_loading = true;
-            self.io.files_loaded_session = Some(sid);
-            // 首扫落在**远端登录用户的家目录**（绝对路径）。这个路径 UI 侧算不出来
-            // —— 它是本机进程，只有服务器知道自己的用户名与 home —— 所以发
-            // `ListHome` 让 SFTP 侧 `canonicalize(".")` 问一次服务端，
-            // 再经 `SftpEvent::Listing::path` 回报成 `/home/ubuntu` 这样的真实路径。
-            let _ = sftp_tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
-        }
-        cx.notify();
-    }
+    /// 注意：原来的 `files_open`（竖栏点「文件」→ 对当前会话发首扫）已随左侧
+    /// 「文件」面板一起删除（2026-10-28）。文件浏览只剩 SFTP 标签页一条路，
+    /// 它的首扫由 `external_sftp_first_scan` 负责。
 
     /// 路径栏失焦：把草稿收回「当前真实目录」，并请求让输入框放弃焦点。
     ///
