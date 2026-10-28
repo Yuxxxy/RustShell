@@ -36,6 +36,12 @@ impl MainView {
     /// 闩在 `update_auto_started` 上（不能用「阶段是 Idle」判断 —— 自动检查失败后
     /// 阶段本来就回到 Idle，那样每帧都会再发一次请求）。
     pub fn update_auto_check(&mut self, cx: &mut Context<Self>) {
+        // 测试里不发真实请求：不少 UI 用例用 `advance_clock` 推进时钟（`dead_session`
+        // 那套按 20ms 步进），推过 8 秒就会真去请求 GitHub —— CI 的成败就挂到网络上了。
+        // 守卫用例只查源码结构（见本文件测试模块），不依赖这条分支。
+        if cfg!(test) {
+            return;
+        }
         if self.io.update_auto_started {
             return;
         }
