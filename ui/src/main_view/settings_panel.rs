@@ -1005,7 +1005,6 @@ impl MainView {
         // 写进文件或弹资源管理器，属于「用户没要就替用户做决定」的动作。
         let about = {
             let me_check = me.clone();
-            let me_status = me.clone();
             SettingPage::new(t("关于"))
                 .icon(IconName::Info)
                 .description(t(
@@ -1047,12 +1046,11 @@ impl MainView {
                             SettingItem::new(
                                 t("检查更新"),
                                 SettingField::render(move |_options, _w, cx| {
-                                    let (status, trouble, phase) = {
-                                        let m = me_status.read(cx);
-                                        let (line, trouble) = m.update_status_line();
-                                        (line, trouble, m.io.update_phase.clone())
-                                    };
-                                    let tok = crate::theme::current(cx);
+                                    // 2026-10-29 用户要求：撤掉按钮**左侧**的状态提示行与
+                                    // **右侧**的「详情」按钮，这一行只留一枚按状态换语义的按钮。
+                                    // 状态文字与详情入口没有消失 —— 标题栏徽标点开就是更新
+                                    // 对话框（那里带版本对比与发布说明）；这里再摆一遍是重复。
+                                    let phase = me_check.read(cx).io.update_phase.clone();
                                     let busy = phase.is_busy();
                                     // 一枚按钮按状态换语义：没查过 = 检查；有新版 = 立即更新；
                                     // 已就绪 = 重启；失败 = 重试。与标题栏徽标同一套判定。
@@ -1065,20 +1063,7 @@ impl MainView {
                                         _ => t("检查更新"),
                                     };
                                     h_flex()
-                                        .gap_2()
                                         .items_center()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .text_size(px(11.5))
-                                                .text_color(hex(if trouble {
-                                                    tok.danger
-                                                } else {
-                                                    tok.fg_secondary
-                                                }))
-                                                .child(SharedString::from(status)),
-                                        )
                                         .child(
                                             Button::new("about-check-update")
                                                 .small()
@@ -1090,20 +1075,6 @@ impl MainView {
                                                     move |_e, w, cx: &mut App| {
                                                         me.update(cx, |m, cx| {
                                                             m.update_primary_action(w, cx)
-                                                        });
-                                                    }
-                                                }),
-                                        )
-                                        .child(
-                                            Button::new("about-update-details")
-                                                .small()
-                                                .outline()
-                                                .label(t("详情"))
-                                                .on_click({
-                                                    let me = me_check.clone();
-                                                    move |_e, w, cx: &mut App| {
-                                                        me.update(cx, |m, cx| {
-                                                            m.open_update_dialog(w, cx)
                                                         });
                                                     }
                                                 }),

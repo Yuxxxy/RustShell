@@ -922,7 +922,6 @@ fn translate(zh: &'static str) -> &'static str {
         "正在下载…" => "Downloading…",
         "重启以完成更新" => "Restart to Finish",
         "稍后" => "Later",
-        "详情" => "Details",
         "选择 OpenSSH 配置文件" => "Select an OpenSSH config file",
         "依据 GitHub 上的版本标签判断；有新版时标题栏右侧会显示提示。" => {
             "Compares against the version tags on GitHub; when a newer one exists a badge appears on the right of the title bar."

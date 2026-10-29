@@ -97,9 +97,11 @@ pub fn builtin_commands() -> Vec<CommandEntry> {
         entry("新增本地 Shell", None, "NewLocalShell"),
         entry("AI助手", None, "AiAssistant"),
         entry("打开设置", Some("mod+,"), "OpenSettings"),
-        // 2026-09-29「取消恢复上次会话功能」：启动不再自动弹「恢复上次会话？」框，
-        // 恢复改由这一条**手动触发** —— 所以它必须进面板，否则功能就没入口了。
-        entry("恢复上次会话", None, "RestoreLastSession"),
+        // 2026-10-29 用户要求「快捷命令面板，恢复上次会话功能移除」：这一条从此撤下。
+        //
+        // `RestoreLastSession` 动作与 `layout_restore_now` 那条恢复链**仍然保留**（数据
+        // 链路没拆：快照照旧落盘、`DialogMode::RestoreSession` 照旧能弹），只是面板
+        // 不再列它 —— 用户要的是「启动/日常都别恢复」，那个意图先于「留一个入口」。
     ]
 }
 
@@ -205,7 +207,8 @@ mod tests {
         let cmds = builtin_commands();
         // 2026-09-29：+1 条「恢复上次会话」（启动不再自动弹框后的手动入口）。
         // 2026-10-21：-1 条「切换侧栏」（用户要求连图标带功能一起撤下，见 `tab_bar`）。
-        assert_eq!(cmds.len(), 5);
+        // 2026-10-29：-1 条「恢复上次会话」（用户要求从快捷命令面板移除）。
+        assert_eq!(cmds.len(), 4);
         // 存储为平台无关描述，展示时平台化
         assert!(cmds
             .iter()
@@ -238,6 +241,20 @@ mod tests {
             let settings = cmds.iter().find(|c| c.label == "打开设置").unwrap();
             assert_eq!(settings.shortcut_label().as_deref(), Some("Ctrl+,"));
         }
+    }
+
+    /// 2026-10-29 用户要求「快捷命令面板，恢复上次会话功能移除」。
+    ///
+    /// 单独钉一条：恢复链本身还在（`RestoreLastSession` 动作与 `layout_restore_now`
+    /// 都保留），所以「面板里没有这一条」不会因为别处编译不过而被发现 —— 只能靠这条断言。
+    #[test]
+    fn the_palette_no_longer_offers_session_restore() {
+        assert!(
+            !builtin_commands()
+                .iter()
+                .any(|c| c.action_id == Some("RestoreLastSession")),
+            "「恢复上次会话」又回到命令面板了 —— 用户 2026-10-29 要求移除该条。"
+        );
     }
 
     /// 回归（2026-09-17 运行反馈「简化命令面板，tab 右键功能不再放入命令面板中」）：
