@@ -173,6 +173,16 @@ impl TabEntry {
             && self.session.sftp_tx.is_some()
     }
 
+    /// 是否「好好连着」—— 标签栏的状态点与分屏窗格标题条**共用这一个判据**。
+    ///
+    /// 把「终端可用」与「SFTP 标签可用」合在一处，是因为两处显示同一件事：用户看到
+    /// 的都是一条能干活、连着绿色点的会话。2026-10-30 用户反馈「sftp 拆分栏的小绿灯
+    /// 和 tab 不一致」：窗格标题只问了 `is_live()`（要有终端），SFTP 标签没有终端，
+    /// 于是同一张标签在栏里是绿点、在窗格标题上是灰点。
+    pub fn is_healthy(&self) -> bool {
+        self.is_live() || self.is_sftp_live()
+    }
+
     /// 断连后正在原地重连（画面仍留在断连现场上）。
     pub fn is_reconnecting(&self) -> bool {
         self.dead.is_some() && self.session.state == SessionState::Connecting

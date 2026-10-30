@@ -874,7 +874,7 @@ impl MainView {
             .iter()
             .map(|tab| {
                 let status = TabStatus::of(
-                    tab.is_live() || tab.is_sftp_live(),
+                    tab.is_healthy(),
                     tab.is_connecting(),
                     tab.is_dead(),
                 );

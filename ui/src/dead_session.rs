@@ -690,11 +690,12 @@ fn a_dead_tab_looks_dead_in_the_tab_bar() {
     let tab_bar = prod(include_str!("tab_bar.rs"));
 
     assert!(
-        tab_bar.contains("TabStatus::of(")
-            && tab_bar.contains("tab.is_live() || tab.is_sftp_live(),"),
-        "标签栏状态点没有按 `is_live()` 判定：断连态刻意保留终端视图，\
-         用 `terminal.is_some()` 会把一个已死的会话画成健康的绿点；\
-         SFTP 单通道标签根本没有终端，活性只能由 `is_sftp_live()` 补上"
+        tab_bar.contains("TabStatus::of(") && tab_bar.contains("tab.is_healthy(),"),
+        "标签栏状态点没有按 `is_healthy()` 判定（= `is_live() || is_sftp_live()`）：\
+         断连态刻意保留终端视图，用 `terminal.is_some()` 会把一个已死的会话画成健康的绿点；\
+         SFTP 单通道标签根本没有终端，活性只能由 `is_sftp_live()` 补上。\
+         2026-10-30 起这两支合并成 `TabEntry::is_healthy`，分屏窗格的状态点也用它 —— \
+         两处显示同一件事，判据必须同一份"
     );
     assert!(
         tab_bar.contains("Self::Dead => (hex(t.danger), false)"),

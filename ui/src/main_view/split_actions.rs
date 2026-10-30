@@ -734,7 +734,10 @@ impl MainView {
                 // 断连态必须是**红点**而不是绿点：终端视图在断连时刻意留着，
                 // 用 `terminal.is_some()` 判会把一个已死的会话画成健康状态。
                 // 判定与断连条、标签栏状态点共用 `TabEntry` 的三个谓词。
-                let color = if tab.is_live() {
+                // 与标签栏同一个判据（`is_healthy` = 终端可用 **或** SFTP 标签可用）：
+                // 2026-10-30 用户反馈「sftp 拆分栏的小绿灯和 tab 不一致」—— 这里原来
+                // 只问 `is_live()`（要有终端），SFTP 标签就被画成灰点。
+                let color = if tab.is_healthy() {
                     hex(tok.success)
                 } else if tab.is_dead() {
                     hex(tok.danger)
@@ -1116,6 +1119,26 @@ mod tests {
             body.contains("display_tab_title(tab, &self.conn_store)"),
             "窗格标题必须走 `display_tab_title`：直接读 `session.title` 会漏掉「（SFTP）」等后缀，\n\
              与标签栏对不上。"
+        );
+    }
+
+    /// 2026-10-30 用户反馈「sftp 拆分栏的小绿灯和 tab 不一致」。
+    ///
+    /// 窗格标题条原来只问 `is_live()`（要有终端），SFTP 标签没有终端 ⇒ 同一张标签
+    /// 在标签栏是绿点、在窗格标题上是灰点。两处必须用同一个判据 `is_healthy`。
+    #[test]
+    fn the_pane_dot_uses_the_same_predicate_as_the_tab_bar() {
+        let code = prod(include_str!("split_actions.rs"));
+        let at = code
+            .find("fn render_pane_header(")
+            .expect("找不到分屏窗格的标题条");
+        let body = &code[at..];
+        let end = body.find("\n    fn ").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("tab.is_healthy()"),
+            "窗格状态点必须用 `is_healthy`（终端可用 **或** SFTP 标签可用），\n\
+             只问 `is_live()` 会把 SFTP 标签画成灰点。"
         );
     }
 }
