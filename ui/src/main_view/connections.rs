@@ -225,63 +225,53 @@ impl MainView {
 
     /// 右键「打开 SFTP」（2026-10-26，参考 shell-rs 的独立 SFTP 连接）。
     ///
-    /// 两条路径，优先复用：
-    /// 1. **已有可用会话**（该 profile 的 Tab 已连上且带 SFTP 通道）→ 直接切过去。
-    ///    复用的是哪种会话决定落点：**独立 SFTP 标签页**留在原地补一次首扫；
-    ///    **普通终端会话**则切到左侧「文件」面板（终端标签里没有文件窗格）。
-    /// 2. **没有会话** → 置「只要 SFTP 通道」意图后走正常连接收口：
-    ///    `connect_in_background` 只申请 sftp 子系统（服务器上不需要 shell，
-    ///    堡垒机那种只放 SFTP 的环境也能用）。连上后 `connect_results` 的
-    ///    `sftp_only` 分支会发现这是「已保存连接的 SFTP 意图」，于是**留在自己的
-    ///    标签页**里 —— 那一页本身就是 WinSCP 式双窗格（`crate::sftp_tab`）。
+    /// 两条路径，**落地永远是一张看得见的 SFTP 双窗格标签页**：
+    /// 1. 这条连接已经有这样一张标签（`TabEntry::is_sftp_live`）→ 切过去 + 补一次首扫，
+    ///    不重复连。
+    /// 2. 否则 → 置「只要 SFTP 通道」意图后走正常连接收口：`connect_in_background` 只申请
+    ///    sftp 子系统（服务器上不需要 shell，堡垒机那种只放 SFTP 的环境也能用）。连上后
+    ///    `connect_results` 的 `sftp_only` 分支落在它自己的标签页里 —— 那一页本身就是
+    ///    WinSCP 式双窗格（`crate::sftp_tab`）。
+    ///
+    /// **2026-10-30 修「右键打开 SFTP 无反应」**：旧版第 1 条按「有 sftp_tx 就算可复用」
+    /// 找会话，于是命中一条**普通终端会话**，然后 —— 因为左侧「文件」面板 2026-10-28
+    /// 已撤 —— 只能走 `external_sftp_first_scan`：家目录确实列进了 `io.files_rows`，
+    /// 但终端标签里没有一处渲染它。用户看到的正是「点了没反应」。现在判据收紧成
+    /// `is_sftp_live`（无终端 + 已连上 + 有通道），命中不了就新开一条 SFTP 连接。
+    ///
+    /// 代价说明：同一条连接若已开着终端，这里会**多一个会话**（各一条 SSH 连接）。
+    /// 换来的是「一定会落到画面上」——终端标签和文件窗格不是同一块屏，没有第二条路。
     ///
     /// 缺凭据时仍走「打开连接对话框 + 保存后接着连」那条既有路径（意图已置位，
     /// 保存后由 `dialog_save` 带着它再发起连接）。
     pub fn open_sftp(&mut self, profile_id: &str, w: &mut Window, cx: &mut Context<Self>) {
-        // 1) 复用已有会话
+        // 1) 已经有 SFTP 双窗格标签：切过去，补一次首扫
         let live = self
             .tabs_state
             .tabs
             .iter()
-            .find(|t| {
-                t.session.profile_id.as_deref() == Some(profile_id)
-                    && t.session.sftp_tx.is_some()
-                    && t.session.state == SessionState::Connected
-            })
+            .find(|t| t.session.profile_id.as_deref() == Some(profile_id) && t.is_sftp_live())
             .map(|t| t.session.id.clone());
         if let Some(sid) = live {
-            // 复用的是哪种会话，决定「打开 SFTP」往哪儿落：
-            // - **独立 SFTP 标签页**：留在它自己那张标签里（它本身就是双窗格），
-            //   只补一次首扫；
-            // - **普通终端会话**：终端标签里没有文件窗格，按旧口径切到左侧「文件」面板。
-            let sftp_tab = self
+            self.tabs_state.active = Some(sid.clone());
+            self.tabs_state.pending_focus = true;
+            if let Some(tx) = self
                 .tabs_state
                 .tabs
                 .iter()
                 .find(|t| t.session.id == sid)
-                .is_some_and(|t| t.is_sftp_live());
-            self.tabs_state.active = Some(sid.clone());
-            self.tabs_state.pending_focus = true;
-            if sftp_tab {
-                if let Some(tx) = self
-                    .tabs_state
-                    .tabs
-                    .iter()
-                    .find(|t| t.session.id == sid)
-                    .and_then(|t| t.session.sftp_tx.clone())
-                {
-                    self.io.files_loading = true;
-                    self.io.files_loaded_session = Some(sid);
-                    let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
-                }
-                cx.notify();
-            } else {
-                // 与外部 `sftp://` 连上后的落地完全同一手法：切到文件面板 + 扫家目录。
-                self.external_sftp_first_scan(None, cx);
+                .and_then(|t| t.session.sftp_tx.clone())
+            {
+                self.io.files_loading = true;
+                // 远端浏览上下文是全局单份：这里记下「这批行属于哪条会话」，
+                // 与 `connect_results` 的 `sftp_only` 分支同一口径。
+                self.io.files_loaded_session = Some(sid);
+                let _ = tx.try_send(rustshell_core::sftp::SftpCmd::ListHome);
             }
+            cx.notify();
             return;
         }
-        // 2) 没有会话：置意图后走正常连接
+        // 2) 没有这样的标签：置意图后开一条只带 sftp 子系统的连接
         self.conn_ui
             .sftp_only_profiles
             .insert(profile_id.to_string());
@@ -1489,10 +1479,22 @@ impl MainView {
             cx.notify();
             return;
         };
-        // 外部链接重连仍守「一条连接一个通道」：`sftp://` 只要 sftp、`ssh://` 只要 shell。
-        // 已保存的连接同理：右键「打开 SFTP」发起的那条不是外部链接，它的意图记在
-        // `sftp_only_profiles` 里 —— 重连时必须跟着走，否则重连成功会突然长出终端。
-        let sftp_only = self.conn_ui.sftp_only_profiles.contains(&pid);
+        // 通道判定按**这张标签**来，而不是 profile 级意图。
+        //
+        // 2026-10-30 起同一条连接可以同时挂着「终端标签」与「SFTP 标签」（右键
+        // 「打开 SFTP」不再复用终端会话），若仍按 profile 判，SFTP 意图会让
+        // **终端断线重连**变成「只开 sftp」—— 那一屏终端凭空消失，且没有任何报错。
+        // 判据因此收紧成「这张标签自己没有终端」：终端标签（断连现场里 `terminal`
+        // 还在）永远走原来的通道，SFTP 标签才走 sftp-only。
+        let (tab_has_terminal, tab_has_sftp) = self
+            .tabs_state
+            .tabs
+            .iter()
+            .find(|t| t.session.id == id)
+            .map(|t| (t.terminal.is_some(), t.session.sftp_tx.is_some()))
+            .unwrap_or((false, false));
+        let sftp_only = !tab_has_terminal
+            && (tab_has_sftp || self.conn_ui.sftp_only_profiles.contains(&pid));
         let channels = if sftp_only {
             SshChannels::SftpOnly
         } else {
@@ -1806,6 +1808,61 @@ mod tests {
         assert!(
             main.matches("self.mount_terminal(").count() >= 1,
             "SSH 侧必须经由 `mount_terminal` 造视图（重连换屏 / 新标签）。"
+        );
+    }
+
+    /// 2026-10-30 修「右键打开 SFTP 无反应」的回归护栏。
+    ///
+    /// 旧的 `open_sftp` 用「有 sftp_tx 就算可复用」找会话，于是会命中一条**普通终端
+    /// 会话**，然后调 `external_sftp_first_scan`：家目录确实列进了 `io.files_rows`，
+    /// 但终端标签里没有一处渲染它（左侧「文件」面板 2026-10-28 已撤）—— 用户看到的
+    /// 就是点了没反应。判据必须收紧到 `is_sftp_live`（无终端 + 已连上 + 有通道），
+    /// 命中不了就新开一条 SFTP 连接，而不是往一条画不出文件的会话上发命令。
+    #[test]
+    fn open_sftp_only_lands_on_a_dual_pane_tab() {
+        let code = prod(include_str!("connections.rs"));
+        let at = code
+            .find("pub fn open_sftp(")
+            .expect("找不到 `open_sftp`（右键「打开 SFTP」的落地函数）");
+        let body = &code[at..];
+        let end = body
+            .find("pub(super) fn connect_profile_request(")
+            .expect("找不到 `connect_profile_request`（`open_sftp` 的下半段）");
+        let body = &body[..end];
+
+        assert!(
+            body.contains("t.is_sftp_live()"),
+            "判据必须是 `is_sftp_live`（无终端 + 已连上 + 有 sftp_tx）：\n\
+             退回「有 sftp_tx 就算可复用」会命中普通终端会话，而终端标签画不出文件窗格。"
+        );
+        assert!(
+            !body.contains("external_sftp_first_scan"),
+            "`open_sftp` 不该再走 `external_sftp_first_scan` —— 它只往 `io.files_rows` 里塞数据，\n\
+             终端标签里没有任何一处渲染，表现就是「右键打开 SFTP 无反应」。"
+        );
+        assert!(
+            body.contains("sftp_only_profiles"),
+            "没有 SFTP 标签时必须置「只要 SFTP」意图后新开一条连接，否则等于什么都没发生。"
+        );
+    }
+
+    /// 2026-10-30：同一条连接从此可以同时挂着「终端标签」与「SFTP 标签」，
+    /// 于是重连的通道判定不能再按 profile 级意图来。
+    ///
+    /// 按 profile 判的后果很隐蔽：用户右键「打开 SFTP」之后，终端标签一旦掉线重连，
+    /// `sftp_only_profiles` 里那条意图还在 ⇒ 重连只申请 sftp 子系统 ⇒ 那一屏终端
+    /// 凭空消失（不报错、不提示，只是「重连完终端没了」）。判据必须看这张标签自己
+    /// 有没有终端。
+    #[test]
+    fn reconnect_picks_channels_from_the_tab_not_the_profile_intent() {
+        let code = prod(include_str!("connections.rs"));
+        assert!(
+            code.contains("let (tab_has_terminal, tab_has_sftp) = self"),
+            "重连没有按「这张标签」取通道判据 —— 同 profile 的终端标签会被重连成 sftp-only。"
+        );
+        assert!(
+            code.contains("let sftp_only = !tab_has_terminal"),
+            "`sftp_only` 必须先看这张标签有没有终端，再考虑 profile 级意图。"
         );
     }
 }
