@@ -288,7 +288,9 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
     let remote_sel = m.io.sftp_remote_sel.clone();
     // 远端条目的右键菜单要现读设置（与文件面板同一口径）
     let verify = m.settings.sftp_verify_downloads;
-    let sort = m.io.sftp_sort;
+    // 两侧各一份排序口径（点哪边的列头只动哪边）
+    let spec_local = m.io.sftp_sort_local;
+    let spec_remote = m.io.sftp_sort_remote;
 
     // ---- 两条地址栏：**分别贴在各自那一栏的顶上** ----
     //
@@ -426,7 +428,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
     ));
     // 排序：用**引用**排（几百行时避免每帧 clone 整份行数据）
     let mut local_order: Vec<&LocalRow> = m.io.sftp_local_rows.iter().collect();
-    sort_local(&mut local_order, sort);
+    sort_local(&mut local_order, spec_local);
     for row in local_order {
         let selected = local_sel.as_deref() == Some(row.path.to_string_lossy().as_ref());
         let path = row.path.clone();
@@ -502,7 +504,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         ));
     }
     let mut remote_order: Vec<&crate::files_panel::FileRow> = remote_rows.iter().collect();
-    sort_remote(&mut remote_order, sort);
+    sort_remote(&mut remote_order, spec_remote);
     for row in remote_order {
         let selected = remote_sel.as_deref() == Some(row.path.as_str());
         let path = row.path.clone();
@@ -624,7 +626,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                             .h_full()
                             .w_full()
                             .child(local_bar)
-                            .child(local_header(&t, sort, cx))
+                            .child(local_header(&t, spec_local, cx))
                             .child(local_list),
                     ),
                 )
@@ -634,7 +636,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                             .h_full()
                             .w_full()
                             .child(remote_bar)
-                            .child(remote_header(&t, sort, cx))
+                            .child(remote_header(&t, spec_remote, cx))
                             .child(remote_list),
                     ),
                 ),
@@ -790,6 +792,17 @@ fn sort_remote(rows: &mut Vec<&crate::files_panel::FileRow>, spec: SortSpec) {
     });
 }
 
+/// 排序作用在哪一侧。
+///
+/// 2026-10-30 用户要求「排序只需要触发对应窗口」：此前两个窗格共用一份
+/// `io.sftp_sort`，点左半边的列头会把右边也一起改掉 —— 两个目录各看各的，
+/// 排序没有理由联动。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SftpSide {
+    Local,
+    Remote,
+}
+
 /// 列头（本地）：名称 / 大小 / 修改时间，三列都可点排序。
 fn local_header(
     t: &rustshell_core::theme::ThemeTokens,
@@ -805,12 +818,13 @@ fn local_header(
         .py_1()
         .border_b_1()
         .border_color(hex(t.border_subtle))
-        .child(head_cell(rustshell_core::i18n::t("名称"), None, Some(SortKey::Name), sort, t, cx))
+        .child(head_cell(rustshell_core::i18n::t("名称"), None, Some(SortKey::Name), sort, SftpSide::Local, t, cx))
         .child(head_cell(
             rustshell_core::i18n::t("大小"),
             Some(COL_SIZE),
             Some(SortKey::Size),
             sort,
+            SftpSide::Local,
             t,
             cx,
         ))
@@ -819,6 +833,7 @@ fn local_header(
             Some(COL_MTIME),
             Some(SortKey::Time),
             sort,
+            SftpSide::Local,
             t,
             cx,
         ))
@@ -842,12 +857,13 @@ fn remote_header(
         .py_1()
         .border_b_1()
         .border_color(hex(t.border_subtle))
-        .child(head_cell(rustshell_core::i18n::t("名称"), None, Some(SortKey::Name), sort, t, cx))
+        .child(head_cell(rustshell_core::i18n::t("名称"), None, Some(SortKey::Name), sort, SftpSide::Remote, t, cx))
         .child(head_cell(
             rustshell_core::i18n::t("大小"),
             Some(COL_SIZE),
             Some(SortKey::Size),
             sort,
+            SftpSide::Remote,
             t,
             cx,
         ))
@@ -856,15 +872,17 @@ fn remote_header(
             Some(COL_MTIME),
             Some(SortKey::Time),
             sort,
+            SftpSide::Remote,
             t,
             cx,
         ))
-        .child(head_cell(rustshell_core::i18n::t("权限"), Some(COL_MODE), None, sort, t, cx))
+        .child(head_cell(rustshell_core::i18n::t("权限"), Some(COL_MODE), None, sort, SftpSide::Remote, t, cx))
         .child(head_cell(
             rustshell_core::i18n::t("所有者"),
             Some(COL_OWNER),
             None,
             sort,
+            SftpSide::Remote,
             t,
             cx,
         ))
@@ -879,6 +897,7 @@ fn head_cell(
     width: Option<f32>,
     sort_key: Option<SortKey>,
     sort: SortSpec,
+    side: SftpSide,
     t: &rustshell_core::theme::ThemeTokens,
     cx: &mut Context<MainView>,
 ) -> AnyElement {
@@ -903,10 +922,18 @@ fn head_cell(
     // 那个分支不是同一类型 —— 所以在这里各收各的 `AnyElement`。
     match sort_key {
         Some(key) => cell
-            .id(SharedString::from(format!("sftp-sort-{key:?}-{active}")))
+            // id 里带 side：两栏各有一组同名列表头，共用一个 id 会让点击落到错的
+            // 那一格上（gpui 的元素 id 是全局的）。
+            .id(SharedString::from(format!("sftp-sort-{side:?}-{key:?}-{active}")))
             .cursor_pointer()
             .on_click(cx.listener(move |m, _e, _w, cx| {
-                m.io.sftp_sort = m.io.sftp_sort.toggled(key);
+                // 只改**这一侧**的口径（2026-10-30 用户要求「排序只需要触发对应窗口」）。
+                match side {
+                    SftpSide::Local => m.io.sftp_sort_local = m.io.sftp_sort_local.toggled(key),
+                    SftpSide::Remote => {
+                        m.io.sftp_sort_remote = m.io.sftp_sort_remote.toggled(key)
+                    }
+                }
                 cx.notify();
             }))
             .into_any_element(),
@@ -1234,9 +1261,9 @@ mod tests {
         );
         // 且地址栏排在列头之前（顺序即版式：地址栏在最上面）
         let local_bar = code.find(".child(local_bar)").unwrap();
-        let local_header = code.find(".child(local_header(&t, sort, cx))").unwrap();
+        let local_header = code.find(".child(local_header(&t, spec_local, cx))").unwrap();
         let remote_bar = code.find(".child(remote_bar)").unwrap();
-        let remote_header = code.find(".child(remote_header(&t, sort, cx))").unwrap();
+        let remote_header = code.find(".child(remote_header(&t, spec_remote, cx))").unwrap();
         assert!(
             local_bar < local_header && remote_bar < remote_header,
             "地址栏必须在列头之上"
@@ -1427,6 +1454,29 @@ mod tests {
         assert!(
             !code.contains('▲') && !code.contains('▼'),
             "列头不许再拼 ▲/▼ 字符：字形宽窄不一，两列挨着时对不齐"
+        );
+    }
+
+    /// 2026-10-30 用户要求「排序只需要触发对应窗口，另外一个不用触发」。
+    ///
+    /// 判据是**两份独立口径**：点左栏列头只写 `sftp_sort_local`，点右栏只写
+    /// `sftp_sort_remote`。共用一份时，左边按大小排会顺手把右边也改掉 ——
+    /// 两个目录各看各的，排序没有理由联动。
+    #[test]
+    fn each_pane_owns_its_own_sort_state() {
+        let code = crate::test_support::prod(include_str!("sftp_tab.rs"));
+        assert!(
+            code.contains("m.io.sftp_sort_local = m.io.sftp_sort_local.toggled(key)")
+                && code.contains("m.io.sftp_sort_remote = m.io.sftp_sort_remote.toggled(key)"),
+            "两侧必须各写各的排序口径"
+        );
+        assert!(
+            !code.contains("m.io.sftp_sort = "),
+            "又出现了共用的 `sftp_sort` —— 点一侧的列头会把另一侧也改掉"
+        );
+        assert!(
+            code.contains("side: SftpSide,"),
+            "`head_cell` 必须收 `side`，否则它无从知道该写哪一侧"
         );
     }
 }

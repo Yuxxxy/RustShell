@@ -792,8 +792,13 @@ pub struct DialogIoState {
     pub sftp_local_path_sync: Option<String>,
     /// 用户正在本地路径框里手输
     pub sftp_local_path_typed: bool,
-    /// 两个窗格共用的排序口径（点列头切换）。用户要求按时间 / 名称 / 大小排。
-    pub sftp_sort: crate::sftp_tab::SortSpec,
+    /// **本地**窗格的排序口径（点左半边的列头切换）。
+    ///
+    /// 2026-10-30 用户要求「排序只需要触发对应窗口」：此前两侧共用一份，点左边列头
+    /// 会把右边也一起改掉 —— 两个目录各看各的，排序没有理由联动。
+    pub sftp_sort_local: crate::sftp_tab::SortSpec,
+    /// **远端**窗格的排序口径（点右半边的列头切换）。
+    pub sftp_sort_remote: crate::sftp_tab::SortSpec,
 
     /// 分组名对话框正文视图（自带名称输入框，见 `GroupNameDialogView`）
     pub group_name_body: Entity<GroupNameDialogView>,

@@ -1074,12 +1074,17 @@ fn render_connect_placeholder(
             rustshell_core::i18n::t("已断开"),
         )
     } else if sftp_only {
-        // 外部 `sftp://`：会话已建立，但这条连接只开了 sftp 子系统 ——
-        // 没有 PTY，画终端只会是一块空白；用户要的文件面板由连接落地时打开。
+        // 单通道 SFTP（外部 `sftp://`，以及 2026-10-26 起右键「打开 SFTP」发起的那条）：
+        // 没有 PTY，画终端只会是一块空白。
+        //
+        // 这张卡只在**还没连上**的那几秒出现 —— 连上后标签页立刻换成双窗格
+        // （`crate::sftp_tab`），所以文案说的是「正在建立」而不是「已连接」
+        // （2026-10-30 顺手改：左侧「文件」面板撤掉之后，原来那句
+        // 「文件面板已打开，可在此浏览与传输文件」已经没有对应物了）。
         (
             IconName::FolderClosed,
             hex(t.accent),
-            rustshell_core::i18n::t("SFTP 已连接"),
+            rustshell_core::i18n::t("正在建立 SFTP 连接…"),
         )
     } else if local {
         (
@@ -1128,10 +1133,6 @@ fn render_connect_placeholder(
         // 断开后不显示「已等待 N 秒」，而是给出恢复入口（Tab 右键「连接」）
         card = card.child(div().text_size(px(11.5)).text_color(hex(t.fg_muted)).child(
             SharedString::from(rustshell_core::i18n::t("会话已终止，右键标签可重新连接")),
-        ));
-    } else if sftp_only {
-        card = card.child(div().text_size(px(11.5)).text_color(hex(t.fg_muted)).child(
-            SharedString::from(rustshell_core::i18n::t("文件面板已打开，可在此浏览与传输文件")),
         ));
     } else if let Some(secs) = started.map(|s| s.elapsed().as_secs()) {
         card = card.child(div().text_size(px(11.5)).text_color(hex(t.fg_muted)).child(
@@ -1916,7 +1917,8 @@ impl MainView {
                 sftp_local_path_input,
                 sftp_local_path_sync: None,
                 sftp_local_path_typed: false,
-                sftp_sort: crate::sftp_tab::SortSpec::default(),
+                sftp_sort_local: crate::sftp_tab::SortSpec::default(),
+                sftp_sort_remote: crate::sftp_tab::SortSpec::default(),
                 group_name_body,
                 // 定时任务：定义与运行记录从磁盘读，不在这里起调度线程 ——
                 // 调度线程首次显示任务面板（或立即执行）时才懒建，避免只想用终端的
