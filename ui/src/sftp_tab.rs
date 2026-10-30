@@ -484,6 +484,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         let tx_up = tx.clone();
         remote_rows_el = remote_rows_el.child(remote_row_of(
             "sftp-remote-up".into(),
+            Some(LucideIcon::ArrowLeft),
             "..".into(),
             SharedString::default(),
             SharedString::default(),
@@ -555,6 +556,7 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         });
         remote_rows_el = remote_rows_el.child(remote_row_of(
             SharedString::from(format!("sftp-r-{}", row.path)),
+            None,
             name,
             row.size.clone(),
             row.mtime.clone(),
@@ -1000,6 +1002,12 @@ fn local_row_of(
 /// 并挂该条目的右键菜单（下载 / 重命名 / 删除 / 新建… / 复制路径）。
 fn remote_row_of(
     id: SharedString,
+    // `Some(..)` = 这一行用指定图标（`..` 行用左侧那枚箭头）；
+    // `None` = 按 `is_dir` 推（目录 = 文件夹、其余 = 文件）。
+    //
+    // 2026-10-30 用户反馈「两侧 `..` 的图标不一致」：左栏 `..` 走 `ArrowLeft`，
+    // 右栏因为 `is_dir = false` 落到了「文件」图标 —— 同一个动作两边两个图标。
+    icon: Option<LucideIcon>,
     name: SharedString,
     size: SharedString,
     mtime: SharedString,
@@ -1011,16 +1019,13 @@ fn remote_row_of(
     on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     menu: Option<EntryMenu>,
 ) -> AnyElement {
+    let icon = icon.unwrap_or(if is_dir {
+        LucideIcon::Folder
+    } else {
+        LucideIcon::File
+    });
     let row = row_base(id, selected, t)
-        .child(icon_of(
-            if is_dir {
-                LucideIcon::Folder
-            } else {
-                LucideIcon::File
-            },
-            is_dir,
-            t,
-        ))
+        .child(icon_of(icon, is_dir, t))
         .child(name_cell(name, t))
         .child(fixed_cell(size, COL_SIZE, t))
         .child(fixed_cell(mtime, COL_MTIME, t))
@@ -1477,6 +1482,29 @@ mod tests {
         assert!(
             code.contains("side: SftpSide,"),
             "`head_cell` 必须收 `side`，否则它无从知道该写哪一侧"
+        );
+    }
+
+    /// 2026-10-30 用户要求「两侧 `..` 的图标不一致，统一改成左侧的箭头标志」。
+    ///
+    /// 左栏的 `..` 一直是 `ArrowLeft`，右栏因为把 `is_dir` 传成 `false`，落到了
+    /// `remote_row_of` 里「不是目录就是文件」那条兜底 —— 同一个动作两个图标。
+    /// 现在右栏也给 `Some(ArrowLeft)`。
+    #[test]
+    fn both_up_rows_use_the_same_arrow_icon() {
+        let code = crate::test_support::prod(include_str!("sftp_tab.rs"));
+        assert!(
+            code.contains("\"sftp-local-up\".into(),\n        LucideIcon::ArrowLeft,"),
+            "左栏 `..` 的箭头图标不见了"
+        );
+        assert!(
+            code.contains("\"sftp-remote-up\".into(),\n            Some(LucideIcon::ArrowLeft),"),
+            "右栏 `..` 没用箭头图标 —— 又回落到 `is_dir=false` 的「文件」图标了"
+        );
+        assert_eq!(
+            code.matches("LucideIcon::ArrowLeft").count(),
+            2,
+            "`..` 的箭头只该有这两处（左栏一处、右栏一处）"
         );
     }
 }
