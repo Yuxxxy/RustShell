@@ -302,5 +302,72 @@ pub(crate) fn display_tab_title(tab: &TabEntry, conn_store: &ConnectionStore) ->
             }
         }
     }
+    // 类型标记（2026-10-30 用户要求「tab 页增加标记或名称区分 ssh 还是 sftp」）：
+    // SFTP 标签连上后与终端标签**长得一样**（都只有名字 + 状态点），而两件事在该
+    // 标签里的操作完全不同。用文字后缀而不是图标 —— 2026-09-17 用户明确要求
+    // 「tab 标题去掉图标」（`tab_bar::tests::tab_titles_carry_no_kind_icon` 盯着）。
+    //
+    // 只给 SFTP 打标：SSH 是默认形态，人人都知道「没标记的那条是终端」；给两边
+    // 都加后缀会把本来就不宽的标签再吃掉一截。
+    if tab.is_sftp_live() {
+        title.push_str(&rustshell_core::i18n::ts(
+            "（SFTP）".to_string(),
+            " (SFTP)".to_string(),
+        ));
+    }
     title
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一个「看起来像那么回事」的标签：SFTP 版 = 无终端 + 已连上 + 有 sftp 通道。
+    fn tab(title: &str, sftp: bool) -> TabEntry {
+        let mut session = rustshell_core::session::SessionHandle::pending(
+            format!("id-{title}"),
+            rustshell_core::session::SessionKind::Ssh,
+            title.to_string(),
+            Some("p1".to_string()),
+        );
+        session.state = rustshell_core::session::SessionState::Connected;
+        if sftp {
+            let (tx, _rx) = flume::bounded(1);
+            session.sftp_tx = Some(tx);
+        }
+        TabEntry {
+            session,
+            terminal: None,
+            scroll: None,
+            connect_error: None,
+            connect_started: None,
+            dead: None,
+            retry: None,
+        }
+    }
+
+    /// 2026-10-30 用户要求「tab 页可以增加标记或名称区分 ssh 还是 sftp」。
+    ///
+    /// 用**文字后缀**而不是图标：2026-09-17 用户明确要求过「tab 标题去掉图标」，
+    /// `tab_bar::tests::tab_titles_carry_no_kind_icon` 正盯着那条。
+    ///
+    /// 只给 SFTP 打标 —— SSH 是默认形态，给两边都加后缀会把本来就不宽的标签再吃掉一截。
+    #[test]
+    fn an_sftp_tab_says_so_in_its_title() {
+        let store = rustshell_core::connections::ConnectionStore::default();
+
+        let sftp = display_tab_title(&tab("web-01", true), &store);
+        assert!(
+            sftp.ends_with("（SFTP）") || sftp.ends_with(" (SFTP)"),
+            "SFTP 标签的标题没有类型标记：{sftp}"
+        );
+
+        // 反例：同样「没有终端」但没有 sftp 通道（终端标签在建连时就是这个形状），
+        // 一个字都不该加。
+        let plain = display_tab_title(&tab("web-01", false), &store);
+        assert!(
+            !plain.contains("SFTP"),
+            "终端标签不该带 SFTP 标记（SSH 是默认形态）：{plain}"
+        );
+    }
 }
