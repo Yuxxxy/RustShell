@@ -48,7 +48,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 ),
         );
 
-    let rows: Vec<(String, String, bool, bool, SessionKind)> = m
+    let rows: Vec<(String, String, bool, bool, SessionKind, bool)> = m
         .tabs_state
         .tabs
         .iter()
@@ -59,14 +59,22 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                 t.session.state == SessionState::Connected,
                 m.tabs_state.active.as_deref() == Some(&t.session.id.clone()),
                 t.session.kind,
+                // 2026-10-30：SFTP 标签（无终端 + 已连上 + 有通道）在这一列里也
+                // 得说清自己是 SFTP —— 它的 `kind` 仍是 `Ssh`，只按 kind 打标会写成
+                // 「SSH」，而那一列的操作（传输文件）跟终端完全不是一回事。
+                t.is_sftp_live(),
             )
         })
         .collect();
 
-    for (id, title, connected, is_active, kind) in rows {
-        let kind_label = match kind {
-            SessionKind::Local => rustshell_core::i18n::t("本地"),
-            SessionKind::Ssh => "SSH",
+    for (id, title, connected, is_active, kind, is_sftp) in rows {
+        let kind_label = if is_sftp {
+            "SFTP"
+        } else {
+            match kind {
+                SessionKind::Local => rustshell_core::i18n::t("本地"),
+                SessionKind::Ssh => "SSH",
+            }
         };
         let id_click = id.clone();
         let id_menu = id.clone();

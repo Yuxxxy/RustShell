@@ -719,10 +719,17 @@ impl MainView {
         let tok = crate::theme::current(cx);
         let (title, status_color) = match self.tabs_state.tabs.iter().find(|t| t.session.id == id) {
             Some(tab) => {
-                let title = if tab.session.title.trim().is_empty() {
+                // 取**展示标题**，与标签栏同一份：`display_tab_title` 会补上「（SFTP）」
+                // 类型标记、「（连接配置已删除）」与「（重连中 n/m）」。
+                //
+                // 2026-10-30 用户反馈「拆分的标签名称和 sftp 标签名称对不上」：这里
+                // 原来直接读 `session.title`，于是同一个标签在标签栏叫「test（SFTP）」、
+                // 在分屏窗格标题条上叫「test」—— 两处指同一个东西却叫两个名字。
+                let shown = super::display_tab_title(tab, &self.conn_store);
+                let title = if shown.trim().is_empty() {
                     rustshell_core::i18n::t("终端").to_string()
                 } else {
-                    tab.session.title.clone()
+                    shown
                 };
                 // 断连态必须是**红点**而不是绿点：终端视图在断连时刻意留着，
                 // 用 `terminal.is_some()` 判会把一个已死的会话画成健康状态。
@@ -1088,6 +1095,27 @@ mod tests {
         assert!(
             code.contains("pane_context_menu(menu)"),
             "`pane_context_menu` 没有挂到窗格上（`context_menu` 回调），改了等于没改。"
+        );
+    }
+
+    /// 2026-10-30 用户反馈「拆分的标签名称和 sftp 标签名称对不上」。
+    ///
+    /// 分屏窗格顶部那条标题原来直接读 `session.title`，而标签栏用的是
+    /// `display_tab_title`（会补「（SFTP）」/「（连接配置已删除）」/「（重连中 n/m）」）——
+    /// 于是同一个标签在两处叫两个名字。两处必须取同一份派生。
+    #[test]
+    fn the_pane_header_shows_the_same_title_as_the_tab_bar() {
+        let code = prod(include_str!("split_actions.rs"));
+        let at = code
+            .find("fn render_pane_header(")
+            .expect("找不到分屏窗格的标题条");
+        let body = &code[at..];
+        let end = body.find("\n    fn ").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("display_tab_title(tab, &self.conn_store)"),
+            "窗格标题必须走 `display_tab_title`：直接读 `session.title` 会漏掉「（SFTP）」等后缀，\n\
+             与标签栏对不上。"
         );
     }
 }
