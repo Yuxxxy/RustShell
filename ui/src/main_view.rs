@@ -1919,6 +1919,9 @@ impl MainView {
                 sftp_local_path_typed: false,
                 sftp_sort_local: crate::sftp_tab::SortSpec::default(),
                 sftp_sort_remote: crate::sftp_tab::SortSpec::default(),
+                sftp_cols_local: crate::sftp_tab::COL_DEFAULTS_LOCAL,
+                sftp_cols_remote: crate::sftp_tab::COL_DEFAULTS_REMOTE,
+                sftp_col_drag: None,
                 group_name_body,
                 // 定时任务：定义与运行记录从磁盘读，不在这里起调度线程 ——
                 // 调度线程首次显示任务面板（或立即执行）时才懒建，避免只想用终端的

@@ -102,24 +102,20 @@ pub fn entry_mode(entry: &SftpEntry) -> String {
     s
 }
 
-/// 属主 / 属组展示串（`user:group`）。
+/// 属主展示串（**只有属主**，不含属组）。
 ///
-/// 优先用服务端给的名字；只给数字 id 时退回 `uid:gid`（`ls -n` 的效果）；
-/// 两者都没有返回空串。任一侧缺失时用 `?` 占位，保持 `x:y` 的形态可辨。
+/// 2026-10-30 用户要求「所有者/组取值与 shell-rs 一致」：那边「所有者」一列写的是
+/// 用户名（截图里是 `testuser`），不是 `user:group`。列头叫「所有者」，塞两段进去
+/// 既对不上列名，也在窄列里先被截掉一半。
+///
+/// 优先用服务端给的名字；只给数字 id 时退回 `uid`（`ls -n` 的效果）；都没有返回空串。
 pub fn entry_owner(entry: &SftpEntry) -> String {
-    let side = |name: &Option<String>, id: Option<u32>| -> Option<String> {
-        name.clone()
-            .filter(|s| !s.is_empty())
-            .or_else(|| id.map(|n| n.to_string()))
-    };
-    match (side(&entry.user, entry.uid), side(&entry.group, entry.gid)) {
-        (None, None) => String::new(),
-        (u, g) => format!(
-            "{}:{}",
-            u.unwrap_or_else(|| "?".into()),
-            g.unwrap_or_else(|| "?".into())
-        ),
-    }
+    entry
+        .user
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| entry.uid.map(|n| n.to_string()))
+        .unwrap_or_default()
 }
 
 /// 远端路径拼接（SFTP 一律 `/` 分隔；目录已带尾斜杠时不重复补）。
@@ -2002,7 +1998,7 @@ mod tests {
             group: Some("root".into()),
             ..SftpEntry::new("a", false, 0, 0)
         };
-        assert_eq!(entry_owner(&with_names), "root:root");
+        assert_eq!(entry_owner(&with_names), "root");
 
         let ids_only = SftpEntry {
             uid: Some(0),
@@ -2011,8 +2007,8 @@ mod tests {
         };
         assert_eq!(
             entry_owner(&ids_only),
-            "0:0",
-            "只有数字 id 时退回 ls -n 口径"
+            "0",
+            "只有数字 id 时退回 `ls -n` 的 uid（不再拼 `uid:gid`）"
         );
 
         let half = SftpEntry {
@@ -2020,7 +2016,7 @@ mod tests {
             gid: Some(1000),
             ..SftpEntry::new("a", false, 0, 0)
         };
-        assert_eq!(entry_owner(&half), "ubuntu:1000");
+        assert_eq!(entry_owner(&half), "ubuntu");
 
         let unknown = SftpEntry::new("a", false, 0, 0);
         assert_eq!(entry_owner(&unknown), "", "两者都没有时留白，不画 `?:?`");

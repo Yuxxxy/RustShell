@@ -799,6 +799,12 @@ pub struct DialogIoState {
     pub sftp_sort_local: crate::sftp_tab::SortSpec,
     /// **远端**窗格的排序口径（点右半边的列头切换）。
     pub sftp_sort_remote: crate::sftp_tab::SortSpec,
+    /// 本地窗格的列宽：`[名称, 大小, 修改时间]`（类型是最后一列，吃剩余空间）。
+    pub sftp_cols_local: [f32; 3],
+    /// 远端窗格的列宽：`[名称, 大小, 修改时间, 类型, 权限]`（所有者吃剩余空间）。
+    pub sftp_cols_remote: [f32; 5],
+    /// 正在拖的列宽：`(起点指针 x, 哪一侧, 第几列)`。`None` = 没在拖。
+    pub sftp_col_drag: Option<(f32, crate::sftp_tab::SftpSide, usize)>,
 
     /// 分组名对话框正文视图（自带名称输入框，见 `GroupNameDialogView`）
     pub group_name_body: Entity<GroupNameDialogView>,

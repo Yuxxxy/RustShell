@@ -881,6 +881,7 @@ fn translate(zh: &'static str) -> &'static str {
             "Handshakes with the proxy before opening an SSH connection (HTTP CONNECT / SOCKS5)."
         }
         "类型" => "Type",
+        "文件夹" => "Folder",
         "HTTP CONNECT 最通用；SOCKS5 支持域名直通。" => {
             "HTTP CONNECT is the most compatible; SOCKS5 passes domain names through."
         }

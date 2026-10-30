@@ -1211,7 +1211,9 @@ mod tests {
         assert_eq!(row.size.as_ref(), "", "目录不显示大小");
         assert_eq!(row.mtime.as_ref(), "09-13 12:26");
         assert_eq!(row.mode.as_ref(), "drwxr-xr-x", "目录的权限串首字符是 d");
-        assert_eq!(row.owner.as_ref(), "root:root");
+        // 2026-10-30：`entry_owner` 改成只给属主（对齐 shell-rs 的「所有者」列），
+        // 不再拼 `user:group`。
+        assert_eq!(row.owner.as_ref(), "root");
 
         let file = rustshell_core::sftp::SftpEntry {
             permissions: Some(0o644),
