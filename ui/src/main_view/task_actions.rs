@@ -274,11 +274,11 @@ impl MainView {
             cx.notify();
             return;
         };
-        // 「带用户过去看」：与 `ai_passthrough` 同一手法 —— 进 AI 面板、
-        // 展开终端右侧那一列、切到这条会话。不落盘（那是用户显式开合的事）。
+        // 「带用户过去看」：进 AI 面板、展开终端右侧那一列、切到这条会话。
+        // 开合状态由 `ai_switch_chat` 里的 `ai_set_chat_open` 一并落盘
+        // （2026-10-30 用户要求「默认记录窗口开闭」），这里不再单独赋值。
         self.panel_ui.panel = super::PanelKind::Ai;
         self.panel_ui.sidebar_collapsed = false;
-        self.ai_ui.ai_chat_open = true;
         self.ai_switch_chat(chat_id, cx);
         cx.notify();
     }

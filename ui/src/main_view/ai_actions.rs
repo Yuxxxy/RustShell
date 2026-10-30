@@ -102,9 +102,9 @@ impl MainView {
             chat.updated_at = now;
         }
         // 发问即把终端右侧那一列露出来：消息发出去了而面板收着，用户只能靠左侧
-        // 列表猜「到底有没有回复」。不落盘 —— 这是「本次使用」的临时展开，
-        // 用户显式关掉的选择仍由 `ai_close_chat` 写进设置。
-        self.ai_ui.ai_chat_open = true;
+        // 列表猜「到底有没有回复」。**落盘**（2026-10-30 用户要求「默认记录窗口开闭」）
+        // —— 用户在这里把面板带出来了，下次启动就该还是开着的。
+        self.ai_set_chat_open(true, cx);
         self.ai_ui.ai_error = None;
         self.ai_ui.ai_busy = true;
         self.ai_ui.ai_stream_open = false;
@@ -553,7 +553,8 @@ impl MainView {
     /// 当前会话还是空白时直接复用：否则连点两次就会攒出两条一模一样的空会话，
     /// 而用户在列表里分辨不出它们（标题都是「新对话」）。
     pub fn ai_new_chat(&mut self, cx: &mut Context<Self>) {
-        self.ai_ui.ai_chat_open = true;
+        // 新建会话一定会把它所在的列露出来 ⇒ 开合状态一并落盘（2026-10-30）。
+        self.ai_set_chat_open(true, cx);
         if self.ai_cur().is_empty() {
             cx.notify();
             return;
@@ -580,7 +581,8 @@ impl MainView {
     /// （见 `ai_poll_results`），切走之后增量就会写进另一条会话里。
     /// 列表行据此置灰，用户看得到「现在不能切」这个原因。
     pub fn ai_switch_chat(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.ai_ui.ai_chat_open = true;
+        // 切会话会把那一列带出来 ⇒ 开合状态一并落盘（2026-10-30）。
+        self.ai_set_chat_open(true, cx);
         if self.ai_ui.ai_busy || self.ai_ui.ai_chat_id == id {
             cx.notify();
             return;
@@ -682,22 +684,35 @@ impl MainView {
         cx.notify();
     }
 
-    /// 展开终端右侧的 AI 对话面板（幂等；开合状态落盘）。
-    pub fn ai_open_chat(&mut self, cx: &mut Context<Self>) {
-        if !self.ai_ui.ai_chat_open {
-            self.ai_ui.ai_chat_open = true;
-            self.settings.ai_chat_open = true;
-            let _ = self.settings.save(&paths::settings_path());
+    /// 「AI 对话框（终端右侧那一列）开 / 合」的**唯一写入点**。
+    ///
+    /// 2026-10-30 用户要求「默认记录窗口开闭」：此前只有竖栏 AI 图标与面板头部的 ×
+    /// 会写 `settings.ai_chat_open`，而「发问 / 切会话 / 新建对话 / 通知跳转」这些
+    /// 顺带把面板带出来的路径只改内存标记 —— 于是用户从左侧栏发一句话把那一列露出来，
+    /// 重启后又变回收起，等于没记。现在所有路径都落到这里：内存与设置一起走。
+    ///
+    /// 落盘用 `cfg!(test)` 挡住：这些路径在 UI 用例里被大量调用，真写盘就会去改开发机
+    /// 真实的 `settings.json`（「只在本地绿、CI 红」的来源之一）。要验证记录行为的用例
+    /// 断言 `settings.ai_chat_open` 这个内存字段即可。
+    pub fn ai_set_chat_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.ai_ui.ai_chat_open = open;
+        if self.settings.ai_chat_open != open {
+            self.settings.ai_chat_open = open;
+            if !cfg!(test) {
+                let _ = self.settings.save(&paths::settings_path());
+            }
         }
         cx.notify();
     }
 
+    /// 展开终端右侧的 AI 对话面板（幂等；开合状态落盘）。
+    pub fn ai_open_chat(&mut self, cx: &mut Context<Self>) {
+        self.ai_set_chat_open(true, cx);
+    }
+
     /// 收起终端右侧的 AI 对话面板（头部 ×）。左侧栏的聊天记录不受影响。
     pub fn ai_close_chat(&mut self, cx: &mut Context<Self>) {
-        self.ai_ui.ai_chat_open = false;
-        self.settings.ai_chat_open = false;
-        let _ = self.settings.save(&paths::settings_path());
-        cx.notify();
+        self.ai_set_chat_open(false, cx);
     }
 
     /// 忽略某条回复上的某张命令卡片（消息 id + 卡片下标定位）。 卡片消失会改变该行高度 到 必须同步重测，否则行高残留、下方内容重叠。
@@ -1041,11 +1056,10 @@ impl MainView {
         // 就是「一列列表 + 一面空白」。命令面板的「AI助手」也走这里
         // （见 `main_view.rs` 的 `on_action(&AiAssistant)`）。
         //
-        // 不落盘（与 `ai_send_wrapped` 同一口径）：显式的开合状态由竖栏 AI 图标与
-        // 面板头部的关闭按钮负责写进设置；这里是「带用户过去看」，不该改他的布局偏好。
-        // 顺带的好处：本函数是单测入口（见 `ai_panel::tests`），不落盘就不会在跑测试时
-        // 改写用户真实的 settings.json。
-        self.ai_ui.ai_chat_open = true;
+        // **落盘**（2026-10-30 用户要求「默认记录窗口开闭」）：此前这里是「带用户
+        // 过去看、不改布局偏好」，于是从这里把面板带出来之后再重启，那一列又收起 ——
+        // 用户看到的正是「开了却没记住」。现在一律写进设置。
+        self.ai_set_chat_open(true, cx);
         if text.is_empty() {
             cx.notify();
             return;
@@ -1399,5 +1413,75 @@ mod tests {
                 "没有活动标签时不该有画像"
             );
         });
+    }
+
+    /// 2026-10-30 用户要求「AI 助手窗口默认记录开闭」。
+    ///
+    /// 三件事一起钉：
+    /// 1. 显式开 / 关都要写进 `settings.ai_chat_open`（重启读的就是它）；
+    /// 2. 「顺带把面板带出来」的路径（发问 / 新建对话 / 切会话 / 通知跳转）同样要写 ——
+    ///    此前它们只改内存标记，于是用户发完一句话再重启，那一列又收起了；
+    /// 3. `ai_ui.ai_chat_open` 的赋值**只允许出现在 `ai_set_chat_open`** ——
+    ///    判据是源码里那一处赋值，否则下次再加路径又会漏记。
+    #[gpui::test]
+    fn the_ai_column_records_its_open_state(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Entity};
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<super::MainView>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| super::MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| crate::main_view::AppShell::new(main));
+                gpui_component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        let mut vcx2 = vcx.clone();
+        main.update_in(&mut vcx2, |m, _w, cx| {
+            m.ai_close_chat(cx);
+            assert!(!m.ai_ui.ai_chat_open, "关掉之后内存里也不该还是开的");
+            assert!(
+                !m.settings.ai_chat_open,
+                "「关闭对话」没写进设置：重启时那一列会自己弹回来"
+            );
+
+            m.ai_open_chat(cx);
+            assert!(
+                m.settings.ai_chat_open,
+                "「打开 AI 对话」没写进设置：重启后又是收起的"
+            );
+
+            // 顺带展开的路径（这里用「新建对话」代表）：用户既然在这里把它带出来了，
+            // 下次启动就该还是开着的 —— 这正是 2026-10-30 那条要求的原话。
+            m.ai_close_chat(cx);
+            assert!(!m.settings.ai_chat_open);
+            m.ai_new_chat(cx);
+            assert!(
+                m.settings.ai_chat_open,
+                "「新建对话」把面板带出来了却没记录：下次启动仍然是收起的"
+            );
+        });
+
+        // 结构护栏：面板开关的赋值只能有一处（`ai_set_chat_open`）。
+        let c = code();
+        assert_eq!(
+            c.matches("ai_ui.ai_chat_open = ").count(),
+            1,
+            "`ai_ui.ai_chat_open` 被直接赋值了不止一处 —— 新增路径请一律走 \
+             `ai_set_chat_open`，否则它不会被记录（这就是本次要修的那个 bug）。"
+        );
+        let tasks = prod(include_str!("task_actions.rs"));
+        assert!(
+            !tasks.contains("ai_ui.ai_chat_open = "),
+            "任务通知的「带用户过去看」又绕过了 `ai_set_chat_open`：那一列不会被记录。"
+        );
     }
 }
