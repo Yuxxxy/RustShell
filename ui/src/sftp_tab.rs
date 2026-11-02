@@ -23,12 +23,14 @@
 //! - 地址栏与列头都**在各自那一栏里**：中间那条分隔线因此能一直顶到顶边
 //!   （2026-10-27 用户要求「拖动线要延伸到地址栏」）；
 //! - 每条地址栏**只有一个刷新按钮**，上传 / 下载图标已撤（同一轮用户要求），
-//!   能力改挂右键菜单：本地「上传到远端」、远端「下载到本地」；
+//!   能力改挂右键菜单：本地「上传到远端」（目录则「上传文件夹到远端」，递归）、
+//!   远端「下载到本地」；
 //! - 列头可点：名称 / 大小 / 修改时间 三列排序，再点同列翻转方向（两侧共用一套口径），
 //!   方向由列头右侧一对小箭头指示（被选中的那一侧点亮）；
 //! - **右键分两种**（2026-10-28 用户要求）：行上 = 对这一行做什么
 //!   （远端：下载到本地 / 下载… / 打开 / 重命名 / 删除 / 复制路径；
-//!   本地：上传到远端 / 重命名），空白处 = 对这个目录做什么（新建文件 / 新建文件夹）。
+//!   本地：上传到远端 / 上传文件夹到远端 / 重命名），空白处 = 对这个目录做什么
+//!   （新建文件 / 新建文件夹）。
 //!
 //! # 2026-10-27 第三轮（用户四点要求）
 //!
@@ -1311,7 +1313,8 @@ fn hint_line(text: String, t: &rustshell_core::theme::ThemeTokens) -> AnyElement
 /// 与「这一行」无关；挂在文件行上会让人以为新文件建在该文件所在的位置。
 ///
 /// 「上传到远端」仍在这里：它是唯一的上传入口（2026-10-27 撤了地址栏图标），
-/// 且天然是针对某一行的动作。只对文件出现：目录上传 v1 不做。
+/// 且天然是针对某一行的动作。目录自 2026-11-02 起也走这一项（`UploadDir` 递归），
+/// 文案因此分开 —— 「上传文件夹到远端」说清楚它会把整棵树带过去。
 ///
 /// 本地不做「删除」：删本地文件是不可逆的（本应用没有回收站接口），误点一次就没了 ——
 /// 要删请用系统的文件管理器。
@@ -1320,18 +1323,21 @@ fn local_entry_menu(menu: PopupMenu, dir: &str, full: &str, name: &str, is_dir: 
     let dir_ren = dir.to_string();
     let upload = full.to_string();
     let has_name = !name.is_empty() && !name.starts_with("..");
-    menu.when(has_name && !is_dir, |m_| {
-        m_.item(
-            PopupMenuItem::new(rustshell_core::i18n::t("上传到远端")).on_click(move |_, w, cx| {
-                let path = upload.clone();
-                super::main_view::ui_call(
-                    "",
-                    move |m, _id, _w, cx| m.sftp_upload_path(path.clone(), cx),
-                    w,
-                    cx,
-                );
-            }),
-        )
+    let upload_label = if is_dir {
+        rustshell_core::i18n::t("上传文件夹到远端")
+    } else {
+        rustshell_core::i18n::t("上传到远端")
+    };
+    menu.when(has_name, |m_| {
+        m_.item(PopupMenuItem::new(upload_label).on_click(move |_, w, cx| {
+            let path = upload.clone();
+            super::main_view::ui_call(
+                "",
+                move |m, _id, _w, cx| m.sftp_upload_path(path.clone(), cx),
+                w,
+                cx,
+            );
+        }))
         .separator()
     })
     .when(has_name, |m_| {

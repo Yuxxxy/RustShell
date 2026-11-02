@@ -778,18 +778,8 @@ pub(crate) fn drop_uploads(
             return;
         };
         let dir = m.io.files_path.clone();
-        let (queued, skipped_dirs) = enqueue_uploads(&paths, &dir, &tx);
-        if skipped_dirs > 0 {
-            m.set_quick_toast(
-                crate::notice::NoticeKind::Warning,
-                &rustshell_core::i18n::ts(
-                    format!("暂不支持拖入文件夹（已跳过 {skipped_dirs} 个）"),
-                    format!("Folders are not supported yet ({skipped_dirs} skipped)"),
-                ),
-                w,
-                cx,
-            );
-        } else if queued == 0 {
+        let queued = enqueue_uploads(&paths, &dir, &tx);
+        if queued == 0 {
             m.set_quick_toast(
                 crate::notice::NoticeKind::Warning,
                 rustshell_core::i18n::t("没读到拖入的文件"),
@@ -800,27 +790,44 @@ pub(crate) fn drop_uploads(
     });
 }
 
-/// 把一组本地路径逐个入队上传到 `dir`（拖入与「上传」按钮共用同一条路径）。
+/// 把一组本地路径逐个入队上传到 `dir`（拖入、「上传」按钮、SFTP 标签页共用同一条路径）。
 ///
-/// 返回 `(入队数, 跳过的目录数)`：目录 v1 不支持递归上传，调用方据此给可见提示 ——
-/// 「静默跳过」会让用户以为已经传过了。
+/// 返回入队条数：调用方据此提示「什么都没传出去」—— 静默会让用户以为已经传过了。
+///
+/// 目录走 `SftpCmd::UploadDir`（2026-11-02 起 core 支持递归上传），与文件走同一条队列：
+/// 队列行起手 `total = 0`，总量由 core 走完本地树后经 `TransferMeta` 回填。
 pub(crate) fn enqueue_uploads(
     paths: &[std::path::PathBuf],
     dir: &str,
     tx: &flume::Sender<SftpCmd>,
-) -> (usize, usize) {
+) -> usize {
     let mut queued = 0;
-    let mut skipped_dirs = 0;
     for f in paths {
-        if f.is_dir() {
-            skipped_dirs += 1;
-            continue;
-        }
         let Some(name) = f.file_name().map(|s| s.to_string_lossy().to_string()) else {
             continue;
         };
-        let total = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
         let id = new_transfer_id();
+        if f.is_dir() {
+            let _ = rustshell_core::sftp::sftp_events().0.send(
+                rustshell_core::sftp::SftpEvent::TransferQueued {
+                    transfer_id: id,
+                    name: rustshell_core::i18n::ts(
+                        format!("上传文件夹 {name}"),
+                        format!("Upload folder {name}"),
+                    ),
+                    // 本地树还没走：总量由 core 回填，这里猜一个只会让进度条先满后退
+                    total: 0,
+                },
+            );
+            let _ = tx.try_send(SftpCmd::UploadDir {
+                local: f.clone(),
+                remote: join_path(dir, &name),
+                transfer_id: id,
+            });
+            queued += 1;
+            continue;
+        }
+        let total = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
         let _ = rustshell_core::sftp::sftp_events().0.send(
             rustshell_core::sftp::SftpEvent::TransferQueued {
                 transfer_id: id,
@@ -836,7 +843,7 @@ pub(crate) fn enqueue_uploads(
         });
         queued += 1;
     }
-    (queued, skipped_dirs)
+    queued
 }
 
 /// 单个条目的右键菜单（闭包内即用即克隆，保持 Fn 兼容）。
@@ -1718,7 +1725,7 @@ mod tests {
     ///
     /// 反向验证：①删掉根上的 `.on_drop::<ExternalPaths>` ⇒ 一条命令都没有；
     /// ②把 `drop_uploads` 里的 `dir` 换成常量 ⇒ 落点目录断言红；
-    /// ③删掉 `enqueue_uploads` 里 `f.is_dir()` 那段跳过 ⇒「只该有一条命令」红。
+    /// ③把 `enqueue_uploads` 里的目录分支改回 `continue` ⇒「两条命令」红。
     #[gpui::test]
     fn dropping_local_files_uploads_into_the_current_directory(cx: &mut gpui::TestAppContext) {
         use crate::main_view::{AppShell, MainView, TabEntry};
@@ -1802,7 +1809,8 @@ mod tests {
             panel.origin.y + panel.size.height * 0.60,
         );
 
-        // 真本地路径：一个文件 + 一个目录。目录 v1 不支持递归，必须跳过并给提示。
+        // 真本地路径：一个文件 + 一个目录。**两者都要变成命令**（2026-11-02 起目录
+        // 走 `UploadDir` 递归上传）—— 这条断言就是从「目录被跳过」翻过来的。
         let base = std::env::temp_dir().join(format!("rustshell-drop-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("sub")).expect("建临时目录");
@@ -1823,39 +1831,52 @@ mod tests {
         };
         drop_now(vcx, at, vec![file.clone(), folder.clone()]);
 
-        // ① 目录被跳过、文件变成一条上传命令，落点是**当前**面板目录
+        // ① 文件 → `Upload`，目录 → `UploadDir`，落点都是**当前**远端目录
         let mut cmds = Vec::new();
         while let Ok(c) = rx.try_recv() {
             cmds.push(c);
         }
         assert_eq!(
             cmds.len(),
-            1,
-            "只该有一条上传命令（目录必须跳过），实际 {} 条",
+            2,
+            "一文件一目录应当发两条命令（2026-11-02 起目录也递归上传），实际 {} 条",
             cmds.len()
         );
-        match &cmds[0] {
-            SftpCmd::Upload {
-                local,
-                remote,
-                total,
-                ..
-            } => {
-                assert_eq!(local, &file, "上传的不是拖进来的那个本地文件");
-                assert_eq!(
-                    remote, "/srv/app/hello.txt",
-                    "落点目录必须是右窗格**当前**的远端目录"
-                );
-                assert_eq!(*total, 5, "总字节数应当取本地文件长度");
+        let mut saw_file = false;
+        let mut saw_dir = false;
+        for cmd in &cmds {
+            match cmd {
+                SftpCmd::Upload {
+                    local,
+                    remote,
+                    total,
+                    ..
+                } if local == &file => {
+                    assert_eq!(
+                        remote, "/srv/app/hello.txt",
+                        "落点目录必须是右窗格**当前**的远端目录"
+                    );
+                    assert_eq!(*total, 5, "总字节数应当取本地文件长度");
+                    saw_file = true;
+                }
+                SftpCmd::UploadDir { local, remote, .. } if local == &folder => {
+                    assert_eq!(
+                        remote, "/srv/app/sub",
+                        "目录上传的落点同样是当前远端目录（远端同名目录下合并）"
+                    );
+                    saw_dir = true;
+                }
+                _ => panic!("出现了一条预期之外的命令"),
             }
-            _ => panic!("拖进来的文件没有变成 `SftpCmd::Upload`"),
         }
+        assert!(saw_file && saw_dir, "文件与目录各要有一条命令");
 
-        // ② 跳过的目录要给出可见提示（静默跳过会让人以为已经传过去了）
+        // ② 「文件夹被跳过」的提示必须消失：目录现在真的会传，留着这句话等于告诉
+        //    用户他刚拖的那个目录没传（2026-11-02 撤掉）
         let toast = main.read_with(vcx, |m, _| m.ai_ui.quick_toast.clone());
         assert!(
-            toast.as_deref().is_some_and(|s| s.contains("拖入文件夹")),
-            "拖入目录必须给提示，实际提示：{toast:?}"
+            !toast.as_deref().is_some_and(|s| s.contains("拖入文件夹")),
+            "目录已经能传，不该再有「跳过文件夹」的提示，实际提示：{toast:?}"
         );
 
         // ③ 原来这里还有一段「剥掉 sftp_tx 后再拖一次，必须提示『需要 SSH 会话』」。

@@ -109,15 +109,15 @@ impl MainView {
             .and_then(|t| t.session.sftp_tx.clone())
     }
 
-    /// 本地某个文件 → 远端当前目录。
+    /// 本地某个条目 → 远端当前目录（文件走 `Upload`，目录走 `UploadDir`）。
     ///
     /// 2026-10-27 起入口是**本地行右键菜单**（地址栏的上传图标按用户要求撤下）。
     /// 显式收路径而不是读 `sftp_local_sel`：右键点的那一行不一定等于上次单击选中的
     /// 那一行，读选中项会在「右键 A、删了 B」这种操作上错得毫无提示。
     ///
-    /// 目录上传 v1 不做（与文件面板的 `enqueue_uploads` 同一口径）：静默跳过会让人
-    /// 以为传过了，所以给一条**消息框**说明 —— 不再往远端列表里塞一行红字
-    /// （2026-10-27 用户要求「提示不要在原来的位置显示」）。
+    /// 目录自 2026-11-02 起支持递归上传，落在远端**同名目录**下。同名目录已存在时
+    /// 按「合并」处理（不报错、继续往里传），但文件级仍守「不静默覆盖」：远端已有
+    /// 同名且大小不同的文件会逐个记为失败，整棵树不会被一个重名文件卡住。
     pub(crate) fn sftp_upload_path(&mut self, local: String, cx: &mut Context<Self>) {
         let Some(tx) = self.active_sftp_tx() else {
             self.queue_notice(
@@ -127,15 +127,8 @@ impl MainView {
             return;
         };
         let path = std::path::PathBuf::from(&local);
-        if path.is_dir() {
-            self.queue_notice(
-                crate::notice::NoticeKind::Warning,
-                rustshell_core::i18n::t("暂不支持上传整个文件夹，请展开后逐个上传"),
-            );
-            return;
-        }
         let dir = self.io.files_path.clone();
-        let (queued, _skipped) = crate::files_panel::enqueue_uploads(&[path], &dir, &tx);
+        let queued = crate::files_panel::enqueue_uploads(&[path], &dir, &tx);
         if queued == 0 {
             self.queue_notice(
                 crate::notice::NoticeKind::Warning,
