@@ -213,9 +213,8 @@ fn translate(zh: &'static str) -> &'static str {
         "正在读取…" => "Loading…",
         "没有可上传的文件" => "No files to upload",
         "传输命令没发出去" => "The transfer command could not be sent",
-        "暂不支持上传整个文件夹，请展开后逐个上传" => {
-            "Whole-folder upload is not supported yet — open it and upload files individually"
-        }
+        // 递归上传（2026-11-02）：目录与文件共用同一个右键入口，文案分开说清楚
+        "上传文件夹到远端" => "Upload folder to remote",
         "传输" => "Transfer",
         "已有传输在进行" => "A transfer is already running",
         "传输已取消" => "Transfer cancelled",

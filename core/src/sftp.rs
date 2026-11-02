@@ -288,6 +288,19 @@ pub enum SftpCmd {
         transfer_id: u64,
         total: u64,
     },
+    /// 上传整个目录（递归）：本地目录树 到 远端目录。
+    ///
+    /// 与 [`SftpCmd::DownloadDir`] 是一对。`remote` 是**完整的目标目录**（含目录名），
+    /// 与那边 `local` 的语义对称；同名目录已存在是常态（重传 / 续传），本层只
+    /// `MKDIR` 不校验存在性。
+    ///
+    /// 总量本来在本地走树时就知道，仍然经 `TransferMeta` 回填 —— 不是为了省一次
+    /// 计算，而是让 UI 对「目录传输」只有一条写法（起手 `total = 0`）。
+    UploadDir {
+        local: PathBuf,
+        remote: String,
+        transfer_id: u64,
+    },
     Mkdir {
         path: String,
         refresh: String,
@@ -377,7 +390,10 @@ fn next_transfer_id() -> u64 {
 fn is_transfer_cmd(cmd: &SftpCmd) -> bool {
     matches!(
         cmd,
-        SftpCmd::Download { .. } | SftpCmd::Upload { .. } | SftpCmd::DownloadDir { .. }
+        SftpCmd::Download { .. }
+            | SftpCmd::Upload { .. }
+            | SftpCmd::DownloadDir { .. }
+            | SftpCmd::UploadDir { .. }
     )
 }
 
@@ -692,6 +708,86 @@ async fn scan_tree(
         }
         guard(out.len())?;
     }
+    Ok(out)
+}
+
+/// 把 `path` 相对 `root` 的那一段转成 POSIX 形式的相对路径（远端一律 `/`）。
+///
+/// 用途单一但关键：本地树与远端树必须一一对应。`Path::to_string_lossy()` 在 Windows
+/// 上给的是 `a\b\c`，原样拼到远端会变成**一个名字里带反斜杠的文件** —— 那种错在界面上
+/// 看不出来（文件确实传上去了，只是全挤在同一层，名字还长得不像话）。
+pub fn relative_posix(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// [`scan_local_tree`] 的结果：一棵待上传的本地树。
+#[derive(Debug, Default)]
+pub struct LocalTree {
+    /// 目录（不含根），**父一定排在子之前** —— 远端建目录可以直接顺序执行。
+    pub dirs: Vec<PathBuf>,
+    /// 文件与它的字节数。
+    pub files: Vec<(PathBuf, u64)>,
+    /// 文件字节数合计（进度条的总量）。
+    pub total: u64,
+    /// 被跳过的符号链接数。
+    pub symlinks: usize,
+}
+
+/// 深度优先走一遍**本地**目录树，收集要上传的文件与要创建的目录。
+///
+/// 与远端 [`scan_tree`] 同一手法（显式工作栈、走完才动手），差别只有一个：这里
+/// **不跟着符号链接走**。跟进去的两种后果都不好看 —— 链接指回上层的环会让遍历永不
+/// 结束，链接指向同盘另一棵树则会把同一批字节传两遍。跳过数由调用方以
+/// `TransferNote` 告知用户，不静默丢。
+pub fn scan_local_tree(root: &Path) -> Result<LocalTree, String> {
+    /// 单次递归上传的规模上限。超过就整体中止 —— 传一半再报错，用户无从收拾。
+    const MAX_ENTRIES: usize = 20_000;
+
+    let meta = std::fs::symlink_metadata(root)
+        .map_err(|e| format!("读取目录 {} 失败: {e}", root.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("{} 不是目录", root.display()));
+    }
+
+    let mut out = LocalTree::default();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let read =
+            std::fs::read_dir(&dir).map_err(|e| format!("读取目录 {} 失败: {e}", dir.display()))?;
+        for entry in read {
+            let entry = entry.map_err(|e| format!("读取目录 {} 失败: {e}", dir.display()))?;
+            // `file_type()` 不跟随链接（`metadata()` 会）—— 判的就是这一条
+            let ft = entry
+                .file_type()
+                .map_err(|e| format!("读取 {} 的类型失败: {e}", entry.path().display()))?;
+            if ft.is_symlink() {
+                out.symlinks += 1;
+                continue;
+            }
+            if out.dirs.len() + out.files.len() >= MAX_ENTRIES {
+                return Err(format!(
+                    "目录过大（超过 {MAX_ENTRIES} 个条目），已中止以防误操作"
+                ));
+            }
+            let path = entry.path();
+            if ft.is_dir() {
+                out.dirs.push(path.clone());
+                stack.push(path);
+            } else if ft.is_file() {
+                // `DirEntry::metadata()` 在 Unix 上是 lstat、Windows 上不额外系统调用；
+                // 链接已经在上面筛掉了，所以这里拿到的是文件自身的大小。
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.total += size;
+                out.files.push((path, size));
+            }
+        }
+    }
+    // 发现顺序是「弹出式」的深度优先，同一个父下的子目录可能乱序 —— 远端 `MKDIR`
+    // 要求父先建好，所以按路径深度排一次（同深度保持发现顺序）。
+    out.dirs.sort_by_key(|p| p.components().count());
     Ok(out)
 }
 
@@ -1193,6 +1289,10 @@ async fn download_one(
 }
 
 /// 上传一个文件到远端（含续传）。返回 `Ok(描述)` / `Err(原因)`。
+///
+/// `done` 是**这条传输已完成的字节数**（目录上传时跨文件累加）：本函数把它当进度
+/// 起点，传完再写回。与 [`download_one`] 同一口径 —— 少了它，目录上传的进度会随着
+/// 每个新文件从头计数，进度条一路倒退。
 async fn upload_one(
     sftp: &russh_sftp::client::SftpSession,
     local: &Path,
@@ -1201,6 +1301,7 @@ async fn upload_one(
     total_hint: u64,
     tx: &flume::Sender<SftpEvent>,
     cancel: &std::sync::Arc<AtomicBool>,
+    done: &mut u64,
 ) -> Result<String, String> {
     let local_size = local_len(local).await;
     let total = if total_hint == 0 {
@@ -1223,7 +1324,7 @@ async fn upload_one(
     let sink = MarkSink::new(TransferDir::Upload, local, remote, total);
     let ctx = TransferCtx {
         transfer_id,
-        base: 0,
+        base: *done,
         tx,
         sink: Some(&sink),
         cancel: cancel.clone(),
@@ -1236,6 +1337,7 @@ async fn upload_one(
     match copy_up(sftp, local, remote, dec.from, &mut file_done, &ctx).await {
         Ok(()) => {
             sink.done();
+            *done = ctx.base + file_done;
             Ok(format!("上传完成 {file_done}/{total} bytes"))
         }
         Err(e) => {
@@ -1472,11 +1574,129 @@ async fn run_cmd(sftp: &russh_sftp::client::SftpSession, cmd: &SftpCmd) -> Resul
         } => {
             let cancel = cancel_slot(*transfer_id);
             let _guard = CancelGuard(*transfer_id);
-            let res = upload_one(sftp, local, remote, *transfer_id, *total, &tx, &cancel).await;
+            let mut done: u64 = 0;
+            let res = upload_one(
+                sftp,
+                local,
+                remote,
+                *transfer_id,
+                *total,
+                &tx,
+                &cancel,
+                &mut done,
+            )
+            .await;
             let res = finish_transfer(res, *transfer_id, &tx, sftp).await;
             // 远端目录在传完之后**一定**变了（新文件或多了一个半成品），
             // 请 UI 重扫一次 —— 用户要求「上传到远端后刷新远端路径」。
             // 只有会话还活着才发：死了的会话重扫只会再报一次错。
+            if res.is_ok() {
+                let _ = tx.send(SftpEvent::Refresh {
+                    path: remote_dir(remote),
+                });
+            }
+            res
+        }
+        SftpCmd::UploadDir {
+            local,
+            remote,
+            transfer_id,
+        } => {
+            let cancel = cancel_slot(*transfer_id);
+            let _guard = CancelGuard(*transfer_id);
+            // 1) 先走本地树。**失败不 `?` 出去**：本地读不动不是会话故障，而
+            //    `run_cmd` 的 `Err` 语义是「丢掉整个 SFTP 会话」—— 选错一个没有
+            //    权限的目录就要重连，代价远大于这条错误本身。
+            let tree = match scan_local_tree(local) {
+                Ok(t) => t,
+                Err(e) => return finish_transfer(Err(e), *transfer_id, &tx, sftp).await,
+            };
+            let _ = tx.send(SftpEvent::TransferMeta {
+                transfer_id: *transfer_id,
+                total: tree.total,
+            });
+            if tree.symlinks > 0 {
+                let _ = tx.send(SftpEvent::TransferNote {
+                    transfer_id: *transfer_id,
+                    text: format!("跳过 {} 个符号链接", tree.symlinks),
+                });
+            }
+
+            // 2) 建远端目录：根 + 每个子目录（父已按深度排在前面）。
+            //    已存在属于常态（重传、或者远端本来就有同名目录），所以**不看成错误**；
+            //    真正的权限问题会在随后往该目录里写文件时带着路径暴露出来。
+            let _ = sftp.create_dir(remote).await;
+            for dir in &tree.dirs {
+                if is_cancelled(&cancel) {
+                    return finish_transfer(Err(CANCELLED.to_string()), *transfer_id, &tx, sftp)
+                        .await;
+                }
+                let target = join_remote(remote, &relative_posix(local, dir));
+                let _ = sftp.create_dir(&target).await;
+            }
+
+            // 3) 逐个文件上传。
+            let mut done: u64 = 0;
+            let mut count: usize = 0;
+            let mut skipped: usize = 0;
+            // 失败**不中断整棵树**：一个重名文件就放弃剩下几百个，用户只能手工挑。
+            // 但也不能静默 —— 收进 `failed`，最后一条 `TransferDone{ok:false}` 报出来。
+            let mut failed: Vec<String> = Vec::new();
+            for (file, size) in &tree.files {
+                if is_cancelled(&cancel) {
+                    failed.push(CANCELLED.to_string());
+                    break;
+                }
+                let rel = relative_posix(local, file);
+                let remote_file = join_remote(remote, &rel);
+                // 已传完：远端大小与本地一致 ⇒ 就当它传完了（与 `DownloadDir`
+                // 「本地长度 == 远端大小」对称）。只比长度不比内容，与下载侧同一取舍。
+                // 0 字节文件不比：`size == 0` 时远端任何同名文件都"一致"，
+                // 那会让真正的空文件传输被误判成已完成。
+                if *size > 0 && remote_len(sftp, &remote_file).await == Some(*size) {
+                    done += *size;
+                    skipped += 1;
+                    let _ = tx.send(SftpEvent::Progress {
+                        transfer_id: *transfer_id,
+                        bytes: done,
+                    });
+                    continue;
+                }
+                match upload_one(
+                    sftp,
+                    file,
+                    &remote_file,
+                    *transfer_id,
+                    *size,
+                    &tx,
+                    &cancel,
+                    &mut done,
+                )
+                .await
+                {
+                    Ok(_) => count += 1,
+                    Err(e) => failed.push(format!("{rel}: {e}")),
+                }
+            }
+            if skipped > 0 {
+                let _ = tx.send(SftpEvent::TransferNote {
+                    transfer_id: *transfer_id,
+                    text: format!("跳过 {skipped} 个已传完的文件"),
+                });
+            }
+            let res = match failed.first() {
+                // 只带第一条：队列行只有一两行宽度，把几百条塞进去谁也读不出来。
+                Some(first) => Err(if failed.len() > 1 {
+                    format!("{first}（共 {} 个文件失败）", failed.len())
+                } else {
+                    first.clone()
+                }),
+                None => Ok(format!(
+                    "上传完成 {done}/{} bytes（{count} 个文件）",
+                    tree.total
+                )),
+            };
+            let res = finish_transfer(res, *transfer_id, &tx, sftp).await;
             if res.is_ok() {
                 let _ = tx.send(SftpEvent::Refresh {
                     path: remote_dir(remote),
@@ -1677,6 +1897,11 @@ mod tests {
             SftpCmd::DownloadDir {
                 remote: "/r".into(),
                 local: PathBuf::from("l"),
+                transfer_id: 1,
+            },
+            SftpCmd::UploadDir {
+                local: PathBuf::from("l"),
+                remote: "/r".into(),
                 transfer_id: 1,
             },
         ];
@@ -2055,6 +2280,56 @@ mod tests {
         assert!(pos("/a/b/deep") < pos("/a/b"), "/a/b/deep 必须先于 /a/b");
         assert!(pos("/a/b") < pos("/a"), "/a/b 必须先于 /a");
         assert_eq!(order.len(), scan.len(), "计划里不能漏项也不能重复");
+    }
+
+    /// 本地走树的三条硬要求（2026-11-02 递归上传）：父目录排在子目录之前、
+    /// 字节数合计对得上、根目录自己不进列表。
+    ///
+    /// 前两条错了界面上都不报错 —— 父目录没先建，远端 `MKDIR` 只会在子目录上失败，
+    /// 用户看到的是一句「上传失败」；合计错了则是进度条跑到 100% 又退回去。
+    #[test]
+    fn scan_local_tree_orders_parents_first_and_sums_bytes() {
+        let root = std::env::temp_dir().join(format!("rs-uploadtree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a").join("b")).expect("建测试目录");
+        std::fs::write(root.join("top.txt"), b"12345").expect("写文件");
+        std::fs::write(root.join("a").join("one.txt"), b"123").expect("写文件");
+        std::fs::write(root.join("a").join("b").join("deep.txt"), b"7").expect("写文件");
+
+        let tree = scan_local_tree(&root).expect("走树应当成功");
+        assert_eq!(tree.files.len(), 3, "子目录里的文件也要收进来");
+        assert_eq!(tree.total, 9, "总量 = 5 + 3 + 1");
+        assert_eq!(tree.dirs.len(), 2, "a 与 a/b；根目录自己不算");
+        let a = root.join("a");
+        let b = root.join("a").join("b");
+        let pos = |p: &std::path::Path| {
+            tree.dirs
+                .iter()
+                .position(|d| d == p)
+                .unwrap_or_else(|| panic!("{} 应当在目录列表里", p.display()))
+        };
+        assert!(
+            pos(&a) < pos(&b),
+            "父目录必须先于子目录 —— 远端 MKDIR 不会替你建父目录"
+        );
+
+        // 不是目录就明确报错，而不是走出一棵空树（空树 = 静默成功）
+        assert!(scan_local_tree(&root.join("top.txt")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 相对路径必须是 POSIX 的：Windows 上 `a\b` 原样拼进远端会变成
+    /// 「一个名字里带反斜杠的文件」—— 文件确实传上去了，只是全挤在同一层。
+    #[test]
+    fn relative_posix_never_leaks_backslashes() {
+        let root = std::path::Path::new("/home/u");
+        assert_eq!(relative_posix(root, &root.join("a")), "a");
+        assert_eq!(
+            relative_posix(root, &root.join("a").join("b.txt")),
+            "a/b.txt"
+        );
+        assert!(!relative_posix(root, &root.join("x").join("y")).contains('\\'));
     }
 
     /// 文件名预校验的三条硬规则（2026-09-22：新建目录 / 重命名改成收用户输入）。
