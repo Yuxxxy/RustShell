@@ -1651,9 +1651,15 @@ async fn run_cmd(sftp: &russh_sftp::client::SftpSession, cmd: &SftpCmd) -> Resul
                 let remote_file = join_remote(remote, &rel);
                 // 已传完：远端大小与本地一致 ⇒ 就当它传完了（与 `DownloadDir`
                 // 「本地长度 == 远端大小」对称）。只比长度不比内容，与下载侧同一取舍。
+                // 代价是每个文件多一次远端 stat —— 换来的是「重传一个大目录时跳过已传完的
+                // 那部分」，比从头再传一遍便宜得多。
                 // 0 字节文件不比：`size == 0` 时远端任何同名文件都"一致"，
                 // 那会让真正的空文件传输被误判成已完成。
                 if *size > 0 && remote_len(sftp, &remote_file).await == Some(*size) {
+                    // 顺手清掉可能残留的续传账：上一次「传完但没走到 `sink.done()`」
+                    // （进程被杀、断电）会留下半截记录，留着它下次会从半路开始写。
+                    let local_key = file.to_string_lossy().to_string();
+                    resume_store().forget(TransferDir::Upload, &local_key, &remote_file);
                     done += *size;
                     skipped += 1;
                     let _ = tx.send(SftpEvent::Progress {
