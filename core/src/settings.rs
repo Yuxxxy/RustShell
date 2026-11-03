@@ -184,6 +184,18 @@ pub struct Settings {
     /// 是最不需要解释的行为；想要命令面板/恢复会话的人在设置里改一次即可
     /// （与 `session_restore` 同一条口径：改默认必须由用户按下）。
     pub startup_action: StartupAction,
+    /// 上次退出时的窗口几何（位置 / 尺寸 / 是否最大化），下次启动据此还原。
+    ///
+    /// `None` = 还没记过（首次启动、或用户删了 `settings.json`）⇒ 启动仍走
+    /// 「1400×900、屏幕放不下就缩到 85%、居中」那套默认（见 `shell/src/app.rs`）。
+    ///
+    /// 恢复之前**必须**过 [`crate::window_bounds::WindowBoundsRecord::fitted_to`]：
+    /// 记录里的坐标可能属于一块已经拔掉的外接屏，照原样摆出去等于把窗口放到
+    /// 用户看不见的地方（推导见 `core/src/window_bounds.rs` 头部）。
+    ///
+    /// 与 `sidebar_widths` 同一类「位置类记忆」，但**不**同步进设置面板：
+    /// 窗口大小是拖出来的，不是选出来的，摆一个数字输入框只会让人困惑。
+    pub window_bounds: Option<crate::window_bounds::WindowBoundsRecord>,
 }
 
 /// 光标形状（用户侧默认值）。
@@ -469,6 +481,7 @@ impl Default for Settings {
             session_restore: SessionRestoreMode::default(),
             proxy: None,
             startup_action: StartupAction::default(),
+            window_bounds: None,
         }
     }
 }
