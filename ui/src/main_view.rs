@@ -16,6 +16,10 @@ mod layout_persist;
 // 退出钩子与 AI 会话那条并列挂在 `main_view` 根上：shell 层只认这一处入口，
 // 不该知道布局落盘住在哪个子模块（模块本体保持私有）。
 pub use layout_persist::ui_install_flush_session_layout_on_quit;
+// 窗口几何落盘（2026-11-03「记住原窗口大小」）：采集 / 节流落盘 / 退出钩子。
+// 与 `layout_persist` 同一手法，几何钳制在 `core::window_bounds`。
+mod window_persist;
+pub use window_persist::ui_install_flush_window_bounds_on_quit;
 mod keybind_actions;
 mod quickcmd_actions;
 mod settings_actions;
@@ -1194,6 +1198,12 @@ pub struct MainView {
     /// 由 [`MainView::flush_notices`] 在 `render` 开头统一推出去 —— 攒与弹之间
     /// 最多隔一帧，观感上仍是「点了就弹」。
     pub notices: Vec<(crate::notice::NoticeKind, String)>,
+
+    /// 窗口几何的采集与落盘状态（位置 / 尺寸 / 最大化）。
+    ///
+    /// 放在 `MainView` 顶层而不是某个 `*UiState` 里：它既不属于会话、也不属于
+    /// 对话域 —— 读的是窗口本身，写的是 `settings.window_bounds`。
+    pub(crate) window_mem: window_persist::WindowMemory,
 }
 
 impl Focusable for MainView {
@@ -1958,6 +1968,8 @@ impl MainView {
             dialog: None,
             no_session_notice_seq: 0,
             notices: Vec::new(),
+            // 本次启动还没观察到窗口：首帧之后 `observe_window_bounds` 立刻填上。
+            window_mem: window_persist::WindowMemory::default(),
         };
         // 展开态存的是分组 id（与 TreeItem 节点 id 同源）
         for g in view.conn_store.groups.clone() {
@@ -2004,6 +2016,14 @@ impl MainView {
             {
                 break;
             }
+        })
+        .detach();
+
+        // 窗口几何（2026-11-03「记住原窗口大小」）：`new` 是唯一拿得到 `Window`
+        // 的构造时机，观察者只能挂在这里。`detach` 而不是存订阅字段：订阅活到 view
+        // 被释放为止，而 view 就是窗口的根视图 —— 两者同寿命，不存在「忘了取消」。
+        cx.observe_window_bounds(window, |m, window, cx| {
+            m.window_bounds_observed(window, cx);
         })
         .detach();
 
@@ -2392,6 +2412,11 @@ impl MainView {
         // 等 3 秒会让刚敲完的那条有极大概率还没写进去 —— 而那正是最可能被立刻重用的。
         self.cmd_history_flush_if_due();
 
+        // 4.3) 窗口几何落盘（2026-11-03「记住原窗口大小」）。同样不参与 `changed`：
+        // 拖完窗口之后窗口本来就已经按新尺寸重绘过了，为写一个设置项再重绘整棵树不值。
+        // 节流 2 秒 + 退出钩子兜底，见 `window_persist`。
+        self.window_poll();
+
         // 4.5) F-9 会话布局落盘 / 恢复推进。
         //
         // 与 AI 会话同一手法：指纹脏标记（当前布局 vs 上次写的）+ 节流，
@@ -2528,6 +2553,13 @@ impl Render for MainView {
         // 挂在 render 首帧而不是 `new` 里：`cx.new(|cx| ..)` 期间拿不到实体，
         // 也就没法 `cx.spawn` 到自身。
         self.update_auto_check(cx);
+        // 窗口几何：除了 `observe_window_bounds`（缩放 / 最大化时才回调），每帧再
+        // 读一次兜底 —— Windows 上**纯拖动位置**走的是 `WM_MOVE`，平台层只更新自己
+        // 的 `origin`（gpui-fast-windows 的 `handle_move_msg`），不会通知观察者。
+        // 而「把窗口摆到哪儿」正是这个功能里用户最常调的一样东西。
+        // 一次 `window_bounds()` 在 Windows 上是 `GetWindowPlacement`，微秒级；
+        // 只在值真的变了才写内存，不 notify（窗口已经按新尺寸重绘过了）。
+        self.window_bounds_observed(window, cx);
         // SFTP 标签页路径栏的回填：`SftpEvent::Listing` 在 `poll` 里到达（那里没有
         // `Window`，写不进输入框），排队到这里落地。用户正在手输时不回填 ——
         // 否则目录一刷新，半截输入就被顶掉了。

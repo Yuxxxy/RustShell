@@ -1,9 +1,11 @@
 //! Shell 层（2.1 节 应用装配）：无边框窗口、全局键位（7.2 节）、启动引导。
 
 use gpui::{
-    px, size, App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowKind, WindowOptions,
+    point, px, size, App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowKind,
+    WindowOptions,
 };
 use gpui_component::TitleBar;
+use rustshell_core::window_bounds::{pick_screen, ScreenRect, WindowBoundsRecord};
 
 use rustshell_ui::main_view::{
     AppShell, MainView, RenameConnection, SwitchTab, TermShiftTab, TermTab,
@@ -57,6 +59,75 @@ fn keybindings() -> Vec<KeyBinding> {
     bindings
 }
 
+/// 一块显示器的**可见区域**（逻辑像素）：任务栏 / Dock / 菜单栏已排除。
+///
+/// 用 `visible_bounds` 而不是 `bounds`：拿整块屏当可用区，窗口会被摆到任务栏底下，
+/// 而 Windows 上那一条拖不动 —— 用户只能靠快捷键把窗口救回来。
+fn screen_rect_of(display: &dyn gpui::PlatformDisplay) -> ScreenRect {
+    let b = display.visible_bounds();
+    ScreenRect::new(
+        f32::from(b.origin.x),
+        f32::from(b.origin.y),
+        f32::from(b.size.width),
+        f32::from(b.size.height),
+    )
+}
+
+/// 启动时的窗口几何。
+///
+/// 有记录 ⇒ 还原（挑重叠最大的那块屏，收进它的可见区）。没有记录、或者全屏都
+/// 不相交 ⇒ 「1400×900、屏幕 85%、居中」那套默认行为原样保留。
+///
+/// 为什么要两侧都 `fitted_to`：记录可能来自一块已经拔掉的外接屏。挑不到屏时退回
+/// 主屏而不是最左边那块，装的是一台笔记本时两者相同，外接屏一拔就未必。
+fn resolve_window_bounds(cx: &mut App, saved: Option<WindowBoundsRecord>) -> WindowBounds {
+    if let Some(rec) = saved {
+        let screens: Vec<ScreenRect> = cx
+            .displays()
+            .iter()
+            .map(|d| screen_rect_of(d.as_ref()))
+            .collect();
+        let home = pick_screen(&screens, &rec).or_else(|| {
+            cx.primary_display()
+                .map(|d| screen_rect_of(d.as_ref()))
+                .or_else(|| screens.first().copied())
+        });
+        if let Some(screen) = home {
+            let fitted = rec.fitted_to(screen);
+            let bounds = Bounds::new(
+                point(px(fitted.x), px(fitted.y)),
+                size(px(fitted.width), px(fitted.height)),
+            );
+            log::info!(
+                "窗口几何：按上次记录恢复（{} 屏）。{:.0},{:.0} {:.0}x{:.0}{}",
+                screens.len(),
+                fitted.x,
+                fitted.y,
+                fitted.width,
+                fitted.height,
+                if fitted.maximized { "，最大化" } else { "" }
+            );
+            return if fitted.maximized {
+                // 最大化态带的是**还原尺寸**：取消最大化时窗口回到这个大小，
+                // 而不是变成系统随手给的一个尺寸。
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            };
+        }
+        // 一块屏都问不到（无头会话、远程桌面断开）：往下走默认分支，
+        // 那条路用的是 `Bounds::centered`，它自己也不会崩。
+    }
+
+    let mut window_size = size(px(1400.0), px(900.0));
+    if let Some(display) = cx.primary_display() {
+        let display_size = display.bounds().size;
+        window_size.width = window_size.width.min(display_size.width * 0.85);
+        window_size.height = window_size.height.min(display_size.height * 0.85);
+    }
+    WindowBounds::Windowed(Bounds::centered(None, window_size, cx))
+}
+
 pub fn run() {
     // 运行日志最先初始化（panic hook 依赖它；启动打点见 logging::init）
     rustshell_platform::logging::init(log::LevelFilter::Info);
@@ -100,21 +171,17 @@ pub fn run() {
             cx.bind_keys(keybindings());
             cx.activate(true);
 
-            // 窗口尺寸：屏幕 85% 居中
-            let mut window_size = size(px(1400.0), px(900.0));
-            if let Some(display) = cx.primary_display() {
-                let display_size = display.bounds().size;
-                window_size.width = window_size.width.min(display_size.width * 0.85);
-                window_size.height = window_size.height.min(display_size.height * 0.85);
-            }
-            let window_bounds = Bounds::centered(None, window_size, cx);
+            // 窗口几何：有上次的记录就还原，没有就走「1400×900、屏幕 85%、居中」。
+            let window_bounds = resolve_window_bounds(cx, settings.window_bounds);
 
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+                window_bounds: Some(window_bounds),
                 titlebar: Some(TitleBar::title_bar_options()),
                 window_min_size: Some(gpui::Size {
-                    width: px(720.),
-                    height: px(480.),
+                    // 与 `core::window_bounds` 的同一个常量：恢复时按它钳尺寸，
+                    // 系统按它限制拖拽 —— 两处各写一个数，窗口会「自己变大/变小」。
+                    width: px(rustshell_core::window_bounds::MIN_WINDOW_WIDTH),
+                    height: px(rustshell_core::window_bounds::MIN_WINDOW_HEIGHT),
                 }),
                 kind: WindowKind::Normal,
                 #[cfg(target_os = "linux")]
@@ -139,6 +206,10 @@ pub fn run() {
             // F-9 会话恢复：退出前把标签布局落盘（节流最长 2s，刚拖完分屏
             // 就关窗的那次变化还在内存里）。同样已在函数内部 `detach()`。
             rustshell_ui::main_view::ui_install_flush_session_layout_on_quit(cx);
+
+            // 窗口几何（位置 / 尺寸 / 最大化，2026-11-03）：单独一个钩子，不并进上面
+            // 那条 —— 两者写同一份 `settings.json` 的不同节，合起来「谁失败了」就看不出来。
+            rustshell_ui::main_view::ui_install_flush_window_bounds_on_quit(cx);
 
             // 启动动作（2026-09-28 起可配置，默认「打开本地终端」）。
             //
@@ -198,6 +269,33 @@ mod tests {
         assert_eq!(
             first, second,
             "两次装配条数不一致：{first} vs {second}（装配过程有隐藏状态？）"
+        );
+    }
+
+    /// 启动必须**真的**拿设置里的记录去还原窗口，而且必须经过 `fitted_to`。
+    ///
+    /// 两条都是「漏了不会报错、只有用户重启才看得出来」的那种退化：
+    /// 不读记录 ⇒ 每次都是 1400×900（功能等于没做）；不 clamp ⇒ 拔掉外接屏之后
+    /// 窗口落在屏幕外，用户看到的是「程序启动了，可什么都没出现」。
+    ///
+    /// 为什么只能源码级：`resolve_window_bounds` 要 `&mut App` 与真实显示器列表，
+    /// 单测里没有屏；钳制逻辑本身在 `core::window_bounds` 已由 7 条纯函数用例覆盖，
+    /// 这里钉的只是**装配层没把它绕过**。
+    #[test]
+    fn startup_window_bounds_are_restored_through_the_clamp() {
+        let code = include_str!("app.rs");
+        assert!(
+            code.contains("resolve_window_bounds(cx, settings.window_bounds)"),
+            "启动没把 `settings.window_bounds` 交给 `resolve_window_bounds` —— \
+             记了也不会还原"
+        );
+        assert!(
+            code.contains("fitted_to(screen)"),
+            "恢复路径绕过了 `fitted_to` —— 拔掉外接屏后窗口会落在看不见的地方"
+        );
+        assert!(
+            code.contains("visible_bounds()"),
+            "必须用 `visible_bounds`（排除任务栏），否则窗口会压到任务栏底下拖不出来"
         );
     }
 }
