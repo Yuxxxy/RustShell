@@ -1,4 +1,4 @@
-//! 概览面板：运行状态（主机名 / 系统 IP / 运行时长）
+//! 概览面板：运行状态（主机名 / 系统 IP / 运行时长 / 系统架构）
 //! + 资源走势（CPU / 内存 / 交换 / 网络 / 磁盘读写）+ 存储用量（df 信息）。
 //!
 //! 数据取「当前会话」的指标存储（[`MainView::metrics_for_active`]），
@@ -237,6 +237,13 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     } else {
         format_uptime(overview.uptime_secs)
     };
+    // 系统架构：本地取 `std::env::consts::ARCH`、远端取 `uname -m`（都过 `arch_label`
+    // 归一），老机器 / 采不到时给占位符而不是空串。
+    let arch = if overview.arch.is_empty() {
+        "—".to_string()
+    } else {
+        overview.arch.clone()
+    };
     // 首行 = **服务器名称**（当前会话的连接名 / 本地 Shell 的会话名）。
     //
     // 2026-09-18 用户要求「概览第一行应该是服务器名称？反正不是状态」：这一卡里的
@@ -265,6 +272,9 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
     status_card = status_card.child(info_row(tr("主机名"), hostname, Some("dash-hostname"), &t));
     status_card = status_card.child(info_row(tr("系统 IP"), ip, Some("dash-ip"), &t));
     status_card = status_card.child(info_row(tr("已运行"), uptime, None, &t));
+    // 2026-11-04 用户要求「概览，已运行下面增加系统架构字段」：紧跟运行时长一行，
+    // 与「这台机器是什么」的其余三行（连接名 / 主机名 / IP）同属一张卡。
+    status_card = status_card.child(info_row(tr("系统架构"), arch, None, &t));
     root = root.child(status_card);
 
     // ---- 资源走势（CPU / 内存 / 交换 / 网络 / 磁盘，网络图与磁盘图都在此）----
@@ -525,6 +535,36 @@ mod tests {
             copied.as_deref().map(str::trim),
             Some("web-01"),
             "Ctrl+C 没把主机名写进剪贴板"
+        );
+    }
+
+    /// 回归（2026-11-04 用户要求「概览模块，已运行下面增加系统架构字段」）：
+    ///
+    /// 三件事一起钉：字段真的渲染了、紧跟「已运行」之后、取的是已经归一过的
+    /// `overview.arch`（而不是另起一套 `cfg!(target_arch)` 之类的判据 ——
+    /// 那样本地/远端又是两个名字）。
+    #[test]
+    fn dashboard_shows_the_arch_right_under_uptime() {
+        let code = production_source();
+        let uptime_at = code
+            .find("info_row(tr(\"已运行\")")
+            .expect("找不到「已运行」那一行（结构锚点）");
+        let arch_at = code
+            .find("info_row(tr(\"系统架构\")")
+            .expect("概览里没有「系统架构」这一行");
+        assert!(
+            arch_at > uptime_at,
+            "「系统架构」必须排在「已运行」下面（用户指定的是这个位置）"
+        );
+        assert!(
+            code.contains("overview.arch.clone()"),
+            "系统架构必须取 `SystemOverview::arch`（本地与远端同一口径），\
+             不要在渲染层另算一份"
+        );
+        // 与其余三行同一个排版助手：左标签 + 右数值
+        assert!(
+            code.contains("info_row(tr(\"系统架构\"), arch, None, &t)"),
+            "「系统架构」那一行的参数形态变了（图标/可选中？）—— 它与「已运行」同为纯文本"
         );
     }
 

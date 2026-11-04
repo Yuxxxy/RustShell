@@ -232,6 +232,14 @@ pub struct SystemOverview {
     pub hostname: String,
     /// 系统 IP（本地默认路由出口地址，远端 `hostname -I` / `ip -o -4 addr`）
     pub ip: String,
+    /// 系统架构（本地 `std::env::consts::ARCH`，远端 `uname -m`）。
+    ///
+    /// 2026-11-04 用户要求「概览，已运行下面增加系统架构字段」。
+    /// 两侧都归一成 `uname -m` 的口径（[`arch_label`]）：同一台机器在本地终端
+    /// 与 SSH 会话里必须显示同一个名字，否则「x86_64 / amd64 / arm64 / aarch64」
+    /// 四种写法会让人以为是四台不同的机器。
+    #[serde(default)]
+    pub arch: String,
     /// 系统运行时长（秒）
     pub uptime_secs: u64,
     /// 文件系统用量（已过滤伪文件系统，按总容量降序）
@@ -245,6 +253,7 @@ impl SystemOverview {
     pub fn is_empty(&self) -> bool {
         self.hostname.is_empty()
             && self.ip.is_empty()
+            && self.arch.is_empty()
             && self.uptime_secs == 0
             && self.disks.is_empty()
     }
@@ -254,6 +263,28 @@ impl SystemOverview {
         self.disks.iter().fold((0u64, 0u64), |(u, t), d| {
             (u.saturating_add(d.used), t.saturating_add(d.total))
         })
+    }
+}
+
+/// 系统架构标签，归一成 `uname -m` 的口径（`x86_64` / `aarch64` / `armv7l` / `riscv64`）。
+///
+/// 为什么要归一而不是原样显示：同一个架构在不同来源有四个名字 ——
+/// `std::env::consts::ARCH` 给 `aarch64`，macOS 与 Windows 的 `uname -m` /
+/// 平台习惯写 `arm64`，`amd64` 与 `x86_64` 同理。概览里那一行是要告诉用户
+/// 「这台机器是什么 CPU 架构」，两种写法并存会让人以为是两台不同的机器。
+///
+/// 空输入返回空串（渲染层据此显示 `—`），不臆造一个默认架构。
+pub fn arch_label(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    match s.to_ascii_lowercase().as_str() {
+        "x86_64" | "amd64" | "x64" => "x86_64".to_string(),
+        "aarch64" | "arm64" => "aarch64".to_string(),
+        "armv7l" | "armv7" | "armhf" => "armv7l".to_string(),
+        // 认不出来的架构原样保留：猜错比不猜更糟（用户对 `uname -m` 一眼能验）
+        _ => s.to_string(),
     }
 }
 
@@ -503,6 +534,28 @@ mod tests {
             rb.push(i);
         }
         assert_eq!(rb.iter(), vec![3, 4, 5]);
+    }
+
+    /// 架构标签：同一个架构的四种写法必须收敛成同一个名字。
+    ///
+    /// 为什么值得一条用例：本地取 `std::env::consts::ARCH`（macOS/Windows 上是
+    /// `aarch64`），远端取 `uname -m`（macOS 上同样是 `arm64`）—— 不归一会让
+    /// 同一台机器在本地终端与 SSH 会话里显示两个不同的名字，而概览里那一行
+    /// 正是用户用来确认「连的是不是这台机器」的。
+    #[test]
+    fn arch_label_normalises_the_spellings() {
+        assert_eq!(arch_label("x86_64"), "x86_64");
+        assert_eq!(arch_label("amd64"), "x86_64");
+        assert_eq!(arch_label("X86_64"), "x86_64");
+        assert_eq!(arch_label("aarch64"), "aarch64");
+        assert_eq!(arch_label("arm64"), "aarch64");
+        // `uname -m` 的输出带换行（探测命令按行取段），必须先去空白
+        assert_eq!(arch_label(" armv7l\n"), "armv7l");
+        // 认不出来的原样保留：猜错比不猜更糟
+        assert_eq!(arch_label("riscv64"), "riscv64");
+        // 采不到就是空串（渲染层给 `—`），不许凭空编一个架构
+        assert_eq!(arch_label("   "), "");
+        assert_eq!(arch_label(""), "");
     }
 
     #[test]

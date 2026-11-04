@@ -1327,6 +1327,7 @@ mod tests {
         store.set_overview(SystemOverview {
             hostname: "web-1".into(),
             ip: "10.0.0.5".into(),
+            arch: "x86_64".into(),
             uptime_secs: 3 * 86400 + 2 * 3600 + 5 * 60,
             disks: Vec::new(),
             timestamp: 1_700_000_000,

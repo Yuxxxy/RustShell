@@ -313,6 +313,8 @@ fn translate(zh: &'static str) -> &'static str {
         "主机名" => "Hostname",
         "系统 IP" => "System IP",
         "已运行" => "Uptime",
+        // 2026-11-04 用户要求「概览，已运行下面增加系统架构字段」
+        "系统架构" => "Architecture",
         "存储" => "Storage",
         "资源走势" => "Trends",
         "暂无磁盘信息" => "No disk info",

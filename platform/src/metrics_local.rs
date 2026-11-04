@@ -5,7 +5,7 @@
 //! 按 [`OVERVIEW_INTERVAL`] 低频刷新，避免每轮都扫卷与网卡。
 
 use rustshell_core::metrics::{
-    bytes_delta_to_mb_per_sec, DiskInfo, MetricsStore, Sample, SystemOverview,
+    arch_label, bytes_delta_to_mb_per_sec, DiskInfo, MetricsStore, Sample, SystemOverview,
 };
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -112,6 +112,8 @@ pub fn spawn_local_metrics(store: Arc<MetricsStore>, interval_ms: Arc<AtomicU64>
                     store.set_overview(SystemOverview {
                         hostname: sysinfo::System::host_name().unwrap_or_default(),
                         ip: primary_ip(&nets),
+                        // 与远端 `uname -m` 同一个口径（`arch_label` 归一 amd64/arm64）
+                        arch: arch_label(std::env::consts::ARCH),
                         uptime_secs: sysinfo::System::uptime(),
                         disks: local_disks(&disks),
                         timestamp: Sample::now(),

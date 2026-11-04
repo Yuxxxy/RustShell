@@ -1,7 +1,7 @@
 //! SSH 会话（russh 0.63）：连接 到 认证 到 PTY/Shell 信道 到 桥接为同步 Pipe 流。
 
 use crate::connections::ConnectionProfile;
-use crate::metrics::{DfColumns, DiskInfo, MetricsStore, Sample, SystemOverview};
+use crate::metrics::{arch_label, DfColumns, DiskInfo, MetricsStore, Sample, SystemOverview};
 use crate::proxy::ProxyConfig;
 use crate::session::{
     build_session_pipes, InSink, OutSource, PipesSpec, ResizeSink, SessionHandle, SessionKind,
@@ -1350,10 +1350,15 @@ fn spawn_remote_metrics<H: russh::client::Handler + 'static>(
 ///
 /// `__DISKSTATS__` 给磁盘读写速率（概览的「磁盘」走势图）。放在**最后**：
 /// `df -h` 的输出是最后一段既有内容，把新段接在它后面，任何既有段的切分都不受影响。
+///
+/// `__ARCH__`（`uname -m`）给「系统架构」那一行（2026-11-04 用户要求加在「已运行」
+/// 下面）。它插在 `__IP__` 与 `__UPTIME__` 之间 —— 段是按标记名查的，插在中间
+/// 不影响任何既有段；老机器没有 `uname` 时该段为空，概览显示 `—`。
 pub const PROC_PROBE_CMD: &str =
     "cat /proc/stat /proc/meminfo; echo __NETDEV__; cat /proc/net/dev; \
      echo __HOST__; hostname 2>/dev/null; \
      echo __IP__; hostname -I 2>/dev/null; ip -o -4 addr show 2>/dev/null; \
+     echo __ARCH__; uname -m 2>/dev/null; \
      echo __UPTIME__; cat /proc/uptime 2>/dev/null; \
      echo __LOADAVG__; cat /proc/loadavg 2>/dev/null; \
      echo __DF__; df -P -k 2>/dev/null; \
@@ -1405,6 +1410,8 @@ pub fn parse_system_overview(text: &str) -> SystemOverview {
     SystemOverview {
         hostname: section(&sections, "__HOST__").trim().to_string(),
         ip: parse_ip(section(&sections, "__IP__")),
+        // `uname -m` 的原始输出（`x86_64` / `aarch64` / `armv7l`）→ 归一后的标签
+        arch: arch_label(section(&sections, "__ARCH__")),
         uptime_secs: parse_uptime(section(&sections, "__UPTIME__")),
         disks,
         timestamp: Sample::now(),
@@ -2011,6 +2018,8 @@ mod tests {
         192.168.1.20 10.0.0.5 \n\
         2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global eth0\n\
         1: lo    inet 127.0.0.1/8 scope host lo\n\
+        __ARCH__\n\
+        aarch64\n\
         __UPTIME__\n\
         6829.42 24000.10\n\
         __DF__\n\
@@ -2031,6 +2040,9 @@ mod tests {
         let o = parse_system_overview(SNAPSHOT_FULL);
         assert_eq!(o.hostname, "web-01");
         assert_eq!(o.ip, "192.168.1.20", "回环地址不得被当成系统 IP");
+        // 2026-11-04「已运行下面增加系统架构字段」：远端 `uname -m` 的结果
+        // 要过 `arch_label` 归一（`aarch64` 与 `arm64` 显示成同一个名字）
+        assert_eq!(o.arch, "aarch64", "系统架构没有从 __ARCH__ 段读出来");
         assert_eq!(o.uptime_secs, 6829);
         // tmpfs 与 /snap 下的 loop 设备都要被过滤掉
         assert_eq!(o.disks.len(), 2, "disks={:?}", o.disks);
@@ -2075,6 +2087,20 @@ mod tests {
         assert!(o.disks[0].df.is_none(), "缺 __DFH__ 时不该编造原样列");
         assert_eq!(o.disks[0].used_over_total(), "7.7G/49.1G");
         assert_eq!(o.disks[0].avail_text().as_deref(), Some("38.8G"));
+    }
+
+    /// 探测命令必须真的去问架构。
+    ///
+    /// 解析侧对缺失的段是「给空串、不报错」，所以命令里少一行 `uname -m`
+    /// 不会有任何报错 —— 概览里那一行只是永远显示 `—`。
+    #[test]
+    fn probe_command_asks_for_the_arch() {
+        assert!(
+            PROC_PROBE_CMD.contains("__ARCH__") && PROC_PROBE_CMD.contains("uname -m"),
+            "探测命令里没有 `__ARCH__` / `uname -m`：系统架构那一行永远是空的"
+        );
+        // 标记名必须唯一：重复的段标记会让 `section()` 只取到第一个
+        assert_eq!(PROC_PROBE_CMD.matches("__ARCH__").count(), 1);
     }
 
     /// `df -h -P` 的展示列：挂载点含空格时也要能对上（同一台机器两次 df 的
