@@ -531,6 +531,9 @@ fn translate(zh: &'static str) -> &'static str {
         // 它是「旧会话的输出」与「新会话的输出」之间唯一的界线，所以措辞要能独立读懂。
         "已重新连接" => "Reconnected",
         "重连失败：" => "Reconnect failed: ",
+        // 在途守卫挡住第二次「连接」时的提示（2026-11-04）：不发起新线程，
+        // 但要让用户知道「已经有一条在跑」，而不是把「点了没反应」留给他。
+        "正在连接中，请稍候…" => "Already connecting, please wait…",
         "会话已终止，右键标签可重新连接" => {
             "Session ended; right-click the tab to reconnect"
         }

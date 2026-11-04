@@ -37,6 +37,58 @@ struct DeadBarPlan {
     can_reconnect: bool,
 }
 
+/// 断连条那句整话：`连接已断开 · <原因> · <重连进展> · 重连失败：<错误>`。
+///
+/// 抽成纯函数只为一件事：**这段文案是「为什么没连上」的唯一载体**。
+/// 渲染帧里读不到文字（`debug_bounds` 只给几何），源码里那几行 push_str
+/// 也证明不了拼接顺序对不对（错误尾巴被前一段覆盖、或者压根没拼进去，
+/// 都能编译通过）。2026-11-04 用户反馈「连接失败但无任何失败提示」之后就明白了：
+/// 这条尾巴必须能被单测直接断言。
+///
+/// 四段的顺序是**因果顺序**：发生了什么（断开）→ 为什么断（远端关闭 / 网络中断）
+/// → 现在在干什么（正在重连 / 等退避）→ 刚才那一次为什么没成（失败原因）。
+fn dead_bar_message(
+    reason: &str,
+    retry: Option<&super::DeadBarRetry>,
+    reconnecting: bool,
+    retry_error: Option<&str>,
+) -> String {
+    let mut msg = rustshell_core::i18n::t("连接已断开").to_string();
+    msg.push_str(" · ");
+    msg.push_str(reason);
+    // 重连进展那段有两种句式（F-4）：正在连 vs 在等退避。前者是「已经发出去了」，
+    // 后者是「还要等一会儿」—— 用户对着一个不再刷新的画面时，这两句话正是他
+    // 判断「我该等还是该自己点一下」的全部依据，所以次数必须写在脸上。
+    match retry {
+        Some(rt) if rt.waiting => {
+            msg.push_str(" · ");
+            msg.push_str(&rustshell_core::i18n::ts(
+                format!("等待重试（第 {}/{} 次）", rt.attempt, rt.max),
+                format!("Waiting to retry ({}/{})", rt.attempt, rt.max),
+            ));
+        }
+        Some(rt) => {
+            msg.push_str(" · ");
+            msg.push_str(&rustshell_core::i18n::ts(
+                format!("正在重连…（第 {}/{} 次）", rt.attempt, rt.max),
+                format!("Reconnecting… ({}/{})", rt.attempt, rt.max),
+            ));
+        }
+        // 没有账本还在连 = 用户手动点的「重新连接」，没有次数可言
+        None if reconnecting => {
+            msg.push_str(" · ");
+            msg.push_str(rustshell_core::i18n::t("正在重连…"));
+        }
+        None => {}
+    }
+    if let Some(err) = retry_error {
+        msg.push_str(" · ");
+        msg.push_str(rustshell_core::i18n::t("重连失败："));
+        msg.push_str(err);
+    }
+    msg
+}
+
 impl MainView {
     // 分屏动作
 
@@ -632,41 +684,17 @@ impl MainView {
         let tok = crate::theme::current(cx);
 
         // 一句整话交给 `Alert`，两段之间用间隔号连起来：
-        // 「连接已断开 · 连接已被远端关闭 · 正在重连…（第 2/3 次）」
+        // 「连接已断开 · 连接已被远端关闭 · 正在重连…（第 2/3 次） · 重连失败：认证失败」
         //
-        // 重连进展那段有两种句式（F-4）：正在连 vs 在等退避。前者是「已经发出去了」，
-        // 后者是「还要等一会儿」—— 用户对着一个不再刷新的画面时，这两句话正是他
-        // 判断「我该等还是该自己点一下」的全部依据，所以次数必须写在脸上。
-        let mut msg = rustshell_core::i18n::t("连接已断开").to_string();
-        msg.push_str(" · ");
-        msg.push_str(&plan.reason);
-        match plan.retry.as_ref() {
-            Some(rt) if rt.waiting => {
-                msg.push_str(" · ");
-                msg.push_str(&rustshell_core::i18n::ts(
-                    format!("等待重试（第 {}/{} 次）", rt.attempt, rt.max),
-                    format!("Waiting to retry ({}/{})", rt.attempt, rt.max),
-                ));
-            }
-            Some(rt) => {
-                msg.push_str(" · ");
-                msg.push_str(&rustshell_core::i18n::ts(
-                    format!("正在重连…（第 {}/{} 次）", rt.attempt, rt.max),
-                    format!("Reconnecting… ({}/{})", rt.attempt, rt.max),
-                ));
-            }
-            // 没有账本还在连 = 用户手动点的「重新连接」，没有次数可言
-            None if plan.reconnecting => {
-                msg.push_str(" · ");
-                msg.push_str(rustshell_core::i18n::t("正在重连…"));
-            }
-            None => {}
-        }
-        if let Some(err) = plan.retry_error.as_deref() {
-            msg.push_str(" · ");
-            msg.push_str(rustshell_core::i18n::t("重连失败："));
-            msg.push_str(err);
-        }
+        // 文案拼装抽成 [`dead_bar_message`]（纯函数）：这段字符串是「连接为什么没连上」
+        // 的唯一载体，只能靠单测钉住（渲染帧里读不到文字）。2026-11-04 用户反馈
+        // 「连接失败但无任何失败提示」时，先要能证明这句尾巴确实拼进去了。
+        let msg = dead_bar_message(
+            &plan.reason,
+            plan.retry.as_ref(),
+            plan.reconnecting,
+            plan.retry_error.as_deref(),
+        );
 
         let rid = session_id.to_string();
         let mut actions = h_flex().flex_shrink_0().gap_2();
@@ -1139,6 +1167,66 @@ mod tests {
             body.contains("tab.is_healthy()"),
             "窗格状态点必须用 `is_healthy`（终端可用 **或** SFTP 标签可用），\n\
              只问 `is_live()` 会把 SFTP 标签画成灰点。"
+        );
+    }
+
+    /// 断连条文案必须**带上失败原因**（2026-11-04 用户反馈
+    /// 「ssh 连接断开后，tab 右键【连接】，连接失败但是无任何失败提示」）。
+    ///
+    /// 这一条只能靠纯函数钉：渲染帧里读不到文字，`debug_bounds` 只给几何 ——
+    /// 文案里少拼一段时，条还在、高度还在、什么都测不出来。
+    #[test]
+    fn the_dead_bar_spells_out_why_the_reconnect_failed() {
+        use super::dead_bar_message;
+        use crate::main_view::DeadBarRetry;
+
+        // ① 用户手动重连失败：没有账本、在连、带着失败原因
+        let msg = dead_bar_message("连接已被远端关闭", None, true, Some("认证失败"));
+        assert!(
+            msg.contains("连接已断开"),
+            "断连条必须先说清发生了什么：{msg}"
+        );
+        assert!(
+            msg.contains("连接已被远端关闭"),
+            "断连条要带上断连原因：{msg}"
+        );
+        assert!(
+            msg.contains("重连失败：") && msg.contains("认证失败"),
+            "用户手动重连失败后，断连条上必须出现失败原因 —— \
+             这正是「连接失败但无任何提示」那一条反馈的落点：{msg}"
+        );
+
+        // ② 有账本时给进展（等退避 / 正在连），并且失败尾巴仍然在
+        let waiting = DeadBarRetry {
+            attempt: 2,
+            max: 3,
+            waiting: true,
+        };
+        let msg = dead_bar_message("连接已被远端关闭", Some(&waiting), false, Some("超时"));
+        assert!(msg.contains("等待重试（第 2/3 次）"), "等退避的句式：{msg}");
+        assert!(msg.contains("超时"), "失败原因不许被进展那段挤掉：{msg}");
+
+        let flying = DeadBarRetry {
+            attempt: 2,
+            max: 3,
+            waiting: false,
+        };
+        let msg = dead_bar_message("连接已被远端关闭", Some(&flying), true, None);
+        assert!(msg.contains("正在重连…（第 2/3 次）"), "在连的句式：{msg}");
+        assert!(
+            !msg.contains("重连失败"),
+            "没有失败原因时不许凭空写「重连失败」：{msg}"
+        );
+
+        // ③ 干断着（没人去连）：只有断开 + 原因，两段都不该多出来
+        let msg = dead_bar_message("网络中断", None, false, None);
+        assert_eq!(
+            msg,
+            format!(
+                "{} · 网络中断",
+                rustshell_core::i18n::t("连接已断开")
+            ),
+            "干断着的标签不该出现重连字样"
         );
     }
 }

@@ -1519,6 +1519,14 @@ impl MainView {
         // 产生 N-1 个孤儿会话。守卫放在**改动 Tab 状态之前**，重复请求完全无副作用。
         if !self.conn_ui.connecting_profiles.insert(p.id.clone()) {
             log::info!("忽略重复的重连请求（已有在途连接线程）: tab={id} profile={pid}");
+            // 静默 return 的观感是「点了没反应」（2026-11-04 同类反馈：
+            // 连接失败必须有人告诉用户）。这里不发起第二次连接，但要说一句
+            // 「已经有一条在跑」——用户才知道该等，而不是再点几下。
+            self.queue_notice(
+                crate::notice::NoticeKind::Warning,
+                rustshell_core::i18n::t("正在连接中，请稍候…").to_string(),
+            );
+            cx.notify();
             return;
         }
 
@@ -1529,6 +1537,10 @@ impl MainView {
                 // 而不是被扔回一张「连接中」的空占位卡。
                 // `dead` 留在原地：新会话真建立之前，输入必须一直是封死的。
                 tab.session.state = SessionState::Connecting;
+                // 上一次失败的原因在这里清掉（2026-11-04）：不清的话，用户点了「连接」
+                // 之后断连条还挂着上一轮的「重连失败：认证失败」，看起来像这次也已经
+                // 失败了；等这次结果回来再由 `poll` 的失败分支写新原因。
+                tab.connect_error = None;
                 tab.connect_started = Some(std::time::Instant::now());
             } else {
                 Self::detach_session(tab); // 先放掉旧会话（已连接时相当于重连）

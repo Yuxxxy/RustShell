@@ -660,9 +660,8 @@ fn the_dead_bar_lives_inside_the_terminal_pane_and_blocks_the_mouse() {
 
     let bar = region(&split, "fn render_dead_bar", "fn render_pane_header");
     for needle in [
-        // 钉住四个口径：挡住鼠标、说明断连、给出两个动作
+        // 钉住三个口径：挡住鼠标、给出两个动作
         ".occlude()",
-        "t(\"连接已断开\")",
         "t(\"重新连接\")",
         "t(\"关闭标签\")",
     ] {
@@ -673,6 +672,19 @@ fn the_dead_bar_lives_inside_the_terminal_pane_and_blocks_the_mouse() {
              不挡的话点「重新连接」会同时把一次鼠标事件送给终端。"
         );
     }
+    // 「连接已断开 · 原因 · 进展 · 失败原因」这句整话搬进了纯函数
+    // `dead_bar_message`（2026-11-04：渲染帧里读不到文字，只能靠单测钉文案）。
+    // 所以这里钉的是**接线**（断连条必须用那个函数），文案本身由
+    // `split_actions::tests::the_dead_bar_spells_out_why_the_reconnect_failed` 钉。
+    assert!(
+        bar.contains("dead_bar_message("),
+        "断连条不再用 `dead_bar_message` 拼文案 —— 「连接已断开」这句话就没地方写了"
+    );
+    let msg_fn = region(&split, "fn dead_bar_message", "impl MainView");
+    assert!(
+        msg_fn.contains("t(\"连接已断开\")"),
+        "`dead_bar_message` 里少了 `t(\"连接已断开\")`：「在终端界面显示连接断开」就落不了地"
+    );
     assert!(
         bar.contains("NoticeKind::Error"),
         "断连条必须走 `crate::notice` 的官方 `Alert`（`no_panel_hand_rolls_a_warning_icon` \

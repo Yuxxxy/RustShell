@@ -2244,15 +2244,35 @@ impl MainView {
                     log::warn!("SSH 连接失败: profile={profile_id} err={e}");
                     // 把错误写进对应 Tab（超时/拒绝/认证失败都在这里落地），
                     // 而不是只丢到一个全局提示里，用户需要知道「哪个连接、为什么失败」。
-                    let slot = self.tabs_state.tabs.iter_mut().find(|t| {
-                        t.awaits_connect_result()
-                            && t.session.profile_id.as_deref() == Some(profile_id.as_str())
-                    });
-                    match slot {
-                        Some(tab) => {
+                    //
+                    // ★ 2026-11-04 用户反馈「ssh 连接断开后，tab 右键【连接】，连接失败
+                    //   但是无任何失败提示」：落点原来**只认** `awaits_connect_result`
+                    //   （= 状态必须停在 `Connecting`）。断连现场那次重连一旦被别的分支
+                    //   抢先改了状态（或用户在两次尝试之间又点了一下、`start_reconnect`
+                    //   因在途守卫提前返回），这次失败就找不到落点，掉进 `None` 分支变成
+                    //   一条顶部全局条 —— 而断连条上那句「重连失败：…」永远不会出现。
+                    //   现在补一条兜底：同一 profile 的**断连现场**也是合法落点，
+                    //   它正是用户眼前那一屏。
+                    let ix = self
+                        .tabs_state
+                        .tabs
+                        .iter()
+                        .position(|t| {
+                            t.awaits_connect_result()
+                                && t.session.profile_id.as_deref() == Some(profile_id.as_str())
+                        })
+                        .or_else(|| {
+                            self.tabs_state.tabs.iter().position(|t| {
+                                t.is_dead()
+                                    && t.session.profile_id.as_deref() == Some(profile_id.as_str())
+                            })
+                        });
+                    match ix {
+                        Some(ix) => {
+                            let tab = &mut self.tabs_state.tabs[ix];
                             tab.connect_started = None;
                             tab.session.state = SessionState::Closed;
-                            // 断连态下的重连失败：**画面与断连条一个字都不动**，
+                            // 断连态下的重连失败：**画面与断连条正文一个字都不动**，
                             // 只把失败原因挂到 `connect_error` 上，让断连条多显示
                             // 一段「重连失败：…」的尾巴。
                             //
@@ -2260,7 +2280,7 @@ impl MainView {
                             // 换成「连接失败」占位卡（`dead` 同时是输入封死与断连条
                             // 渲染的开关），正是本次要消灭的「跳页面」。
                             // 占位卡只在 `terminal.is_none()` 时才会选上，与这里无关。
-                            tab.connect_error = Some(e);
+                            tab.connect_error = Some(e.clone());
                             // 账本还有预算就排下一次（退避），用尽就清账并在断连条上
                             // 留下最终原因。判定读**实时**的开关与连接级三态：
                             // 用户在重试途中把自动重连关掉，就是这个停止键生效的时刻。
@@ -2274,6 +2294,14 @@ impl MainView {
                                 self.settings.auto_reconnect,
                                 self.settings.reconnect_interval_secs,
                             );
+                            // 用户**手动**发起的重连失败（没有账本、又停在断连现场）：
+                            // 断连条底部那行 11px 小字是他唯一的线索，而它和「连接已断开 ·
+                            // 原因」挤在同一行里，长主机名 / 窄窗格时几乎读不到。再弹一条
+                            // 消息框（`crate::notice` 的统一出口，右上角、可手动关），
+                            // 保证「点了连接、没连上」这件事一定有人告诉他。
+                            // 自动重连（有账本）**不弹**：那是一个会自己继续重试的循环，
+                            // 每轮弹一个框就成了骚扰。
+                            let manual_failure = tab.is_dead() && !had_ledger;
                             match (next, tab.retry_progress()) {
                                 (Some(wait), Some(p)) => log::info!(
                                     "重连失败，{wait} 秒后第 {}/{} 次重试: profile={profile_id}",
@@ -2287,6 +2315,15 @@ impl MainView {
                             }
                             let id = tab.session.id.clone();
                             self.tabs_state.active = Some(id);
+                            if manual_failure {
+                                // 文案与断连条尾巴同一个词条（`重连失败：`），
+                                // 英文模式下两处也不会一个「Reconnect failed」一个「重连失败」。
+                                let msg = rustshell_core::i18n::ts(
+                                    format!("{}{}", rustshell_core::i18n::t("重连失败："), e),
+                                    format!("Reconnect failed: {e}"),
+                                );
+                                self.queue_notice(crate::notice::NoticeKind::Error, msg);
+                            }
                         }
                         None => self.conn_ui.connect_error = Some(e),
                     }

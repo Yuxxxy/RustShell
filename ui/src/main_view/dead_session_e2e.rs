@@ -313,6 +313,119 @@ mod e2e {
         );
     }
 
+    /// 2026-11-04 用户反馈「ssh 连接断开后，tab 右键【连接】，连接失败但是无任何
+    /// 失败提示」—— 端到端钉住「失败一定有提示」。
+    ///
+    /// 为什么必须整屏验：这里有三条各自都「看着对」的链路 ——
+    /// ① 后台线程把 `Err(profile, 原因)` 发回 `connect_results`；
+    /// ② `poll` 的失败分支把它落到**这一张**断连现场上（`connect_error`）；
+    /// ③ 断连条与消息框把它显示出来。
+    /// 任何一环断掉，单测都能全绿（文案拼装看起来在、落点代码看起来在），
+    /// 用户那边却是「点了没反应、也没人告诉我为什么」。
+    ///
+    /// 连接目标是 `127.0.0.1:1`：本机必然「积极拒绝」，几毫秒就回一个**真实**的
+    /// 失败原因，用例既不需要网络也不依赖任何凭据。
+    #[gpui::test]
+    fn a_failed_reconnect_from_the_dead_scene_reports_why(cx: &mut gpui::TestAppContext) {
+        allow_real_io(cx);
+        let (main, vcx, _feed, _sink) = build_with_a_connected_ssh_tab(cx);
+
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, _| {
+                m.conn_store
+                    .profiles
+                    .push(rustshell_core::connections::ConnectionProfile {
+                        id: "p-e2e".into(),
+                        name: "e2e".into(),
+                        host: "127.0.0.1".into(),
+                        port: 1,
+                        username: "u".into(),
+                        password: None,
+                        stored_password: None,
+                        key_path: None,
+                        notes: String::new(),
+                        group_id: None,
+                        legacy_group: None,
+                        last_used_at: 0,
+                        tags: Vec::new(),
+                        auto_reconnect: None,
+                        forwards: Vec::new(),
+                        proxy: rustshell_core::proxy::ProxyChoice::default(),
+                        session_log: None,
+                    });
+            });
+        });
+
+        // 掉线：走真实收场路径（`poll` 收到 `SessionEvent::Closed` 时调的就是它）
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| {
+                m.mark_session_dead("e2e-dead", "连接已被远端关闭".to_string(), cx)
+            });
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("term-dead-bar").is_some(),
+            "前提不成立：断连条没画出来，后面的「失败提示」就无从谈起"
+        );
+
+        // 用户右键标签点了「连接」（`tab_bar` 的菜单项落点就是 `reconnect_tab`）
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| m.reconnect_tab("e2e-dead", cx));
+        });
+        vcx.run_until_parked();
+
+        // 真连接线程会失败，`poll` 才把结果收进来 —— 轮询到结果出现为止。
+        // 通知队列必须在**同一次** update 里读：`render` 开头会 `flush_notices`
+        // 把它推给窗口并清空，跨帧再读就永远是空的。
+        type Outcome = (Option<String>, Vec<(crate::notice::NoticeKind, String)>, bool);
+        let mut outcome: Option<Outcome> = None;
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let r = vcx.update(|_w, cx| {
+                main.update(cx, |m, cx| {
+                    m.poll(cx);
+                    let tab = &m.tabs_state.tabs[0];
+                    (tab.connect_error.clone(), m.notices.clone(), tab.is_dead())
+                })
+            });
+            if r.0.is_some() {
+                outcome = Some(r);
+                break;
+            }
+        }
+
+        let (tab_err, notices, still_dead) = outcome.expect(
+            "重连失败后 `tabs[0].connect_error` 仍是空的：\
+             后台的失败结果没有任何落点（用户看到的就是「无任何失败提示」）",
+        );
+        let err = tab_err.expect("上面已保证非空");
+        assert!(
+            !err.trim().is_empty(),
+            "失败原因写进了 `connect_error` 却是空串，断连条上只会出现「重连失败：」"
+        );
+        assert!(
+            still_dead,
+            "重连失败把断连现场清掉了（`dead` 被清 = 用户那一屏输出被换成占位卡）"
+        );
+
+        // 失败原因必须真的被推给用户：消息框（`crate::notice` 的统一出口）
+        assert!(
+            notices.iter().any(|(kind, msg)| {
+                *kind == crate::notice::NoticeKind::Error && msg.contains(&err)
+            }),
+            "重连失败没有弹出任何提示（通知队列里只有 {notices:?}）：\
+             断连条底部那行小字是唯一线索，而它常常被长文案挤没 —— \
+             用户看到的就是「连接失败但没有任何提示」"
+        );
+
+        // 断连条仍在帧上（画面与条都不动，只是多了「重连失败：…」那段尾巴）
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("term-dead-bar").is_some(),
+            "重连失败后断连条消失了：现场必须留着，用户在那儿重试"
+        );
+    }
+
     /// 读 `tabs[0]` **当前**那个终端视图的屏面。
     ///
     /// 刻意不复用外面捕获的 `Entity`：那样量到的是「老的那块屏还在不在」，
