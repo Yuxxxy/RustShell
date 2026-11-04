@@ -204,8 +204,18 @@ jobs:
 
       # rust_targets 由矩阵给：macOS 通用二进制要 aarch64 + x86_64 两个目标，
       # 其余平台为空串（只装 host 目标）。dtolnay 这个 action 的 targets 是逗号分隔。
+      #
+      # ⚠️ 工具链版本与 CI 门禁保持一致（1.99.1，见仓库根 rust-toolchain.toml）：
+      #   release 产物必须由「与 CI 验证过的那套编译器」产出，否则门禁验的东西和
+      #   发出去的二进制不是一回事。版本号写在这里而不是读 rust-toolchain.toml，
+      #   是因为 release 需要额外装跨平台 targets；两处版本号必须同步改
+      #   （升级流程见那份文件）。
+      #
+      # 用 `@1.99.1` 版本 ref（而非 `@master` + toolchain 输入）：action 会把 ref
+      # 里的版本号直接当工具链版本装上。别改成两段式版本号 —— `1.99` 会被翻译成
+      # 「N 个月前的 stable」。
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.rust_targets }}
 

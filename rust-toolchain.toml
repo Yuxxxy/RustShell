@@ -1,0 +1,26 @@
+# 钉住工具链版本（2026-11-04）。
+#
+# 为什么必须钉：
+#
+# CI 门禁里有 `cargo fmt --all -- --check`，而 rustfmt 的**折行规则会跨版本变**
+# —— 1.10 改了长链式调用的折行策略。于是同一个仓库：
+#   · 本地 rustfmt 1.9.0  → 24 个文件「脏」
+#   · CI    rustfmt 1.10 → 同样 24 个文件「脏」，但**折行位置不同**
+# CI 曾经连续红了一个多月（run #16 ~ #31），每次看到的报错文件都与当次改动无关，
+# 就是因为门禁跟着 `stable` 漂移、而仓库从来没按当前 stable 的规则格式化过。
+#
+# 钉住之后：`rustfmt --version` 在本地与 CI 必然一致，`cargo fmt --check` 才是
+# 一个**有意义**的门禁 —— 它拦的是「本次改动破坏了格式」，而不是「stable 又升级了」。
+#
+# 升级流程（别直接改这里的数字）：
+#   1. `rustup toolchain install <新版本> --profile minimal --component rustfmt`
+#   2. `cargo +<新版本> fmt --all`          ← 用新规则归一全仓，单独一个提交
+#   3. 改本文件的 channel，跑一遍 CI
+#   4. 若新版本引入新的 clippy 告警，一并修掉（门禁是 `-D warnings`）
+#
+# components 里的 clippy 必须留着：CI 的 clippy 门禁用 `-D warnings`，而 clippy 的
+# 告警集同样随版本变（1.98 的 `manual_contains` 就是新加的）。
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

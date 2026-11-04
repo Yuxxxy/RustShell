@@ -23,10 +23,21 @@ jobs:
       # ⚠️ upload-artifact 是例外，它的 v5 仍是 node20 —— 见 release.yml，别按这里"统一"。
       - uses: actions/checkout@v5
 
+      # ⚠️ 工具链必须**钉版本**，不能写 `@stable`：
+      #   rustfmt 的折行规则会跨版本变（1.10 改了长链式调用的折行策略），clippy 的
+      #   告警集也是。于是「跟着 stable 漂移」的 fmt 门禁会在 stable 升级当天全仓变红，
+      #   而报错文件与当次改动毫无关系 —— 本仓曾因此连续红了一个多月（run #16 ~ #31）。
+      # 版本号写在仓库根的 rust-toolchain.toml 里（本地与 CI 共用同一份），
+      # 升级流程见那份文件的注释。
+      #
+      # 这里用 `@1.99.1` 这个**版本 ref**（而不是 `@master` + toolchain 输入）：
+      #   action 会把 ref 里的版本号直接当工具链版本装上，零歧义。反过来
+      #   `@master` + `toolchain: 1.99` 会被当成「N 个月前的 stable」翻译 —— 两段式
+      #   版本号有特殊语义，三段式才走「原样透传」。别把这处改成两段式。
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: actions/cache@v5
