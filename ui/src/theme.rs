@@ -583,8 +583,7 @@ mod tests {
                     theme.colors.list_active.a
                 );
                 assert_eq!(
-                    theme.colors.list_hover.h,
-                    theme.colors.list_active.h,
+                    theme.colors.list_hover.h, theme.colors.list_active.h,
                     "{mode:?} 主题下两者色相必须同源（都是 accent），只在深浅上分层"
                 );
                 assert_eq!(

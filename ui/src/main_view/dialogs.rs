@@ -585,7 +585,11 @@ impl MainView {
             .child(
                 h_flex()
                     .gap_4()
-                    .child(auth_radio("dlg-auth-password", "密码认证", AuthMode::Password))
+                    .child(auth_radio(
+                        "dlg-auth-password",
+                        "密码认证",
+                        AuthMode::Password,
+                    ))
                     .child(auth_radio("dlg-auth-key", "私钥认证", AuthMode::Key)),
             );
 
@@ -1339,10 +1343,7 @@ impl MainView {
             AuthMode::Key => (None, key_path),
         };
         if self.io.dlg_auth == AuthMode::Key && key_path.is_empty() {
-            self.io.dlg_test = Some((
-                false,
-                rustshell_core::i18n::t("请选择私钥文件").to_string(),
-            ));
+            self.io.dlg_test = Some((false, rustshell_core::i18n::t("请选择私钥文件").to_string()));
             cx.notify();
             return;
         }
@@ -2569,9 +2570,7 @@ impl MainView {
                     div()
                         .text_size(px(11.))
                         .text_color(hex(theme.fg_muted))
-                        .child(SharedString::from(
-                            path.to_string_lossy().to_string(),
-                        )),
+                        .child(SharedString::from(path.to_string_lossy().to_string())),
                 );
             }
         }
@@ -2780,11 +2779,7 @@ impl MainView {
             v.open(cx);
         });
         self.io.dlg_error = None;
-        self.present_dialog(
-            DialogMode::SftpMkdir { base, local, file },
-            window,
-            cx,
-        );
+        self.present_dialog(DialogMode::SftpMkdir { base, local, file }, window, cx);
     }
 
     /// 打开「重命名」对话框：预填的是**名字**（不含路径），与文件管理器一致 ——
@@ -2825,11 +2820,7 @@ impl MainView {
             v.open(cx);
         });
         self.io.dlg_error = None;
-        self.present_dialog(
-            DialogMode::SftpRename { from, dir, local },
-            window,
-            cx,
-        );
+        self.present_dialog(DialogMode::SftpRename { from, dir, local }, window, cx);
     }
 
     /// 「新建目录 / 重命名」共用的对话框：只差标题与按钮文案，正文是同一个
@@ -2950,12 +2941,7 @@ impl MainView {
     /// 一口径）：关掉再开一次会让用户刚敲的名字消失，而错误的输入还在那里等着重敲。
     fn sftp_mkdir_save(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let name = self.io.group_name_body.read(cx).value(cx);
-        let Some(DialogMode::SftpMkdir {
-            base,
-            local,
-            file,
-        }) = self.dialog.clone()
-        else {
+        let Some(DialogMode::SftpMkdir { base, local, file }) = self.dialog.clone() else {
             return;
         };
         if let Err(why) = rustshell_core::sftp::check_entry_name(&name) {
@@ -3196,22 +3182,19 @@ impl MainView {
             // —— 那个场景正是「测试连接遇到的未知主机」。
             .debug_selector(|| "dlg-trust-body".to_string())
             .child(
-            div()
-                .text_size(px(12.))
-                .text_color(hex(t.fg_muted))
-                .child(SharedString::from(intro)),
-        );
+                div()
+                    .text_size(px(12.))
+                    .text_color(hex(t.fg_muted))
+                    .child(SharedString::from(intro)),
+            );
         if let Some((old_fp, old_type)) = &changed {
             body = body
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(hex(t.fg_muted))
-                        .child(SharedString::from(rustshell_core::i18n::ts(
-                            format!("旧指纹（known_hosts 记录，{old_type}）：{old_fp}"),
-                            format!("Old fingerprint (known_hosts, {old_type}): {old_fp}"),
-                        ))),
-                )
+                .child(div().text_size(px(12.)).text_color(hex(t.fg_muted)).child(
+                    SharedString::from(rustshell_core::i18n::ts(
+                        format!("旧指纹（known_hosts 记录，{old_type}）：{old_fp}"),
+                        format!("Old fingerprint (known_hosts, {old_type}): {old_fp}"),
+                    )),
+                ))
                 .child(
                     div()
                         .text_size(px(12.))
@@ -3533,14 +3516,8 @@ fn credential_sides(
     key_path: &str,
 ) -> (Option<String>, Option<String>) {
     match auth {
-        AuthMode::Password => (
-            (!pass.is_empty()).then(|| pass.to_string()),
-            None,
-        ),
-        AuthMode::Key => (
-            None,
-            (!key_path.is_empty()).then(|| key_path.to_string()),
-        ),
+        AuthMode::Password => ((!pass.is_empty()).then(|| pass.to_string()), None),
+        AuthMode::Key => (None, (!key_path.is_empty()).then(|| key_path.to_string())),
     }
 }
 
@@ -3831,7 +3808,9 @@ pub(in crate::main_view) mod tests {
         main.update_in(vcx, |m, window, cx| {
             m.conn_store
                 .groups
-                .push(rustshell_core::connections::ConnectionGroup::new("另一个组"));
+                .push(rustshell_core::connections::ConnectionGroup::new(
+                    "另一个组",
+                ));
             m.open_connect_dialog(None, window, cx);
         });
         vcx.run_until_parked();
@@ -4100,9 +4079,7 @@ pub(in crate::main_view) mod tests {
     fn sftp_intent_is_set_by_open_sftp_and_cleared_by_connect(cx: &mut gpui::TestAppContext) {
         let (main, vcx) = build_main(cx);
         let has = |vcx: &mut gpui::VisualTestContext, id: &str| {
-            main.read_with(vcx, |m, _| {
-                m.conn_ui.sftp_only_profiles.contains(id)
-            })
+            main.read_with(vcx, |m, _| m.conn_ui.sftp_only_profiles.contains(id))
         };
 
         main.update_in(vcx, |m, window, cx| m.open_sftp("ghost-id", window, cx));
@@ -4112,7 +4089,9 @@ pub(in crate::main_view) mod tests {
              开出一条带终端的会话"
         );
 
-        main.update_in(vcx, |m, window, cx| m.connect_profile("ghost-id", window, cx));
+        main.update_in(vcx, |m, window, cx| {
+            m.connect_profile("ghost-id", window, cx)
+        });
         assert!(
             !has(vcx, "ghost-id"),
             "普通「连接」没有清掉 SFTP 意图：上次右键「打开 SFTP」的残留会让这次连接\

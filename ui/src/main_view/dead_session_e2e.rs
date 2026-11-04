@@ -377,7 +377,11 @@ mod e2e {
         // 真连接线程会失败，`poll` 才把结果收进来 —— 轮询到结果出现为止。
         // 通知队列必须在**同一次** update 里读：`render` 开头会 `flush_notices`
         // 把它推给窗口并清空，跨帧再读就永远是空的。
-        type Outcome = (Option<String>, Vec<(crate::notice::NoticeKind, String)>, bool);
+        type Outcome = (
+            Option<String>,
+            Vec<(crate::notice::NoticeKind, String)>,
+            bool,
+        );
         let mut outcome: Option<Outcome> = None;
         for _ in 0..100 {
             std::thread::sleep(std::time::Duration::from_millis(50));

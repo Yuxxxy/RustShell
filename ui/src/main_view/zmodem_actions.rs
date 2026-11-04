@@ -148,7 +148,7 @@ impl MainView {
                             .xsmall()
                             .label(t("取消"))
                             .on_click(move |_e, _w, cx| {
-                                let _ = ent.update(cx, |v, _| v.cancel_zmodem());
+                                ent.update(cx, |v, _| v.cancel_zmodem());
                             }),
                     )
                 })

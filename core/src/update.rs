@@ -263,10 +263,7 @@ pub fn download(asset: &Asset, dest: &Path) -> anyhow::Result<()> {
     drop(file);
     if asset.size > 0 && got != asset.size {
         let _ = std::fs::remove_file(dest);
-        bail!(
-            "下载不完整（期望 {} 字节，实际 {got} 字节）",
-            asset.size
-        );
+        bail!("下载不完整（期望 {} 字节，实际 {got} 字节）", asset.size);
     }
     Ok(())
 }

@@ -103,38 +103,33 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         // 与连接树搜索框同一手法（`Input::prefix`，图标落在框内左侧、
         // 随输入框高度居中）。此前这里明确撤掉过放大镜，现在是加回来。
         .child(
-            h_flex()
-                .w_full()
-                .items_center()
-                .px_3()
-                .py_2()
-                .child(
-                    // 包装层挂「点框外失焦」（与连接栏同一手法）：点列表行、
-                    // 空白区这些不可聚焦的地方时，焦点也应当从搜索框松开。
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .debug_selector(|| "task-search-box".to_string())
-                        .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
-                            super::main_view::blur_input_on_outside_click(&m.io.task_search, w, cx)
-                        }))
-                        .child(
-                            Input::new(&m.io.task_search)
-                                .small()
-                                .cleanable(true)
-                                .prefix(
-                                    // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
-                                    div()
-                                        .debug_selector(|| "task-search-icon".to_string())
-                                        .child(
-                                            Icon::new(LucideIcon::Search)
-                                                .xsmall()
-                                                .text_color(hex(t.fg_muted)),
-                                        ),
-                                )
-                                .w_full(),
-                        ),
-                ),
+            h_flex().w_full().items_center().px_3().py_2().child(
+                // 包装层挂「点框外失焦」（与连接栏同一手法）：点列表行、
+                // 空白区这些不可聚焦的地方时，焦点也应当从搜索框松开。
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .debug_selector(|| "task-search-box".to_string())
+                    .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
+                        super::main_view::blur_input_on_outside_click(&m.io.task_search, w, cx)
+                    }))
+                    .child(
+                        Input::new(&m.io.task_search)
+                            .small()
+                            .cleanable(true)
+                            .prefix(
+                                // 外层 div 只为挂量取钩子（图标本身不带 debug_selector）。
+                                div()
+                                    .debug_selector(|| "task-search-icon".to_string())
+                                    .child(
+                                        Icon::new(LucideIcon::Search)
+                                            .xsmall()
+                                            .text_color(hex(t.fg_muted)),
+                                    ),
+                            )
+                            .w_full(),
+                    ),
+            ),
         )
         // 兜底提示：只留给**失败与异常**（提示出口见 `show_task_toast`）。
         // 「已保存 / 已开始执行 / 已启用」这类成功确认已按用户要求撤下 ——

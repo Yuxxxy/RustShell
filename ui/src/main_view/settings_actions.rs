@@ -673,7 +673,6 @@ impl MainView {
         }
         cx.notify();
     }
-
 }
 
 #[cfg(test)]

@@ -282,9 +282,11 @@ pub(crate) fn take_due_retries(tabs: &mut [TabEntry], now: std::time::Instant) -
 pub(crate) fn display_tab_title(tab: &TabEntry, conn_store: &ConnectionStore) -> String {
     let base = tab.session.title.clone();
     // 外部链接的临时连接本来就不在库里 —— 不能因此说它「配置已删除」。
-    let external = tab.session.profile_id.as_deref().is_some_and(|pid| {
-        pid.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX)
-    });
+    let external = tab
+        .session
+        .profile_id
+        .as_deref()
+        .is_some_and(|pid| pid.starts_with(rustshell_core::launch::EXTERNAL_PROFILE_PREFIX));
     let gone = !external
         && tab.terminal.is_none()
         && tab

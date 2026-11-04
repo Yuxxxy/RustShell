@@ -61,8 +61,7 @@ pub fn snapshot_rows() -> Vec<KeymapRow> {
 /// 选材标准：此刻窗格里**没有任何会话**，所以只列「怎么把会话弄出来」和
 /// 「其余能力的入口在哪」。终端相关动作（终端内搜索 / 拆分 / 切标签）刻意不列 ——
 /// 现在按下它们一点效果都没有，列出来只会让人以为坏了。
-pub const EMPTY_STATE_ACTIONS: &[&str] =
-    &["NewTab", "CommandPalette", "OpenSettings"];
+pub const EMPTY_STATE_ACTIONS: &[&str] = &["NewTab", "CommandPalette", "OpenSettings"];
 
 /// 生成空窗格提示行：`(显示名, 键位展示串)`，与 [`EMPTY_STATE_ACTIONS`] 一一对应。
 ///

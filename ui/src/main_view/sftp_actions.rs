@@ -64,7 +64,13 @@ impl MainView {
 
     /// 本地路径框回车：跳到手输的目录（相对路径按当前目录解析）。
     pub(crate) fn sftp_local_goto_typed_path(&mut self, cx: &mut Context<Self>) {
-        let raw = self.io.sftp_local_path_input.read(cx).value().trim().to_string();
+        let raw = self
+            .io
+            .sftp_local_path_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         self.io.sftp_local_path_typed = false;
         if raw.is_empty() {
             return;
@@ -172,11 +178,13 @@ impl MainView {
         } else {
             rustshell_core::i18n::ts(format!("下载 {name}"), format!("Download {name}"))
         };
-        let _ = rustshell_core::sftp::sftp_events().0.send(SftpEvent::TransferQueued {
-            transfer_id: id,
-            name: label,
-            total: 0,
-        });
+        let _ = rustshell_core::sftp::sftp_events()
+            .0
+            .send(SftpEvent::TransferQueued {
+                transfer_id: id,
+                name: label,
+                total: 0,
+            });
         let sent = if is_dir {
             tx.try_send(SftpCmd::DownloadDir {
                 remote,

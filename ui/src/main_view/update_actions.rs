@@ -115,10 +115,7 @@ impl MainView {
     }
 
     fn update_fail_text(e: &anyhow::Error) -> String {
-        rustshell_core::i18n::ts(
-            format!("更新失败：{e}"),
-            format!("Update failed: {e}"),
-        )
+        rustshell_core::i18n::ts(format!("更新失败：{e}"), format!("Update failed: {e}"))
     }
 
     /// 标题栏徽标：(文案, 是否是坏消息)。`None` = 不显示。
@@ -366,7 +363,10 @@ impl MainView {
 
         let Ok(exe) = std::env::current_exe() else {
             self.set_info(
-                rustshell_core::i18n::ts("找不到程序路径，无法自动重启".into(), "Cannot locate the executable; restart manually.".into()),
+                rustshell_core::i18n::ts(
+                    "找不到程序路径，无法自动重启".into(),
+                    "Cannot locate the executable; restart manually.".into(),
+                ),
                 false,
             );
             cx.notify();

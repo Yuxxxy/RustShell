@@ -280,10 +280,11 @@ impl MainView {
             CommandOrigin::ConnectProfile { profile_id } => {
                 self.connect_profile(&profile_id, w, cx)
             }
-            CommandOrigin::Builtin => match entry.action_id {
-                Some("OpenSettings") => self.open_settings(w, cx),
-                _ => {}
-            },
+            CommandOrigin::Builtin => {
+                if let Some("OpenSettings") = entry.action_id {
+                    self.open_settings(w, cx);
+                }
+            }
         }
         cx.notify();
     }

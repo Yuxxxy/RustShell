@@ -292,9 +292,7 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         .cursor_pointer()
         .hover(|s| s.bg(hex(t.bg_elevated)))
         // 文字只在 hover 时出现，且不在标题栏里占位置（与 shell-rs 的 tooltip 同口径）。
-        .tooltip(move |w, cx| {
-            gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
-        })
+        .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
         .on_click(cx.listener(|m, _e, w, cx| m.open_update_dialog(w, cx)))
         .child(
             Icon::new(gpui_kit_assets::IconName::CircleArrowUp)
@@ -1043,22 +1041,39 @@ fn main_split_id(panel: PanelKind, sidebar_visible: bool, ai_visible: bool) -> E
     )))
 }
 
+/// 内容区的「连接中 / 连接失败 / 已断开」占位卡片要显示的状态。
+///
+/// 为什么要打包成结构体：这个渲染函数原本收 8 个位置参数（超了 clippy 的
+/// `too_many_arguments` 上限 7），其中 6 个描述的是「这一张占位卡片的状态」。
+/// 打包后参数降到 3 个，语义零变化。
+struct ConnectPlaceholderState<'a> {
+    title: &'a str,
+    err: Option<&'a str>,
+    started: Option<std::time::Instant>,
+    kind: SessionKind,
+    disconnected: bool,
+    sftp_only: bool,
+}
+
 /// 内容区的「连接中 / 连接失败 / 已断开」占位卡片。
 ///
 /// `bg` 由调用方经 `crate::theme::surface` 算好传入：面板底色取主题纯色（alpha=1.0）。
 fn render_connect_placeholder(
     t: &rustshell_core::theme::ThemeTokens,
     bg: gpui::Hsla,
-    title: &str,
-    err: Option<&str>,
-    started: Option<std::time::Instant>,
-    kind: SessionKind,
-    disconnected: bool,
-    sftp_only: bool,
+    st: ConnectPlaceholderState<'_>,
 ) -> gpui::AnyElement {
     use crate::theme::to_hsla as hex;
     use gpui::Styled as _;
 
+    let ConnectPlaceholderState {
+        title,
+        err,
+        started,
+        kind,
+        disconnected,
+        sftp_only,
+    } = st;
     let local = kind == SessionKind::Local;
     let failed = err.is_some();
     let (icon, tint, headline) = if failed {
@@ -1259,9 +1274,8 @@ impl MainView {
         // 「新打开 sftp，左侧的本地路径不显示」就是这一步漏了。状态里的
         // `sftp_local_path` 用同一个变量，两边不会对不上。
         let sftp_home = crate::sftp_tab::home_dir();
-        let sftp_local_path_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(sftp_home.clone())
-        });
+        let sftp_local_path_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(sftp_home.clone()));
         let dlg_proxy_host = cx.new(|cx| InputState::new(window, cx).placeholder("127.0.0.1"));
         let dlg_proxy_port = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1290,9 +1304,8 @@ impl MainView {
                 .placeholder(rustshell_core::i18n::t("命令内容，如 make -j4（支持多行）"))
         });
         // 快捷命令栏（v3）：展开态搜索框与分组行内重命名输入框
-        let conn_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(rustshell_core::i18n::t("搜索…"))
-        });
+        let conn_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(rustshell_core::i18n::t("搜索…")));
         let quick_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(rustshell_core::i18n::t("搜索命令…"))
         });

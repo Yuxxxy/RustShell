@@ -566,7 +566,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-/// 路径解析：环境变量优先，其次配置目录。
+    /// 路径解析：环境变量优先，其次配置目录。
     #[test]
     fn resume_path_prefers_the_env_override() {
         assert_eq!(

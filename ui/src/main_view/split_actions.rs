@@ -606,12 +606,14 @@ impl MainView {
                     d.child(super::render_connect_placeholder(
                         &tok,
                         placeholder_bg,
-                        &title,
-                        err.as_deref(),
-                        started,
-                        kind,
-                        disconnected,
-                        sftp_only,
+                        super::ConnectPlaceholderState {
+                            title: &title,
+                            err: err.as_deref(),
+                            started,
+                            kind,
+                            disconnected,
+                            sftp_only,
+                        },
                     ))
                 },
             )
@@ -1222,10 +1224,7 @@ mod tests {
         let msg = dead_bar_message("网络中断", None, false, None);
         assert_eq!(
             msg,
-            format!(
-                "{} · 网络中断",
-                rustshell_core::i18n::t("连接已断开")
-            ),
+            format!("{} · 网络中断", rustshell_core::i18n::t("连接已断开")),
             "干断着的标签不该出现重连字样"
         );
     }

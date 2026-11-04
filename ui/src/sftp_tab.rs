@@ -251,13 +251,8 @@ const COL_MAX_W: f32 = 600.;
 /// 本地窗格可拖列的默认宽度：`[名称, 大小, 修改时间]`（类型是最后一列，吃剩余空间）。
 pub const COL_DEFAULTS_LOCAL: [f32; 3] = [COL_NAME_W, COL_SIZE_W, COL_MTIME_W];
 /// 远端窗格可拖列的默认宽度：`[名称, 大小, 修改时间, 类型, 权限]`（所有者吃剩余空间）。
-pub const COL_DEFAULTS_REMOTE: [f32; 5] = [
-    COL_NAME_W,
-    COL_SIZE_W,
-    COL_MTIME_W,
-    COL_TYPE_W,
-    COL_MODE_W,
-];
+pub const COL_DEFAULTS_REMOTE: [f32; 5] =
+    [COL_NAME_W, COL_SIZE_W, COL_MTIME_W, COL_TYPE_W, COL_MODE_W];
 
 /// 列宽拖拽的载荷：只作类型标识（`on_drag_move::<T>` 按 `T` 匹配），不承载数据 ——
 /// 「拖的是哪一列」记在 `io.sftp_col_drag` 里，由按下手柄的那一帧写入。
@@ -280,13 +275,8 @@ impl gpui::Render for ColumnDragGhost {
 ///
 /// 用 `Box<dyn Fn>` 而不是泛型参数：`..` 那一行传的是 `None`，泛型在 `None`
 /// 上推断不出具体闭包类型（E0283）。
-type EntryMenu = Box<
-    dyn Fn(
-        PopupMenu,
-        &mut gpui::Window,
-        &mut gpui::Context<'_, PopupMenu>,
-    ) -> PopupMenu,
->;
+type EntryMenu =
+    Box<dyn Fn(PopupMenu, &mut gpui::Window, &mut gpui::Context<'_, PopupMenu>) -> PopupMenu>;
 
 /// 渲染一条 SFTP 标签页（`session_id` 是这条单通道会话的 id）。
 pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) -> AnyElement {
@@ -363,7 +353,11 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                 .flex_1()
                 .min_w_0()
                 .on_mouse_down_out(cx.listener(|m, _e, w, cx| {
-                    super::main_view::blur_input_on_outside_click(&m.io.sftp_local_path_input, w, cx)
+                    super::main_view::blur_input_on_outside_click(
+                        &m.io.sftp_local_path_input,
+                        w,
+                        cx,
+                    )
                 }))
                 .child(
                     Input::new(&m.io.sftp_local_path_input)
@@ -454,14 +448,18 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
     // 「..」永远在首行（根目录下也画，点了原地不动 —— 比让它消失更好找）
     let up = parent_of(Path::new(&local_path));
     local_rows = local_rows.child(local_row_of(
-        "sftp-local-up".into(),
-        LucideIcon::ArrowLeft,
-        "..".into(),
-        SharedString::default(),
-        SharedString::default(),
-        SharedString::default(),
-        false,
-        false,
+        RowCells {
+            id: "sftp-local-up".into(),
+            icon: Some(LucideIcon::ArrowLeft),
+            name: "..".into(),
+            size: SharedString::default(),
+            mtime: SharedString::default(),
+            kind: SharedString::default(),
+            mode: SharedString::default(),
+            owner: SharedString::default(),
+            is_dir: false,
+            selected: false,
+        },
         &t,
         cols_local,
         cx.listener(move |m, _e, _w, cx| {
@@ -490,19 +488,21 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
             },
         ));
         local_rows = local_rows.child(local_row_of(
-            SharedString::from(format!("sftp-local-{}", path_str)),
-            if is_dir {
-                LucideIcon::Folder
-            } else {
-                LucideIcon::File
+            RowCells {
+                id: SharedString::from(format!("sftp-local-{}", path_str)),
+                // 图标按 `is_dir` 推（目录 = 文件夹、文件 = 文件），与远端同一口径。
+                icon: None,
+                name,
+                size: row.size.clone(),
+                mtime: row.mtime.clone(),
+                // 「类型」列：目录 = 文件夹、文件 = 扩展名（`type_label` 是纯函数，可单测）
+                kind: SharedString::from(type_label(row.name.as_ref(), is_dir)),
+                // 权限与所有者是远端独有的列，本地那侧留空。
+                mode: SharedString::default(),
+                owner: SharedString::default(),
+                is_dir,
+                selected,
             },
-            name,
-            row.size.clone(),
-            row.mtime.clone(),
-            // 「类型」列：目录 = 文件夹、文件 = 扩展名（`type_label` 是纯函数，可单测）
-            SharedString::from(type_label(row.name.as_ref(), is_dir)),
-            is_dir,
-            selected,
             &t,
             cols_local,
             cx.listener(move |m, e: &gpui::ClickEvent, _w, cx| {
@@ -529,21 +529,25 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
         let parent = remote_parent(&remote_path);
         let tx_up = tx.clone();
         remote_rows_el = remote_rows_el.child(remote_row_of(
-            "sftp-remote-up".into(),
-            Some(LucideIcon::ArrowLeft),
-            "..".into(),
-            SharedString::default(),
-            SharedString::default(),
-            SharedString::default(),
-            SharedString::default(),
-            SharedString::default(),
-            false,
-            false,
+            RowCells {
+                id: "sftp-remote-up".into(),
+                icon: Some(LucideIcon::ArrowLeft),
+                name: "..".into(),
+                size: SharedString::default(),
+                mtime: SharedString::default(),
+                kind: SharedString::default(),
+                mode: SharedString::default(),
+                owner: SharedString::default(),
+                is_dir: false,
+                selected: false,
+            },
             &t,
             cols_remote,
             cx.listener(move |m, _e, _w, cx| {
                 if let Some(tx) = &tx_up {
-                    let _ = tx.try_send(SftpCmd::List { path: parent.clone() });
+                    let _ = tx.try_send(SftpCmd::List {
+                        path: parent.clone(),
+                    });
                     m.io.files_loading = true;
                     m.io.sftp_path_typed = false;
                     cx.notify();
@@ -591,28 +595,24 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
                         ),
                     );
                     crate::files_panel::build_entry_menu(
-                        menu,
-                        &tx,
-                        &menu_path,
-                        &dir_now,
-                        &menu_name,
-                        is_dir,
-                        verify,
+                        menu, &tx, &menu_path, &dir_now, &menu_name, is_dir, verify,
                     )
                 },
             ) as EntryMenu
         });
         remote_rows_el = remote_rows_el.child(remote_row_of(
-            SharedString::from(format!("sftp-r-{}", row.path)),
-            None,
-            name,
-            row.size.clone(),
-            row.mtime.clone(),
-            SharedString::from(type_label(row.name.as_ref(), is_dir)),
-            row.mode.clone(),
-            row.owner.clone(),
-            is_dir,
-            selected,
+            RowCells {
+                id: SharedString::from(format!("sftp-r-{}", row.path)),
+                icon: None,
+                name,
+                size: row.size.clone(),
+                mtime: row.mtime.clone(),
+                kind: SharedString::from(type_label(row.name.as_ref(), is_dir)),
+                mode: row.mode.clone(),
+                owner: row.owner.clone(),
+                is_dir,
+                selected,
+            },
             &t,
             cols_remote,
             cx.listener(move |m, e: &gpui::ClickEvent, _w, cx| {
@@ -666,33 +666,29 @@ pub fn render(m: &mut MainView, session_id: &str, cx: &mut Context<MainView>) ->
     //
     // **地址栏在栏内**：这是「分隔线延伸到地址栏」的实现方式 —— 分隔线的高度由
     // 两栏决定，栏顶包含地址栏，线自然就顶到最上面。
-    let panes = div()
-        .flex_1()
-        .min_h_0()
-        .w_full()
-        .child(
-            h_resizable("sftp-split")
-                .child(
-                    resizable_panel().child(
-                        v_flex()
-                            .h_full()
-                            .w_full()
-                            .child(local_bar)
-                            .child(local_header(&t, spec_local, cols_local, cx))
-                            .child(local_list),
-                    ),
-                )
-                .child(
-                    resizable_panel().child(
-                        v_flex()
-                            .h_full()
-                            .w_full()
-                            .child(remote_bar)
-                            .child(remote_header(&t, spec_remote, cols_remote, cx))
-                            .child(remote_list),
-                    ),
+    let panes = div().flex_1().min_h_0().w_full().child(
+        h_resizable("sftp-split")
+            .child(
+                resizable_panel().child(
+                    v_flex()
+                        .h_full()
+                        .w_full()
+                        .child(local_bar)
+                        .child(local_header(&t, spec_local, cols_local, cx))
+                        .child(local_list),
                 ),
-        );
+            )
+            .child(
+                resizable_panel().child(
+                    v_flex()
+                        .h_full()
+                        .w_full()
+                        .child(remote_bar)
+                        .child(remote_header(&t, spec_remote, cols_remote, cx))
+                        .child(remote_list),
+                ),
+            ),
+    );
 
     // ---- 底部：传输队列（复用 core 的续传 / 校验，命令层本来就是同一套）----
     let queue = if m.io.files_transfers.is_empty() {
@@ -875,42 +871,50 @@ fn local_header(
         .border_b_1()
         .border_color(hex(t.border_subtle))
         .child(head_cell(
-            rustshell_core::i18n::t("名称"),
-            Some(cols[0]),
-            Some(SortKey::Name),
-            sort,
-            SftpSide::Local,
-            Some(0),
+            HeadCol {
+                label: rustshell_core::i18n::t("名称"),
+                width: Some(cols[0]),
+                sort_key: Some(SortKey::Name),
+                sort,
+                side: SftpSide::Local,
+                col: Some(0),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("大小"),
-            Some(cols[1]),
-            Some(SortKey::Size),
-            sort,
-            SftpSide::Local,
-            Some(1),
+            HeadCol {
+                label: rustshell_core::i18n::t("大小"),
+                width: Some(cols[1]),
+                sort_key: Some(SortKey::Size),
+                sort,
+                side: SftpSide::Local,
+                col: Some(1),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("修改时间"),
-            Some(cols[2]),
-            Some(SortKey::Time),
-            sort,
-            SftpSide::Local,
-            Some(2),
+            HeadCol {
+                label: rustshell_core::i18n::t("修改时间"),
+                width: Some(cols[2]),
+                sort_key: Some(SortKey::Time),
+                sort,
+                side: SftpSide::Local,
+                col: Some(2),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("类型"),
-            None,
-            None,
-            sort,
-            SftpSide::Local,
-            None,
+            HeadCol {
+                label: rustshell_core::i18n::t("类型"),
+                width: None,
+                sort_key: None,
+                sort,
+                side: SftpSide::Local,
+                col: None,
+            },
             t,
             cx,
         ))
@@ -937,62 +941,74 @@ fn remote_header(
         .border_b_1()
         .border_color(hex(t.border_subtle))
         .child(head_cell(
-            rustshell_core::i18n::t("名称"),
-            Some(cols[0]),
-            Some(SortKey::Name),
-            sort,
-            SftpSide::Remote,
-            Some(0),
+            HeadCol {
+                label: rustshell_core::i18n::t("名称"),
+                width: Some(cols[0]),
+                sort_key: Some(SortKey::Name),
+                sort,
+                side: SftpSide::Remote,
+                col: Some(0),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("大小"),
-            Some(cols[1]),
-            Some(SortKey::Size),
-            sort,
-            SftpSide::Remote,
-            Some(1),
+            HeadCol {
+                label: rustshell_core::i18n::t("大小"),
+                width: Some(cols[1]),
+                sort_key: Some(SortKey::Size),
+                sort,
+                side: SftpSide::Remote,
+                col: Some(1),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("修改时间"),
-            Some(cols[2]),
-            Some(SortKey::Time),
-            sort,
-            SftpSide::Remote,
-            Some(2),
+            HeadCol {
+                label: rustshell_core::i18n::t("修改时间"),
+                width: Some(cols[2]),
+                sort_key: Some(SortKey::Time),
+                sort,
+                side: SftpSide::Remote,
+                col: Some(2),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("类型"),
-            Some(cols[3]),
-            None,
-            sort,
-            SftpSide::Remote,
-            Some(3),
+            HeadCol {
+                label: rustshell_core::i18n::t("类型"),
+                width: Some(cols[3]),
+                sort_key: None,
+                sort,
+                side: SftpSide::Remote,
+                col: Some(3),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("权限"),
-            Some(cols[4]),
-            None,
-            sort,
-            SftpSide::Remote,
-            Some(4),
+            HeadCol {
+                label: rustshell_core::i18n::t("权限"),
+                width: Some(cols[4]),
+                sort_key: None,
+                sort,
+                side: SftpSide::Remote,
+                col: Some(4),
+            },
             t,
             cx,
         ))
         .child(head_cell(
-            rustshell_core::i18n::t("所有者"),
-            None,
-            None,
-            sort,
-            SftpSide::Remote,
-            None,
+            HeadCol {
+                label: rustshell_core::i18n::t("所有者"),
+                width: None,
+                sort_key: None,
+                sort,
+                side: SftpSide::Remote,
+                col: None,
+            },
             t,
             cx,
         ))
@@ -1014,21 +1030,38 @@ pub fn type_label(name: &str, is_dir: bool) -> String {
     }
 }
 
-/// 一个列头格子。
+/// 一个列头的**元信息**：标题、宽度、排序键、属于哪一侧、第几列。
 ///
-/// - `width = Some(w)` 定宽；`None` 吃剩余空间（每侧的**最后一列**）。
-/// - `side` + `col` 决定「这一格的右边界能不能拖、拖的是哪一侧的第几列」。
-///   `None` = 最后一列，右边没有边界可拖。
-fn head_cell(
+/// 为什么要打包：这些参数描述的是「这一列」本身，天然是一个整体；打包后
+/// `head_cell` 的参数从 8 个降到 4 个（列信息 + 主题 + 上下文 + 宽度），
+/// 不再触发 clippy 的 `too_many_arguments`。12 个调用点原来全靠位置参数，
+/// 现在改成具名字段 —— 加列 / 换顺序时不会再错位。
+struct HeadCol {
     label: &'static str,
+    /// `Some(w)` 定宽；`None` 吃剩余空间（每侧的**最后一列**）。
     width: Option<f32>,
     sort_key: Option<SortKey>,
     sort: SortSpec,
+    /// 决定「这一格的右边界能不能拖、拖的是哪一侧的第几列」。
     side: SftpSide,
+    /// `None` = 最后一列，右边没有边界可拖。
     col: Option<usize>,
+}
+
+/// 一个列头格子。
+fn head_cell(
+    c: HeadCol,
     t: &rustshell_core::theme::ThemeTokens,
     cx: &mut Context<MainView>,
 ) -> AnyElement {
+    let HeadCol {
+        label,
+        width,
+        sort_key,
+        sort,
+        side,
+        col,
+    } = c;
     let active = sort_key.is_some_and(|k| k == sort.key);
     // 列头上不再拼 ▲/▼ 字符（2026-10-28 用户要求「改成上下两个箭头那种，参考 shell-rs」）：
     // 字符箭头随字体变形、宽窄不一，两列挨着时对不齐；换成一对小图标，被选中的那一侧
@@ -1055,15 +1088,15 @@ fn head_cell(
         Some(key) => cell
             // id 里带 side：两栏各有一组同名列表头，共用一个 id 会让点击落到错的
             // 那一格上（gpui 的元素 id 是全局的）。
-            .id(SharedString::from(format!("sftp-sort-{side:?}-{key:?}-{active}")))
+            .id(SharedString::from(format!(
+                "sftp-sort-{side:?}-{key:?}-{active}"
+            )))
             .cursor_pointer()
             .on_click(cx.listener(move |m, _e, _w, cx| {
                 // 只改**这一侧**的口径（2026-10-30 用户要求「排序只需要触发对应窗口」）。
                 match side {
                     SftpSide::Local => m.io.sftp_sort_local = m.io.sftp_sort_local.toggled(key),
-                    SftpSide::Remote => {
-                        m.io.sftp_sort_remote = m.io.sftp_sort_remote.toggled(key)
-                    }
+                    SftpSide::Remote => m.io.sftp_sort_remote = m.io.sftp_sort_remote.toggled(key),
                 }
                 cx.notify();
             }))
@@ -1098,8 +1131,8 @@ fn col_grip(side: SftpSide, ix: usize, cx: &mut Context<MainView>) -> AnyElement
     // 拖拽载荷只用于类型标识，光标下不画预览（这个 fork 的构造器是
     // `Fn(&T, Point<Pixels>, &mut Window, &mut App)`，比常见签名多一个光标位置）。
     .on_drag(ColumnDrag, |_, _pos, _w, cx| cx.new(|_| ColumnDragGhost))
-    .on_drag_move::<ColumnDrag>(cx.listener(
-        |m, ev: &gpui::DragMoveEvent<ColumnDrag>, _w, cx| {
+    .on_drag_move::<ColumnDrag>(
+        cx.listener(|m, ev: &gpui::DragMoveEvent<ColumnDrag>, _w, cx| {
             let x = ev.event.position.x.as_f32();
             let Some((from, side, ix)) = m.io.sftp_col_drag else {
                 return;
@@ -1119,8 +1152,8 @@ fn col_grip(side: SftpSide, ix: usize, cx: &mut Context<MainView>) -> AnyElement
             // 起点跟着指针走：下次位移从「现在」累计，拖得再快也不会跳。
             m.io.sftp_col_drag = Some((x, side, ix));
             cx.notify();
-        },
-    ))
+        }),
+    )
     .into_any_element()
 }
 
@@ -1131,10 +1164,7 @@ fn col_grip(side: SftpSide, ix: usize, cx: &mut Context<MainView>) -> AnyElement
 ///
 /// 尺寸压到 7px：两个叠起来 14px，仍在 10px 列头文字 + `py_1` 那一行里，
 /// 列头不会因为多了一对箭头比数据行高出一截。
-fn sort_arrows(
-    active_dir: Option<bool>,
-    t: &rustshell_core::theme::ThemeTokens,
-) -> AnyElement {
+fn sort_arrows(active_dir: Option<bool>, t: &rustshell_core::theme::ThemeTokens) -> AnyElement {
     let asc = active_dir == Some(true);
     let desc = active_dir == Some(false);
     v_flex()
@@ -1153,29 +1183,51 @@ fn sort_arrows(
         .into_any_element()
 }
 
-/// 本地列表的一行：图标 + 名称 / 大小 / 修改时间。
-fn local_row_of(
+/// 一行要显示的**单元格文本**（本地与远端共用前几个）。
+///
+/// 为什么要打包成结构体：这两个行渲染函数原本收 12 / 14 个位置参数，超过了
+/// clippy 的 `too_many_arguments`（7）上限。参数里天然分两类 ——「这一行的数据」
+/// 与「怎么渲染它（列宽 / 主题 / 回调 / 菜单）」—— 所以按这个边界切成两个结构体，
+/// 语义零变化，只是把「谁是谁」写进类型里。
+#[derive(Clone)]
+struct RowCells {
     id: SharedString,
-    icon: LucideIcon,
+    /// 图标覆盖（`Some(..)` 覆盖按 `is_dir` 推出的默认图标；`..` 行用左侧那枚箭头）
+    icon: Option<LucideIcon>,
     name: SharedString,
     size: SharedString,
     mtime: SharedString,
-    // 「类型」列（`type_label` 的结果；目录 = 文件夹、文件 = 扩展名）
+    /// 「类型」列（`type_label` 的结果；目录 = 文件夹、文件 = 扩展名）
     kind: SharedString,
+    /// 权限列（**远端独有**；本地那侧没有这一列，传空串即可）
+    mode: SharedString,
+    /// 所有者列（**远端独有**；本地那侧没有这一列，传空串即可）
+    owner: SharedString,
     is_dir: bool,
+    /// 这一行是否被选中（选中态底色由 `row_base` 负责）
     selected: bool,
+}
+
+/// 本地列表的一行：图标 + 名称 / 大小 / 修改时间。
+fn local_row_of(
+    cells: RowCells,
     t: &rustshell_core::theme::ThemeTokens,
     cols: [f32; 3],
     on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     menu: Option<EntryMenu>,
 ) -> AnyElement {
-    let row = row_base(id, selected, t)
-        .child(icon_of(icon, is_dir, t))
-        .child(name_cell(name, cols[0], t))
-        .child(fixed_cell(size, Some(cols[1]), t))
-        .child(fixed_cell(mtime, Some(cols[2]), t))
+    let icon = cells.icon.unwrap_or(if cells.is_dir {
+        LucideIcon::Folder
+    } else {
+        LucideIcon::File
+    });
+    let row = row_base(cells.id, cells.selected, t)
+        .child(icon_of(icon, cells.is_dir, t))
+        .child(name_cell(cells.name, cols[0], t))
+        .child(fixed_cell(cells.size, Some(cols[1]), t))
+        .child(fixed_cell(cells.mtime, Some(cols[2]), t))
         // 最后一列吃剩余空间（与列头同宽规则）
-        .child(fixed_cell(kind, None, t))
+        .child(fixed_cell(cells.kind, None, t))
         .on_click(on_click);
     match menu {
         Some(build) => row.context_menu(build).into_any_element(),
@@ -1185,39 +1237,27 @@ fn local_row_of(
 
 /// 远端列表的一行：图标 + 名称 / 大小 / 修改时间 / 权限 / 所有者，
 /// 并挂该条目的右键菜单（下载 / 重命名 / 删除 / 复制路径…，与文件面板同一份）。
-///
-/// `icon = Some(..)` 覆盖图标（`..` 行用左侧那枚箭头），`None` 按 `is_dir` 推。
 fn remote_row_of(
-    id: SharedString,
-    icon: Option<LucideIcon>,
-    name: SharedString,
-    size: SharedString,
-    mtime: SharedString,
-    // 「类型」列（`type_label` 的结果）
-    kind: SharedString,
-    mode: SharedString,
-    owner: SharedString,
-    is_dir: bool,
-    selected: bool,
+    cells: RowCells,
     t: &rustshell_core::theme::ThemeTokens,
     cols: [f32; 5],
     on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     menu: Option<EntryMenu>,
 ) -> AnyElement {
-    let icon = icon.unwrap_or(if is_dir {
+    let icon = cells.icon.unwrap_or(if cells.is_dir {
         LucideIcon::Folder
     } else {
         LucideIcon::File
     });
-    let row = row_base(id, selected, t)
-        .child(icon_of(icon, is_dir, t))
-        .child(name_cell(name, cols[0], t))
-        .child(fixed_cell(size, Some(cols[1]), t))
-        .child(fixed_cell(mtime, Some(cols[2]), t))
-        .child(fixed_cell(kind, Some(cols[3]), t))
-        .child(fixed_cell(mode, Some(cols[4]), t))
+    let row = row_base(cells.id, cells.selected, t)
+        .child(icon_of(icon, cells.is_dir, t))
+        .child(name_cell(cells.name, cols[0], t))
+        .child(fixed_cell(cells.size, Some(cols[1]), t))
+        .child(fixed_cell(cells.mtime, Some(cols[2]), t))
+        .child(fixed_cell(cells.kind, Some(cols[3]), t))
+        .child(fixed_cell(cells.mode, Some(cols[4]), t))
         // 所有者是最后一列：吃剩余空间
-        .child(fixed_cell(owner, None, t))
+        .child(fixed_cell(cells.owner, None, t))
         .on_click(on_click);
     // `context_menu` 返回的是**另一种元素类型**（`ContextMenu<Stateful<Div>>`），
     // 没法塞进同一条链继续 `.child(..)`，所以在这里就把它收成 `AnyElement`。
@@ -1258,11 +1298,7 @@ fn icon_of(icon: LucideIcon, is_dir: bool, t: &rustshell_core::theme::ThemeToken
 }
 
 /// 名称列：宽度跟着列头走（可拖），单行 + 省略号（撑高行会压到相邻行）。
-fn name_cell(
-    name: SharedString,
-    width: f32,
-    t: &rustshell_core::theme::ThemeTokens,
-) -> AnyElement {
+fn name_cell(name: SharedString, width: f32, t: &rustshell_core::theme::ThemeTokens) -> AnyElement {
     div()
         .w(px(width))
         .flex_shrink_0()
@@ -1447,7 +1483,11 @@ mod tests {
             r"\\server\share",
             "网络路径的 verbatim 形式要还原成 UNC，而不是留下 `UNC\\…`"
         );
-        assert_eq!(clean_local_path(r"D:\迅雷下载"), r"D:\迅雷下载", "普通路径不动");
+        assert_eq!(
+            clean_local_path(r"D:\迅雷下载"),
+            r"D:\迅雷下载",
+            "普通路径不动"
+        );
         assert_eq!(clean_local_path("/home/u"), "/home/u", "POSIX 路径不动");
     }
 
@@ -1469,9 +1509,13 @@ mod tests {
         );
         // 且地址栏排在列头之前（顺序即版式：地址栏在最上面）
         let local_bar = code.find(".child(local_bar)").unwrap();
-        let local_header = code.find(".child(local_header(&t, spec_local, cols_local, cx))").unwrap();
+        let local_header = code
+            .find(".child(local_header(&t, spec_local, cols_local, cx))")
+            .unwrap();
         let remote_bar = code.find(".child(remote_bar)").unwrap();
-        let remote_header = code.find(".child(remote_header(&t, spec_remote, cols_remote, cx))").unwrap();
+        let remote_header = code
+            .find(".child(remote_header(&t, spec_remote, cols_remote, cx))")
+            .unwrap();
         assert!(
             local_bar < local_header && remote_bar < remote_header,
             "地址栏必须在列头之上"
@@ -1530,8 +1574,12 @@ mod tests {
             "两个路径框都必须在框外按下时失焦（用户要求「点击文件之类的地方要失焦」）"
         );
         assert!(
-            code.contains("blur_input_on_outside_click(&m.io.sftp_path_input")
-                && code.contains("blur_input_on_outside_click(&m.io.sftp_local_path_input"),
+            // 锚点只匹配**函数名 + 输入框字段**，不匹配到 `(` 为止 —— rustfmt 会把
+            // 较长实参列表折到下一行（`blur_input_on_outside_click(\n    &m.io.xxx,\n    w,\n    cx,\n)`），
+            // 匹配到左括号就会在换格式时误报。
+            code.contains("blur_input_on_outside_click(")
+                && code.contains("&m.io.sftp_path_input")
+                && code.contains("&m.io.sftp_local_path_input"),
             "失焦必须走既有的 `blur_input_on_outside_click`（它只在焦点真在本框上时才收）"
         );
 
@@ -1571,7 +1619,9 @@ mod tests {
     #[test]
     fn the_sftp_tab_is_dispatched_before_the_terminal_path() {
         let code = crate::test_support::prod(include_str!("main_view/split_actions.rs"));
-        let at = code.find("fn render_term_pane(").expect("找不到窗格渲染函数");
+        let at = code
+            .find("fn render_term_pane(")
+            .expect("找不到窗格渲染函数");
         let body = &code[at..];
         let sftp = body
             .find("crate::sftp_tab::render(")
@@ -1696,12 +1746,16 @@ mod tests {
     #[test]
     fn both_up_rows_use_the_same_arrow_icon() {
         let code = crate::test_support::prod(include_str!("sftp_tab.rs"));
+        // 锚点只匹配「id + 图标」这一对，**不匹配中间的换行与字段顺序** ——
+        // 行渲染函数后来把这两项收进了 `RowCells` 结构体，跨行匹配会误报。
         assert!(
-            code.contains("\"sftp-local-up\".into(),\n        LucideIcon::ArrowLeft,"),
+            code.contains("id: \"sftp-local-up\".into()")
+                && code.contains("icon: Some(LucideIcon::ArrowLeft)"),
             "左栏 `..` 的箭头图标不见了"
         );
         assert!(
-            code.contains("\"sftp-remote-up\".into(),\n            Some(LucideIcon::ArrowLeft),"),
+            code.contains("id: \"sftp-remote-up\".into()")
+                && code.contains("icon: Some(LucideIcon::ArrowLeft)"),
             "右栏 `..` 没用箭头图标 —— 又回落到 `is_dir=false` 的「文件」图标了"
         );
         assert_eq!(
@@ -1721,7 +1775,11 @@ mod tests {
         let file = rustshell_core::i18n::t("文件");
         assert_eq!(type_label("docs", true), folder);
         assert_eq!(type_label("photo.PNG", false), "PNG", "扩展名统一大写");
-        assert_eq!(type_label("archive.tar.gz", false), "GZ", "多段扩展名取最后一段");
+        assert_eq!(
+            type_label("archive.tar.gz", false),
+            "GZ",
+            "多段扩展名取最后一段"
+        );
         assert_eq!(type_label(".bashrc", false), file, "点位名不算扩展名");
         assert_eq!(type_label("Makefile", false), file, "没有扩展名");
     }

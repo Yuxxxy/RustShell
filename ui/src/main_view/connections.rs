@@ -1493,8 +1493,8 @@ impl MainView {
             .find(|t| t.session.id == id)
             .map(|t| (t.terminal.is_some(), t.session.sftp_tx.is_some()))
             .unwrap_or((false, false));
-        let sftp_only = !tab_has_terminal
-            && (tab_has_sftp || self.conn_ui.sftp_only_profiles.contains(&pid));
+        let sftp_only =
+            !tab_has_terminal && (tab_has_sftp || self.conn_ui.sftp_only_profiles.contains(&pid));
         let channels = if sftp_only {
             SshChannels::SftpOnly
         } else {
@@ -1873,8 +1873,10 @@ mod tests {
             "重连没有按「这张标签」取通道判据 —— 同 profile 的终端标签会被重连成 sftp-only。"
         );
         assert!(
-            code.contains("let sftp_only = !tab_has_terminal"),
-            "`sftp_only` 必须先看这张标签有没有终端，再考虑 profile 级意图。"
+            code.contains("!tab_has_terminal && (tab_has_sftp ||"),
+            "`sftp_only` 必须先看这张标签有没有终端，再考虑 profile 级意图。\n\
+             注意锚点只匹配**表达式**、不匹配 `let sftp_only =` 那一行 —— rustfmt 会\n\
+             按行宽决定把 `=` 后面的内容折到下一行，匹配整行就会在换格式时误报。"
         );
     }
 }

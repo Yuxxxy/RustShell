@@ -1288,6 +1288,17 @@ async fn download_one(
     Ok(format!("下载完成 {file_done} bytes"))
 }
 
+/// 上传单个文件时的「传输上下文」：事件通道 + 取消旗标 + 传输号。
+///
+/// 这三个是**每次上传都一样**的东西（同一个传输任务、同一条通道、同一面旗标），
+/// 收成一个参数是为了让 [`upload_one`] 落在 clippy 的参数上限内（原来是 8 个，
+/// 超了 `too_many_arguments` 的 7 个阈值）。语义零变化：字段一一对应。
+struct UploadCtx<'a> {
+    transfer_id: u64,
+    tx: &'a flume::Sender<SftpEvent>,
+    cancel: std::sync::Arc<AtomicBool>,
+}
+
 /// 上传一个文件到远端（含续传）。返回 `Ok(描述)` / `Err(原因)`。
 ///
 /// `done` 是**这条传输已完成的字节数**（目录上传时跨文件累加）：本函数把它当进度
@@ -1297,10 +1308,8 @@ async fn upload_one(
     sftp: &russh_sftp::client::SftpSession,
     local: &Path,
     remote: &str,
-    transfer_id: u64,
     total_hint: u64,
-    tx: &flume::Sender<SftpEvent>,
-    cancel: &std::sync::Arc<AtomicBool>,
+    ctx: &UploadCtx<'_>,
     done: &mut u64,
 ) -> Result<String, String> {
     let local_size = local_len(local).await;
@@ -1316,18 +1325,18 @@ async fn upload_one(
         return Err("上传取消：远端已存在同名文件（为防覆盖未写入，请先重命名）".into());
     }
     if let Some(note) = dec.note {
-        let _ = tx.send(SftpEvent::TransferNote {
-            transfer_id,
+        let _ = ctx.tx.send(SftpEvent::TransferNote {
+            transfer_id: ctx.transfer_id,
             text: note,
         });
     }
     let sink = MarkSink::new(TransferDir::Upload, local, remote, total);
     let ctx = TransferCtx {
-        transfer_id,
+        transfer_id: ctx.transfer_id,
         base: *done,
-        tx,
+        tx: ctx.tx,
         sink: Some(&sink),
-        cancel: cancel.clone(),
+        cancel: ctx.cancel.clone(),
     };
     let mut file_done = dec.from;
     if dec.from > 0 {
@@ -1579,10 +1588,12 @@ async fn run_cmd(sftp: &russh_sftp::client::SftpSession, cmd: &SftpCmd) -> Resul
                 sftp,
                 local,
                 remote,
-                *transfer_id,
                 *total,
-                &tx,
-                &cancel,
+                &UploadCtx {
+                    transfer_id: *transfer_id,
+                    tx: &tx,
+                    cancel: cancel.clone(),
+                },
                 &mut done,
             )
             .await;
@@ -1672,10 +1683,12 @@ async fn run_cmd(sftp: &russh_sftp::client::SftpSession, cmd: &SftpCmd) -> Resul
                     sftp,
                     file,
                     &remote_file,
-                    *transfer_id,
                     *size,
-                    &tx,
-                    &cancel,
+                    &UploadCtx {
+                        transfer_id: *transfer_id,
+                        tx: &tx,
+                        cancel: cancel.clone(),
+                    },
                     &mut done,
                 )
                 .await

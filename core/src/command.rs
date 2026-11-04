@@ -283,12 +283,7 @@ mod tests {
         // 2026-09-17 第二轮起：新增连接 / AI助手 进面板，命令面板自己那条撤掉。
         let cmds = builtin_commands();
         let labels: Vec<&str> = cmds.iter().map(|c| c.label.as_str()).collect();
-        for kept in [
-            "新增连接",
-            "新增本地 Shell",
-            "AI助手",
-            "打开设置",
-        ] {
+        for kept in ["新增连接", "新增本地 Shell", "AI助手", "打开设置"] {
             assert!(labels.contains(&kept), "命令面板丢了应用级命令「{kept}」");
         }
         assert!(

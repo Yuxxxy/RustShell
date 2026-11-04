@@ -873,11 +873,7 @@ impl MainView {
             .tabs
             .iter()
             .map(|tab| {
-                let status = TabStatus::of(
-                    tab.is_healthy(),
-                    tab.is_connecting(),
-                    tab.is_dead(),
-                );
+                let status = TabStatus::of(tab.is_healthy(), tab.is_connecting(), tab.is_dead());
                 let (color, filled) = status.dot(&t);
                 (tab.session.id.clone(), status, color, filled)
             })

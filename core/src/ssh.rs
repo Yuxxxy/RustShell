@@ -214,11 +214,7 @@ fn host_field_matches(field: &str, entry: &str) -> bool {
 /// - 注释行、空行、其它主机的行、**其它算法**的行一律保留；
 /// - 兼容 `@cert-authority` / `@revoked` 前缀（字段整体右移一位）；
 /// - 保留原文件的「末尾是否有换行」，不给下游留意外差异。
-fn without_stale_key(
-    content: &str,
-    entry: &str,
-    stale: &[russh::keys::PublicKey],
-) -> String {
+fn without_stale_key(content: &str, entry: &str, stale: &[russh::keys::PublicKey]) -> String {
     if stale.is_empty() || content.is_empty() {
         return content.to_string();
     }
@@ -240,7 +236,7 @@ fn without_stale_key(
                 host_field_matches(hosts, entry)
                     && matches!(
                         russh::keys::parse_public_key_base64(b64),
-                        Ok(k) if stale.iter().any(|s| *s == k)
+                        Ok(k) if stale.contains(&k)
                     )
             }
             _ => false,
@@ -260,12 +256,7 @@ fn without_stale_key(
 ///
 /// 只删「同主机 + 同算法」的行：不同算法的记录（例如还留着一条 `ssh-rsa`）
 /// 不参与 `KeyChanged` 判定，留着无害，删了反而要重新信任一次。
-fn replace_known_host(
-    path: &std::path::Path,
-    host: &str,
-    port: u16,
-    key: &russh::keys::PublicKey,
-) {
+fn replace_known_host(path: &std::path::Path, host: &str, port: u16, key: &russh::keys::PublicKey) {
     let entry = known_hosts_entry(host, port);
     // 旧记录走 russh 自己的匹配逻辑（含哈希主机名），不自己解析 —— 两套解析
     // 一旦漂移，就会出现「校验说变了、删除却没删到」的死循环。
@@ -423,11 +414,9 @@ impl russh::client::Handler for ServerKeyVerifier {
             Ok(true) => Ok(true),
             // 未知主机 -> 按策略处置
             Ok(false) => match self.policy {
-                HostKeyPolicy::AskUser => {
-                    Ok(self
-                        .wait_user_trust(key, &path, ServerKeyChange::FirstSeen)
-                        .await)
-                }
+                HostKeyPolicy::AskUser => Ok(self
+                    .wait_user_trust(key, &path, ServerKeyChange::FirstSeen)
+                    .await),
                 HostKeyPolicy::RejectUnknown => {
                     log::warn!(
                         "{}:{} 的主机密钥未知，无人值守策略下拒绝连接（需先手动连接一次完成信任）",
@@ -2396,14 +2385,18 @@ mod tests {
     #[test]
     fn host_key_error_text_distinguishes_changed_from_unknown() {
         let raw = format!("连接 h:22 失败: {HOST_KEY_REJECT_RAW}");
-        let changed = format!("{HOST_KEY_CHANGED_MARK}：h:22 的服务器密钥与 known_hosts 记录不一致");
+        let changed =
+            format!("{HOST_KEY_CHANGED_MARK}：h:22 的服务器密钥与 known_hosts 记录不一致");
         let got = host_key_error_text("h", 22, &raw, HostKeyPolicy::RejectUnknown, Some(&changed))
             .expect("主机密钥类错误必须被接管");
         assert!(
             got.contains(HOST_KEY_CHANGED_MARK) && got.contains("不一致"),
             "变更类文案要带标记与「不一致」（告警引擎按它判 Critical）：{got}"
         );
-        assert!(!got.contains(HOST_KEY_UNKNOWN_MARK), "变更不能说成「未知」：{got}");
+        assert!(
+            !got.contains(HOST_KEY_UNKNOWN_MARK),
+            "变更不能说成「未知」：{got}"
+        );
 
         // 有未知标记（无 reject 原因）时走未知分支
         let unknown = host_key_error_text("h", 22, &raw, HostKeyPolicy::RejectUnknown, None)
@@ -2417,7 +2410,8 @@ mod tests {
             "连接 h:22 失败: Connection refused",
         ] {
             assert!(
-                host_key_error_text("h", 22, unrelated, HostKeyPolicy::RejectUnknown, None).is_none(),
+                host_key_error_text("h", 22, unrelated, HostKeyPolicy::RejectUnknown, None)
+                    .is_none(),
                 "与主机密钥无关的错误不该被改写：{unrelated}"
             );
         }

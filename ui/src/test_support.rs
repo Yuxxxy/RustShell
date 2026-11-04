@@ -130,7 +130,8 @@ pub(crate) fn strip_comments(src: &str) -> String {
             in_line = true;
             i += 2;
             continue;
-        }        if c == '/' && next == Some('*') {
+        }
+        if c == '/' && next == Some('*') {
             in_block = 1;
             i += 2;
             continue;

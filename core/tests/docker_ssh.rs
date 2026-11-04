@@ -143,11 +143,8 @@ fn docker_ssh_e2e_trust_and_reconnect() {
     // 改造前这里**直接硬拒**（russh 只回一句 `Unknown server key`，界面上没有任何
     // 可操作入口）；现在必须先弹「已变更」询问，由人核对新旧指纹后决定。
     let bogus_key = "AAAAC3NzaC1lZDI1NTE5AAAAIAWyypbD1OxgqHPphLSN8o1fo71hm8Qg7jtKgGaTmw8l";
-    std::fs::write(
-        &kh,
-        format!("[127.0.0.1]:2222 ssh-ed25519 {bogus_key}\n"),
-    )
-    .expect("写入伪造 known_hosts");
+    std::fs::write(&kh, format!("[127.0.0.1]:2222 ssh-ed25519 {bogus_key}\n"))
+        .expect("写入伪造 known_hosts");
 
     // 3a) 取消 → 不建立连接，且不得偷偷改写记录
     let (prompt, res) = connect_capturing_prompt(&profile(), false);

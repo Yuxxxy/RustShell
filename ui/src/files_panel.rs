@@ -696,9 +696,12 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                                     .text_ellipsis()
                                     .child(SharedString::from(tr.name.clone())),
                             )
-                            .child(div().text_size(px(10.)).text_color(color).child(
-                                SharedString::from(state_text),
-                            ))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(color)
+                                    .child(SharedString::from(state_text)),
+                            )
                             .children(cancel),
                     )
                     .child(

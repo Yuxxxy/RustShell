@@ -620,7 +620,7 @@ fn render_tree_item(
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(item.label.clone()),
-                )
+                ),
         )
         // 拖拽源：把本服务器行拖到任意分组行即可移动归属
         .on_drag(

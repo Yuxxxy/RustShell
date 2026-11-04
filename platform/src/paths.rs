@@ -96,7 +96,9 @@ pub fn alerts_log_path() -> PathBuf {
 /// 默认下载目录（定时下载任务与 agent 下载工具的落点）。
 /// 优先系统下载目录，无则回退到用户主目录 —— 不落进配置目录。
 pub fn default_download_dir() -> PathBuf {
-    dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(config_dir)
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(config_dir)
 }
 
 /// 运行日志目录：`<config>/rustshell/logs/`
