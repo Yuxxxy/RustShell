@@ -159,7 +159,42 @@ fn disk_lines(read: gpui::Hsla, write: gpui::Hsla) -> [RateLine; 2] {
     ]
 }
 
-/// 双序列速率走势图（MB/s，无标题行）。
+/// 双序列速率图的显示单位。
+///
+/// 数据源（`Sample::net_up` / `disk_read_mb` …）一律是 **MB/s**
+/// （见 `core::metrics::bytes_delta_to_mb_per_sec`），但两张图的需求不同：
+///
+/// - 网络（2026-11-04 用户要求「网络波动改为 Kb，不用显示百分比，直接用 Kb
+///   保留两位小数」）：MB/s 两位小数在 1 MB/s 以下的流量上恒为 `0.00`，
+///   曲线贴在地轴上，看不出任何波动 ⇒ 按 **KB/s** 显示，同样两位数。
+/// - 磁盘：读写速率常达几十上百 MB/s，换成 KB/s 是五位数，表头会被撑开 ⇒ 保持 MB/s。
+#[derive(Clone, Copy)]
+enum RateUnit {
+    /// 图上直接画 MB/s
+    MbPerSec,
+    /// 数据是 MB/s，图上换成 KB/s（×1024）
+    KbPerSec,
+}
+
+impl RateUnit {
+    /// MB/s 到本单位的倍数（唯一一处换算，表头与 hover 共用）
+    fn scale(self) -> f64 {
+        match self {
+            Self::MbPerSec => 1.0,
+            Self::KbPerSec => 1024.0,
+        }
+    }
+
+    /// 表头里的单位后缀
+    fn label(self) -> &'static str {
+        match self {
+            Self::MbPerSec => "MB/s",
+            Self::KbPerSec => "KB/s",
+        }
+    }
+}
+
+/// 双序列速率走势图（无标题行）。
 ///
 /// hover 数值保留两位小数 —— 速率本身是 f32 除法算出来的，
 /// 原样打印会给出 `0.123456789` 这种把提示框撑变形的尾数。
@@ -167,6 +202,7 @@ fn dual_series(
     id: String,
     hist: Vec<Sample>,
     lines: [RateLine; 2],
+    unit: RateUnit,
     layout: MetricsLayout,
 ) -> impl IntoElement {
     let series = lines
@@ -178,7 +214,7 @@ fn dual_series(
                 color, name, sel, ..
             } = l;
             Series::new(
-                move |s: &Sample| sel(s) as f64,
+                move |s: &Sample| sel(s) as f64 * unit.scale(),
                 color,
                 color.opacity(DUAL_FILL_ALPHA),
                 name,
@@ -196,12 +232,13 @@ fn dual_series(
 }
 
 /// 双序列速率走势卡（表头 + 图表）：网络与磁盘共用。
-/// 表头右侧给两个方向的当前值（`↑3.20` / `R 3.20`）。
+/// 表头右侧给两个方向的当前值（`↑3.20` / `R 3.20`），数值按 `unit` 换算后两位小数。
 fn rate_chart(
     id: String,
     hist: Vec<Sample>,
     title: &'static str,
     lines: [RateLine; 2],
+    unit: RateUnit,
     muted: gpui::Hsla,
     layout: MetricsLayout,
 ) -> impl IntoElement {
@@ -210,7 +247,7 @@ fn rate_chart(
     let empty = hist.is_empty();
     let mut values = h_flex().gap_2();
     for line in &lines {
-        let v = latest.map_or(0.0, |s| (line.sel)(&s));
+        let v = latest.map_or(0.0, |s| (line.sel)(&s)) as f64 * unit.scale();
         values = values.child(
             div()
                 .text_color(line.color)
@@ -218,11 +255,11 @@ fn rate_chart(
         );
     }
     series_box(layout)
-        .child(series_header(format!("{title} (MB/s)"), window, muted).child(values))
+        .child(series_header(format!("{title} ({})", unit.label()), window, muted).child(values))
         .child(if empty {
             placeholder(muted, layout).into_any_element()
         } else {
-            dual_series(id, hist, lines, layout).into_any_element()
+            dual_series(id, hist, lines, unit, layout).into_any_element()
         })
 }
 
@@ -298,7 +335,15 @@ fn net_chart(
     muted: gpui::Hsla,
     layout: MetricsLayout,
 ) -> impl IntoElement {
-    rate_chart(id, hist, tr("网络"), net_lines(up, down), muted, layout)
+    rate_chart(
+        id,
+        hist,
+        tr("网络"),
+        net_lines(up, down),
+        RateUnit::KbPerSec,
+        muted,
+        layout,
+    )
 }
 
 /// 双序列磁盘走势卡（含表头与 R/W 当前值）。
@@ -313,7 +358,15 @@ fn disk_chart(
     muted: gpui::Hsla,
     layout: MetricsLayout,
 ) -> impl IntoElement {
-    rate_chart(id, hist, tr("磁盘"), disk_lines(read, write), muted, layout)
+    rate_chart(
+        id,
+        hist,
+        tr("磁盘"),
+        disk_lines(read, write),
+        RateUnit::MbPerSec,
+        muted,
+        layout,
+    )
 }
 
 /// 五张走势卡：CPU 使用率 / 内存 / 交换分区 / 网络 / 磁盘。
@@ -424,4 +477,43 @@ pub fn metrics_grid(
         grid = grid.child(h_flex().items_start().gap(px(layout.gap)).children(row));
     }
     grid
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{prod, region};
+
+    /// 2026-11-04 用户要求「概览模块，网络波动改为 Kb，不用显示百分比，
+    /// 直接用 Kb 保留两位小数」。
+    ///
+    /// 换算与文案都收口在 [`RateUnit`]（表头当前值与 hover 共用同一处），
+    /// 所以这里钉两件事：单位本身的换算/文案，以及**接线**（网络走 KB、磁盘仍走 MB）。
+    #[test]
+    fn the_network_chart_reads_in_kilobytes() {
+        assert_eq!(RateUnit::KbPerSec.label(), "KB/s");
+        assert_eq!(RateUnit::KbPerSec.scale(), 1024.0);
+        assert_eq!(RateUnit::MbPerSec.label(), "MB/s");
+        assert_eq!(RateUnit::MbPerSec.scale(), 1.0);
+        // 0.5 MB/s 的流量在网络上应当显示成 512.00 KB/s（不是 0.50，也不是百分比）
+        let kb = 0.5_f64 * RateUnit::KbPerSec.scale();
+        assert_eq!(format!("{kb:.2}"), "512.00");
+
+        let code = prod(include_str!("metrics_card.rs"));
+        let net = region(&code, "fn net_chart(", "fn disk_chart(");
+        assert!(
+            net.contains("RateUnit::KbPerSec"),
+            "网络图又回到了 MB/s：1 MB/s 以下的流量会全被压成 `0.00`，图上看不出波动"
+        );
+        let disk = region(&code, "fn disk_chart(", "pub fn metrics_grid(");
+        assert!(
+            disk.contains("RateUnit::MbPerSec"),
+            "磁盘读写不该跟着改成 KB/s：几十 MB/s 的读写会变成五位数，把表头撑开"
+        );
+        // 表头单位由 `RateUnit` 决定，不许再有写死的 `(MB/s)`
+        assert!(
+            !code.contains("(MB/s)\")"),
+            "表头单位又被写死在字符串里了（应走 `unit.label()`）"
+        );
+    }
 }
