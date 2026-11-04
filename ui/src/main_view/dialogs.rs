@@ -2518,7 +2518,13 @@ impl MainView {
             )
     }
 
-    /// 在线更新对话框（2026-10-28）：版本对比 + 发布说明 + 一个主操作。
+    /// 在线更新对话框（2026-10-28）：一行状态 + 一个主操作。
+    ///
+    /// 2026-11-04 用户要求「点击后不要显示 tag 更新内容」：**不展示发布说明，也不展示
+    /// 「当前 vX / 最新 vY」那行版本对照**（截图里那一整块）。GitHub 的 `body` 是
+    /// Markdown 原文，常见形态是三平台产物表格，塞进对话框既撑高又读不出重点；
+    /// 想看改了什么，用左下角「打开发布页」自己去看。版本信息仍留在状态行里
+    /// （「发现新版本 vX（当前 vY）」），不需要再重复一行。
     ///
     /// 正文/按钮**全部现读** `io.update_*`：下载进度、已下载的包、失败原因都在那儿，
     /// 对话框每帧重跑 builder 就能跟上；存副本只会在状态机换挡时对不上。
@@ -2531,18 +2537,6 @@ impl MainView {
         use gpui::Styled as _;
         let theme = crate::theme::current(cx);
         let phase = self.io.update_phase.clone();
-        let latest = self
-            .io
-            .update_release
-            .as_ref()
-            .map(|r| r.version.clone())
-            .unwrap_or_default();
-        let notes = self
-            .io
-            .update_release
-            .as_ref()
-            .map(|r| release_notes_excerpt(&r.notes))
-            .unwrap_or_default();
         let release_url = self
             .io
             .update_release
@@ -2556,55 +2550,19 @@ impl MainView {
             .child(rustshell_core::i18n::t("软件更新"));
 
         let (status, trouble) = self.update_status_line();
-        let mut body = v_flex()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .text_color(hex(if trouble {
-                        theme.danger
-                    } else {
-                        theme.fg_primary
-                    }))
-                    .child(SharedString::from(status)),
-            )
-            .child(
-                div()
-                    .text_size(px(11.5))
-                    .text_color(hex(theme.fg_muted))
-                    .child(rustshell_core::i18n::ts(
-                        format!(
-                            "当前 v{}，最新 v{}。",
-                            rustshell_core::APP_VERSION,
-                            if latest.is_empty() {
-                                "-"
-                            } else {
-                                latest.as_str()
-                            }
-                        ),
-                        format!(
-                            "You are on v{}, latest is v{}.",
-                            rustshell_core::APP_VERSION,
-                            if latest.is_empty() {
-                                "-"
-                            } else {
-                                latest.as_str()
-                            }
-                        ),
-                    )),
-            );
-        if !notes.is_empty() {
-            body = body.child(
-                div()
-                    .max_h(px(180.))
-                    .overflow_hidden()
-                    .text_size(px(11.5))
-                    .text_color(hex(theme.fg_secondary))
-                    .child(SharedString::from(notes)),
-            );
-        }
-        // 已下载但没自动装（mac / linux 的 dmg / deb）：告诉用户东西在哪，
-        // 否则「已就绪」三个字会让人以为按一下就好，实际安装器已经弹出来了。
+        let mut body = v_flex().gap_2().child(
+            div()
+                .text_size(px(12.5))
+                .text_color(hex(if trouble {
+                    theme.danger
+                } else {
+                    theme.fg_primary
+                }))
+                .child(SharedString::from(status)),
+        );
+        // 已下载 ≠ 已装：Windows 要等用户点「重启」才拉起 NSIS 覆盖安装，
+        // mac / linux 的 dmg / deb 虽已交给系统安装器，装不装也不由我们决定。
+        // 把路径摆出来，否则「已就绪」三个字会让人以为文件已经换好了。
         if matches!(phase, super::UpdatePhase::Ready) {
             if let Some(path) = self.io.update_artifact.clone() {
                 body = body.child(
@@ -3724,20 +3682,6 @@ impl MainView {
         window.close_dialog(cx);
         cx.notify();
     }
-}
-
-/// 发布说明截一段给对话框。
-///
-/// GitHub 的 `body` 是 Markdown 原文，可能是长篇 changelog：全塞进对话框既撑爆
-/// 高度也读不出「这个版本改了什么」。截前 700 字 + 一行省略足够判断要不要更新。
-fn release_notes_excerpt(notes: &str) -> String {
-    const LIMIT: usize = 700;
-    let trimmed = notes.trim();
-    if trimmed.chars().count() <= LIMIT {
-        return trimmed.to_string();
-    }
-    let head: String = trimmed.chars().take(LIMIT).collect();
-    format!("{head}…")
 }
 
 #[cfg(test)]
@@ -5357,5 +5301,40 @@ pub(in crate::main_view) mod tests {
                 "没有终端时，关框后的收敛没有把焦点收回视图句柄"
             );
         });
+    }
+
+    /// 2026-11-04 用户要求：点开更新对话框**不显示 tag 的更新内容**。
+    ///
+    /// 截图里红框两块都要去掉：「当前 vX，最新 vY」版本对照 + GitHub 的 Markdown
+    /// 发布说明（常见形态是三平台产物表格）。把 `r.notes` / 截断函数加回来不会编译
+    /// 失败，只是对话框又变啰嗦，所以用源码护栏钉住；状态行与「打开发布页」要留着。
+    #[test]
+    fn update_dialog_shows_no_release_notes() {
+        let code = crate::test_support::prod(include_str!("dialogs.rs"));
+        assert!(
+            !code.contains("release_notes_excerpt"),
+            "发布说明截断函数不该再存在（对话框不展示 tag 内容）"
+        );
+        let body = crate::test_support::region(
+            &code,
+            "fn render_update_dialog(",
+            "\n    fn render_paste_confirm_dialog",
+        );
+        assert!(
+            !body.contains("notes"),
+            "更新对话框不许再读 release.notes（tag 更新内容）"
+        );
+        assert!(
+            !body.contains("当前 v") && !body.contains("latest is v"),
+            "「当前 / 最新」那行版本对照也要去掉"
+        );
+        assert!(
+            body.contains("update_status_line()"),
+            "状态行要留着：版本号在那里已经说清楚了"
+        );
+        assert!(
+            body.contains("打开发布页"),
+            "想看更新内容由「打开发布页」自己去看"
+        );
     }
 }
