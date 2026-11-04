@@ -255,8 +255,13 @@ const TITLE_BAR_CMD_DY: f32 = 4.;
 /// 可点击的洞。其余部分仍可拖动窗口。
 /// 标题栏右侧的更新徽标（2026-10-28，位置对齐 shell-rs）。
 ///
+/// **只画一枚图标**（2026-11-04 用户要求）：shell-rs 标题栏那枚 `update-available`
+/// 也是纯图标 —— `CatalogIcon::CircleArrowUp`（圆圈上箭头）+ success/warning 着色，
+/// 版本与状态文字只挂在 hover 提示里，标题栏不常驻任何更新文字。这里直接取同一枚
+/// 图标（`gpui_kit_assets::IconName::CircleArrowUp`），配色也照它：正常绿、异常橙。
+///
 /// **只在「有新版 / 已就绪 / 失败」三种状态下出现**，其余时候不画任何东西 ——
-/// 标题栏不该常驻一枚「检查更新」，那是「设置 › 关于」的事。这条分工抄的是
+/// 标题栏不该常驻一枚「检查更新」，那是「设置 › 关于」的事。这条分工抄的也是
 /// shell-rs：它的 `UpdateBadge` 只在这三种状态返回 `Some`，平时不占位置。
 fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElement {
     use crate::theme::to_hsla as hex;
@@ -269,7 +274,8 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         // 没有要说的：留空元素（不占宽度），标题栏保持干净。
         return div().into_any_element();
     };
-    let color = if trouble { t.danger } else { t.accent };
+    let color = if trouble { t.warning } else { t.success };
+    let tip = SharedString::from(label);
     h_flex()
         .id("titlebar-update-badge")
         // 量取钩子：用例靠它确认徽标真的落在标题栏里（`debug_bounds` 只认 selector）。
@@ -278,26 +284,22 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         // 按钮就「点不动」（与命令入口同一手法，见 `title_bar_command_entry` 上方注释）。
         .occlude()
         .items_center()
-        .gap_1()
-        .px_2()
-        .py_1()
+        .p_1()
         .rounded(px(5.))
         .bg(hex(t.bg_base))
         .border_1()
         .border_color(hex(color))
         .cursor_pointer()
-        .hover(|s| s.border_color(hex(t.accent)))
+        .hover(|s| s.bg(hex(t.bg_elevated)))
+        // 文字只在 hover 时出现，且不在标题栏里占位置（与 shell-rs 的 tooltip 同口径）。
+        .tooltip(move |w, cx| {
+            gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
+        })
         .on_click(cx.listener(|m, _e, w, cx| m.open_update_dialog(w, cx)))
         .child(
-            Icon::new(gpui_kit_assets::IconName::ArrowDown)
-                .xsmall()
+            Icon::new(gpui_kit_assets::IconName::CircleArrowUp)
+                .small()
                 .text_color(hex(color)),
-        )
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(hex(color))
-                .child(SharedString::from(label)),
         )
         .into_any_element()
 }
@@ -3252,6 +3254,40 @@ impl Render for MainView {
 #[cfg(test)]
 mod tests {
     use crate::test_support::prod;
+
+    /// 2026-11-04 用户要求：标题栏那枚更新徽标**只显示图标**，不显示任何更新文字。
+    ///
+    /// 图标直接取 shell-rs 的 `CircleArrowUp`（圆圈上箭头），配色也是它的
+    /// success/warning。加回常驻文字（版本号 / 「新版本」/ 下载进度）编译不会报错，
+    /// 只会让标题栏重新变啰嗦，所以用源码护栏钉住。
+    ///
+    /// 这条护栏住在 `main_view.rs` 自己身上（断言的就是本文件的
+    /// `update_badge_entry`）：原先它寄在 `update_actions.rs` 的测试模块里，
+    /// 那边断言的却是本文件 —— 拆提交时那一步单独构建会自测失败。
+    #[test]
+    fn the_update_badge_is_icon_only() {
+        let code = prod(include_str!("main_view.rs"));
+        let at = code
+            .find("fn update_badge_entry(")
+            .expect("找不到标题栏更新徽标");
+        let tail = &code[at..];
+        let end = tail.find("\n}\n").expect("找不到徽标函数结尾");
+        let body = &tail[..end];
+        assert!(
+            body.contains("CircleArrowUp"),
+            "图标要用 shell-rs 那枚圆圈上箭头（CircleArrowUp）"
+        );
+        assert_eq!(
+            body.matches(".child(").count(),
+            1,
+            "徽标里只能有图标一个子元素，不许再挂版本号 / 状态文字"
+        );
+        assert!(!body.contains("text_size("), "徽标里不许有文字节点");
+        assert!(
+            body.contains(".tooltip("),
+            "版本 / 状态只在 hover 提示里出现，不常驻标题栏"
+        );
+    }
 
     /// 回归（2026-10-09 用户要求「隐藏标题栏的下方的线」）。
     ///
