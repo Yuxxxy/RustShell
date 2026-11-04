@@ -2,13 +2,16 @@
 //!
 //! # 提示放在哪（与 shell-rs 对齐）
 //!
-//! - **标题栏右侧一枚徽标**是唯一的主动提示：有新版本 / 已就绪 / 失败时才出现，
-//!   其余时候什么都不显示（不打扰）。点它开更新对话框。
+//! - **标题栏右侧一枚纯图标徽标**是唯一的主动提示：有新版本 / 已就绪 / 失败时
+//!   才出现，其余时候什么都不显示（不打扰）。图标取 shell-rs 的 `CircleArrowUp`，
+//!   版本 / 状态文字只在 hover 提示里，点它开更新对话框。
 //! - **设置 › 关于**那一行是常驻状态 + 手动入口（检查更新 / 立即更新 / 重启）。
 //!
 //! 这条分工是抄 shell-rs 的（它的 `UpdateBadge` 只在这三种状态下返回 `Some`，
 //! 状态行在「关于」页）。为什么不让它弹模态框：更新不是用户当下要做的事，
 //! 弹出来就是打断；而徽标放在标题栏，既不打断也丢不掉。
+//! 对话框只显示状态和一个主操作，**不展示 tag 的发布说明**（2026-11-04 用户要求：
+//! GitHub 的 Markdown 正文常是平台产物表格，塞进对话框既撑高又读不出重点）。
 //!
 //! # 三个阶段的分寸
 //!
@@ -16,9 +19,12 @@
 //!   自动检查失败**静默**（用户没问，不该被网络错误打扰），手动检查才报错。
 //! - **下载**：只在用户点了「立即更新」之后发生，不后台偷跑 —— 几十 MB 的流量
 //!   该由用户决定。
-//! - **安装**：Windows 的产物是裸 exe，直接换掉当前程序（见
-//!   [`rustshell_core::update::replace_running_exe`]）；mac / linux 的产物是
-//!   `.dmg` / `.deb`，交给系统安装器打开，本程序不碰 `/usr/bin`。
+//! - **安装**：Windows 的产物是 **NSIS 安装包**（不是主程序），下载完只置为
+//!   「已就绪」；用户点「重启以完成更新」时由
+//!   [`rustshell_core::update::launch_windows_installer`] 另起进程拉起覆盖安装，
+//!   本程序随即退出。**绝不把安装包复制/改名成 `rustshell.exe`** —— 那会让安装器
+//!   顶着主程序名字运行，被旧卸载器按进程名当成 RustShell 杀掉（2026-11-04）。
+//!   mac / linux 的 `.dmg` / `.deb` 交给系统安装器打开，本程序不碰 `/usr/bin`。
 
 use gpui::{Context, Window};
 
@@ -193,10 +199,22 @@ impl MainView {
                 false,
             ),
             super::UpdatePhase::Ready => (
-                rustshell_core::i18n::ts(
-                    format!("v{version} 已就绪，重启后生效。"),
-                    format!("v{version} is ready — restart to finish."),
-                ),
+                if cfg!(windows) {
+                    // Windows 的「已就绪」= 安装包已下载但**还没装**：点重启才拉起
+                    // 覆盖安装，安装器装完会自己重新打开主程序。写成「文件已换好」
+                    // 是老实现的说法，会让人以为此刻程序目录里已经是新版本。
+                    rustshell_core::i18n::ts(
+                        format!("v{version} 安装包已就绪，重启后自动覆盖安装并重新打开。"),
+                        format!(
+                            "v{version} is ready — restart to install over the current version."
+                        ),
+                    )
+                } else {
+                    rustshell_core::i18n::ts(
+                        format!("v{version} 已就绪，重启后生效。"),
+                        format!("v{version} is ready — restart to finish."),
+                    )
+                },
                 false,
             ),
             super::UpdatePhase::Failed(why) => (why.clone(), true),
@@ -250,11 +268,11 @@ impl MainView {
                     let dest = dest.clone();
                     let asset = asset.clone();
                     async move {
+                        // 只下载，**不安装**。Windows 的 exe 是 NSIS 安装包，绝不能在
+                        // 这里把它复制/改名成当前主程序（详见 update_actions.rs 顶部
+                        // 与 core/src/update.rs 的说明）；安装留到用户点「重启」时，
+                        // 由 restart_for_update 另起进程拉起。
                         update::download(&asset, &dest)?;
-                        // Windows：直接把当前程序换掉（失败会回滚）。
-                        if install_here {
-                            update::replace_running_exe(&dest)?;
-                        }
                         Ok::<_, anyhow::Error>(())
                     }
                 })
@@ -262,15 +280,15 @@ impl MainView {
             let _ = this.update(cx, |m, cx| {
                 match result {
                     Ok(()) => {
-                        if install_here {
-                            m.io.update_artifact = Some(dest.clone());
-                            m.io.update_phase = super::UpdatePhase::Ready;
-                        } else {
-                            // .dmg / .deb：交给系统安装器，装不装由系统那一步决定。
+                        // Windows：等用户点「重启以完成更新」再拉起安装器，
+                        // 这样他可以先把终端里的活干完（与原来的分寸一致）。
+                        // mac / linux：.dmg / .deb 直接交给系统安装器打开，
+                        // 装不装由系统那一步决定。
+                        if !install_here {
                             rustshell_platform::shell_open::open_path(&dest);
-                            m.io.update_artifact = Some(dest.clone());
-                            m.io.update_phase = super::UpdatePhase::Ready;
                         }
+                        m.io.update_artifact = Some(dest.clone());
+                        m.io.update_phase = super::UpdatePhase::Ready;
                     }
                     Err(e) => {
                         let text = MainView::update_fail_text(&e);
@@ -300,12 +318,52 @@ impl MainView {
         }
     }
 
-    /// 重启以完成更新：拉起新进程后退出自己。
+    /// 重启以完成更新：拉起安装器 / 新进程后退出自己。
     ///
-    /// 顺序不能反：先 quit 会让新进程可能还没起来，用户看到「程序关了」。
-    /// 新进程的路径就是 `current_exe()`（Windows 上旧映像已经改名成 `.old`，
-    /// 那个文件此刻归新进程所有，本进程退出后才能被清掉）。
+    /// **Windows 走的是安装器，不是 `current_exe()`**：发布产物是 NSIS 安装包，
+    /// 留在下载目录以独立进程运行（`/P /R` 覆盖安装 + 装完自动拉起主程序）。
+    /// 若这里 `spawn(current_exe())`，而老版本又把安装包写成了 `rustshell.exe`，
+    /// 跑起来的就是顶着主程序名字的安装器 —— 旧卸载器按进程名把它当成 RustShell
+    /// 杀掉，结果是「又卸载了，又没安装上」。
+    ///
+    /// 顺序不能反：先 quit 会让新进程可能还没起来，用户看到「程序关了」；
+    /// 反过来本进程也要尽快退出，把 `rustshell.exe` 的文件锁让给安装器。
     pub fn restart_for_update(&mut self, cx: &mut Context<Self>) {
+        if cfg!(windows) {
+            let Some(installer) = self.io.update_artifact.clone() else {
+                self.set_info(
+                    rustshell_core::i18n::ts(
+                        "找不到已下载的安装包，请到发布页手动下载。".into(),
+                        "Downloaded installer not found — get it from the release page.".into(),
+                    ),
+                    false,
+                );
+                cx.notify();
+                return;
+            };
+            match update::launch_windows_installer(&installer) {
+                Ok(()) => {
+                    // 拉起成功才退出；失败时留在旧版本，把下载好的安装包路径
+                    // 留在对话框里，用户可以自己双击完成更新。
+                    cx.quit();
+                    return;
+                }
+                Err(e) => {
+                    self.set_info(
+                        rustshell_core::i18n::ts(
+                            format!("自动更新失败：{e}，请手动运行下载的安装包。"),
+                            format!(
+                                "Could not start the installer: {e}. Run the downloaded setup manually."
+                            ),
+                        ),
+                        false,
+                    );
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
         let Ok(exe) = std::env::current_exe() else {
             self.set_info(
                 rustshell_core::i18n::ts("找不到程序路径，无法自动重启".into(), "Cannot locate the executable; restart manually.".into()),
@@ -380,16 +438,21 @@ mod tests {
         );
     }
 
-    /// 自动检查只能发起一次，且从 render 首帧触发。
+    /// 每次启动都检查，且每次只发起一次、从 render 首帧触发。
     ///
     /// 这里守的是那个**闩**：用「阶段是 Idle」判断会死循环 —— 自动检查失败后阶段
-    /// 本来就回到 Idle，于是每帧都发一次请求。
+    /// 本来就回到 Idle，于是每帧都发一次请求。反过来，闩只存在进程内存里，
+    /// `MainView::new` 每次都把它置回 false，所以**每个新进程都会重新查一次**。
     #[test]
     fn the_startup_check_fires_exactly_once() {
         let main = prod(include_str!("../main_view.rs"));
         assert!(
             main.contains("self.update_auto_check(cx)"),
             "首帧必须发起自动检查"
+        );
+        assert!(
+            main.contains("update_auto_started: false"),
+            "闩不落盘：MainView 初始化必须是 false，否则下次启动就不检查了"
         );
         let actions = prod(include_str!("update_actions.rs"));
         assert!(
@@ -432,6 +495,64 @@ mod tests {
         assert!(
             !body.contains("default_ssh_dir") && !body.contains("config_path"),
             "导入入口不该再自己拼默认路径（`~/.ssh/config`）"
+        );
+    }
+
+    /// 2026-11-04 事故护栏：升级必须是**覆盖安装**，安装包不许变成主程序。
+    ///
+    /// 三条一起守：packager 用仓库里改过的 NSIS 模板；模板里没有「检测到旧版本 →
+    /// 默认先卸载」那一页；客户端重启时拉起的是独立安装器而不是 `current_exe()`。
+    /// 少任何一条，症状都是「旧版卸了、新版没装上」，而编译/单测全绿。
+    #[test]
+    fn windows_upgrade_is_an_overwrite_install() {
+        let cfg = include_str!("../../../app/Cargo.toml");
+        assert!(
+            cfg.contains("template = \"assets/installer.nsi\""),
+            "packager 必须指向仓库里 vendor 的 NSIS 模板，否则会退回上游「先卸载」行为"
+        );
+
+        // 模板里的注释会复述旧行为，断言只针对真正的 NSIS 代码行。
+        let nsi_code = include_str!("../../../app/assets/installer.nsi")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with(';'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !nsi_code.contains("Page custom PageReinstall"),
+            "不许再弹「先卸载再安装」的重装页"
+        );
+        assert!(
+            !nsi_code.contains("ExecWait '$R1 /P _?=$4'"),
+            "安装流程不许 ExecWait 旧卸载器（它会按进程名杀掉安装程序）"
+        );
+        assert!(
+            nsi_code.contains("SetOverwrite on"),
+            "升级路径必须显式覆盖文件"
+        );
+        assert!(
+            nsi_code.contains("installer.old"),
+            "老版本在线更新的残留（安装器顶着 rustshell.exe 运行）要能自愈"
+        );
+
+        let actions = prod(include_str!("update_actions.rs"));
+        assert!(
+            !actions.contains("replace_running_exe"),
+            "不许把下载到的 NSIS 安装包复制/改名成当前主程序"
+        );
+        assert!(
+            actions.contains("update::launch_windows_installer(&installer)"),
+            "点重启时必须以独立进程拉起安装器"
+        );
+        // 只看 restart_for_update 的 Windows 分支（截到非 Windows 的重启逻辑之前），
+        // 确保「拉起即退出」。不能直接全文找 cfg!(windows)：状态文案里也有一个。
+        let at = actions
+            .find("pub fn restart_for_update")
+            .expect("找不到重启入口");
+        let restart = &actions[at..];
+        let win = &restart[..restart.find("let Ok(exe)").expect("找不到分支结尾")];
+        assert!(
+            win.contains("if cfg!(windows)") && win.contains("cx.quit()"),
+            "拉起安装器后必须退出，把 rustshell.exe 的文件锁让出来"
         );
     }
 }

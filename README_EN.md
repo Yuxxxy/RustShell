@@ -104,6 +104,10 @@ Each platform ships exactly **one installer**, named `RustShell-<version>-<platf
 > First launch: the Windows installer is not code-signed, so SmartScreen reports an unknown
 > publisher; the macOS app is ad-hoc signed only (not notarized) — right-click → Open, or run
 > `xattr -dr com.apple.quarantine /Applications/RustShell.app`.
+>
+> Windows upgrades are **in-place**: the installer overwrites the existing files and never runs
+> the old uninstaller, so you do not need to uninstall the previous version first. The customized
+> NSIS template lives in `app/assets/installer.nsi`.
 
 ### Option 2: Build from source
 

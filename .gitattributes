@@ -10,3 +10,6 @@
 *.yml    text eol=lf
 *.yaml   text eol=lf
 *.sh     text eol=lf
+# NSIS 模板（app/assets/installer.nsi）由 cargo-packager 以 UTF-8 读进来再渲染成
+# UTF-16LE，里面还有中文注释；统一 LF，免得 Windows 检出时在注释里留下 CR。
+*.nsi    text eol=lf

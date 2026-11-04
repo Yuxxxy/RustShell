@@ -550,7 +550,8 @@ pub enum UpdatePhase {
     Available,
     /// 正在下载产物。
     Downloading,
-    /// 已就绪：Windows 上文件已换好（重启生效）；mac / linux 已把安装包交给系统。
+    /// 已就绪：Windows 上安装包已下载、等用户点「重启」才拉起覆盖安装；
+    /// mac / linux 已把 dmg / deb 交给系统安装器。两种都**不是**「文件已换好」。
     Ready,
     /// 失败原因（一句话，直接给界面）。
     Failed(String),
@@ -720,10 +721,12 @@ pub struct DialogIoState {
     /// 最近一次检查得到的最新发布；None = 还没查过或上次失败。
     pub update_release: Option<rustshell_core::update::LatestRelease>,
 
-    /// 启动时的自动检查是否已经发起过。
+    /// 启动时的自动检查是否已经发起过（**纯进程内，不落盘**）。
     ///
     /// 不能用 `update_phase == Idle` 代替：自动检查**失败**之后阶段会回到 Idle，
     /// 那样每帧都会再发一次请求（渲染路径里跑定时任务，CPU 与网络都会被打满）。
+    /// 反过来，正因为不写进 settings，`MainView::new` 每次都置 false ⇒
+    /// **每次启动都会重新查一次**，也不会因为上次失败就永远不查了。
     pub update_auto_started: bool,
 
     /// 已下载到本地的产物（`.exe` / `.deb` / `.dmg`）。

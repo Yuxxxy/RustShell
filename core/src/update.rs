@@ -6,15 +6,25 @@
 //!   就退回 `tags`，按版本号取最大的那个。判据永远是 **tag**，与发布页是谁建的无关。
 //! - [`download`]：把对应平台的产物流式写到本地临时目录，并核对 GitHub 给的字节数
 //!   —— 「下载完了」不能只看 `Ok(())`，半截文件也是 `Ok`。
-//! - [`replace_running_exe`]：Windows 上直接换掉当前可执行文件（先把运行中的自己
-//!   改名，再放新的，失败回滚）；mac / linux 的产物是 `.dmg` / `.deb`，不由本模块
-//!   安装，交给系统安装器（调用方拿到路径后 `open` 出去）。
+//! - [`launch_windows_installer`]：Windows 的产物是 **NSIS 安装包**，不是主程序。
+//!   由我们自己以 `/P /R` 另起一个进程拉起它做覆盖安装；mac / linux 的 `.dmg` /
+//!   `.deb` 则交给系统安装器（调用方拿到路径后 `open` 出去）。
+//!
+//! # 为什么不是「把下载到的 exe 复制到当前程序路径」
+//!
+//! 曾经这么干过，是 2026-11-04 那个「又卸载了、又没装上」事故的根因：下载的
+//! `RustShell-<版本>-windows-x64.exe` 是 NSIS **安装器**，把它改名成 `rustshell.exe`
+//! 后重启，跑起来的就是顶着主程序名字的安装器；旧卸载器按进程名找
+//! `rustshell.exe`，确认「结束正在运行的 RustShell」时把安装器自己杀了。
+//!
+//! 另外，安装器也绝不能在自己的进程里覆盖自己正在运行的映像（Windows 锁写）。
+//! 所以口径只有一条：**安装包永远留在下载目录，以独立进程运行**。
 //!
 //! # 为什么不是「点一下静默后台更新」
 //!
-//! 换掉正在运行的进程是**不可逆**的一步，而且退出码、重启时机都影响用户手上的活
-//! （终端会话、传输）。所以这里只提供「换文件」这一原语，什么时候换、换完是否立刻
-//! 重启，由 UI 那层按当前阶段决定（见 `ui/src/main_view/update_actions.rs`）。
+//! 结束正在运行的进程是**不可逆**的一步，而且重启时机影响用户手上的活（终端会话、
+//! 传输）。所以这里只提供「拉起安装器」这一原语，什么时候拉、拉完是否立刻重启，
+//! 由 UI 那层按当前阶段决定（见 `ui/src/main_view/update_actions.rs`）。
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -48,6 +58,9 @@ pub struct LatestRelease {
     /// 发布页地址（正常情况下是该 tag 的页面）。
     pub url: String,
     /// 发布说明（Markdown 原文；只有 release 才有，tag 兜底时为空）。
+    ///
+    /// 2026-11-04 起 **UI 不展示**：用户要求更新对话框只给状态与主操作，
+    /// 想看改了什么走「打开发布页」。字段保留是为了不改动 API 解析与用例。
     pub notes: String,
     pub assets: Vec<Asset>,
 }
@@ -208,7 +221,10 @@ pub fn pick_asset<'a>(assets: &'a [Asset], triplet: &str, ext: &str) -> Option<&
     assets.iter().find(|a| a.name.ends_with(&suffix))
 }
 
-/// 产物扩展名会不会由我们**自己**替换（只有 Windows 的裸 exe 是）。
+/// Windows 的 `.exe` 是 NSIS 安装包，安装动作要由我们自己（带 `/P /R`）拉起，
+/// 而不是交给 `open` 用系统默认方式打开、更不能当裸可执行文件复制。
+///
+/// 注意：这里的「自己安装」**不再**意味着替换当前进程的文件 —— 见模块顶部说明。
 pub fn installs_itself(ext: &str) -> bool {
     ext == "exe"
 }
@@ -257,52 +273,53 @@ pub fn download(asset: &Asset, dest: &Path) -> anyhow::Result<()> {
 
 // ── 安装 ──────────────────────────────────────────────────────────────────
 
-/// 用下载好的 exe 换掉**当前正在运行**的可执行文件。
+/// 拉起下载好的 Windows NSIS 安装包，做**覆盖安装**。调用方随后应退出本进程。
 ///
-/// Windows 不允许覆盖运行中的 exe，但**允许改名**，所以顺序是：
-/// ① 新文件先落到同目录（跨卷 rename 会失败，copy 一次最稳）
-/// ② 把当前 exe 改名成 `.old`（此刻进程还在跑改名后的那个文件）
-/// ③ 把新文件改名成正式名；失败就把 `.old` 改回来 —— 不允许出现「两个都没有」
+/// 历史上这里是把下载到的 exe 复制成当前程序文件（`replace_running_exe`）。**不能
+/// 再这么做**：发布产物 `RustShell-<版本>-windows-x64.exe` 是 NSIS 安装器，不是主
+/// 程序。把它写成 `rustshell.exe` 再重启，安装器就顶着主程序的名字运行，旧卸载器
+/// 按进程名 `rustshell.exe` 找「正在运行的 RustShell」时会把安装器自己杀掉 ——
+/// 于是「旧版已卸载、新版没装上」（2026-11-04）。
 ///
-/// `.old` **不删**：当前进程的映像还是它，删不掉（Windows 会锁住）。下次启动时
-/// [`cleanup_stale_backup`] 会顺手清掉。
-pub fn replace_running_exe(downloaded: &Path) -> anyhow::Result<()> {
-    let exe = std::env::current_exe().context("取不到当前可执行文件路径")?;
-    let dir = exe.parent().context("可执行文件没有父目录")?.to_path_buf();
-    let name = exe
-        .file_name()
-        .context("可执行文件没有文件名")?
-        .to_string_lossy()
-        .to_string();
-    let staged = dir.join(format!("{name}.new"));
-    let backup = dir.join(format!("{name}.old"));
-
-    std::fs::copy(downloaded, &staged).context("把新版本复制到程序目录失败")?;
-    let _ = std::fs::remove_file(&backup);
-    std::fs::rename(&exe, &backup).context("无法把当前程序改名（可能没有写权限）")?;
-    if let Err(e) = std::fs::rename(&staged, &exe) {
-        // 回滚：宁可停在旧版本，也不能留下一个没有主程序目录
-        let _ = std::fs::rename(&backup, &exe);
-        let _ = std::fs::remove_file(&staged);
-        return Err(e).context("把新版本放到程序位置失败（已回滚到原版本）");
-    }
+/// 参数口径（NSIS 模板 `app/assets/installer.nsi` 认识这两个开关）：
+/// - `/P` passive：只显示进度，跳过所有页面，**尤其不会再弹「检测到旧版本」的
+///   卸载询问页**；进程检查在 passive 下也不弹确认框。
+/// - `/R`：安装成功后由安装器 `Exec` 新主程序，用户视角就是「重启到新版本」。
+///
+/// 只 `spawn` 不 `wait`：安装器是独立进程，本进程要立刻退出把 exe 的锁让出来。
+pub fn launch_windows_installer(installer: &Path) -> anyhow::Result<()> {
+    std::process::Command::new(installer)
+        .args(["/P", "/R"])
+        .spawn()
+        .with_context(|| format!("拉起安装包 {} 失败", installer.display()))?;
     Ok(())
 }
 
-/// 启动时清掉上一次更新留下的 `<exe>.old`。删不掉（还被占用）就忽略。
+/// 启动时清掉历史更新留下的两类残留；删不掉（还被占用）就忽略，下次再试。
+///
+/// - `<exe>.old`：老版本 `replace_running_exe` 留下的旧主程序。
+/// - `<stem>.installer.old`：NSIS 模板的自愈逻辑把「顶着主程序名字运行的安装器」
+///   改名让位后留下的安装器本体（见模板 Section Install）。
 pub fn cleanup_stale_backup() {
     let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
         return;
     };
     let name = exe
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    if name.is_empty() {
-        return;
-    }
-    if let Some(dir) = exe.parent() {
+    if !name.is_empty() {
         let _ = std::fs::remove_file(dir.join(format!("{name}.old")));
+    }
+    let stem = exe
+        .file_stem()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !stem.is_empty() {
+        let _ = std::fs::remove_file(dir.join(format!("{stem}.installer.old")));
     }
 }
 
@@ -402,8 +419,42 @@ mod tests {
                 "扩展名只可能是 exe / deb / dmg，实际 {ext:?}"
             );
         }
-        assert!(installs_itself("exe"), "Windows 的裸 exe 由我们自己替换");
+        assert!(
+            installs_itself("exe"),
+            "Windows 的 .exe 是 NSIS 安装包，必须由我们自己带参数拉起"
+        );
         assert!(!installs_itself("deb"), "deb 交给系统安装器");
         assert!(!installs_itself("dmg"));
+    }
+
+    /// 钉死「安装包不再被复制成主程序」这条口径。
+    ///
+    /// 这是一个**源码护栏**：把 `replace_running_exe` 加回来、或漏掉 `/P` / `/R`，
+    /// 编译与运行都不会立刻报错，只会在用户点「安装并重启」时表现为「旧版卸了、
+    /// 新版没装」或「装完不重启」。`/P` 尤其关键：没有它，安装器会弹上游那张
+    /// 「检测到旧版本 → 是否卸载」的页面。
+    #[test]
+    fn windows_update_only_launches_the_installer() {
+        // include_str! 读到的是磁盘原始字节：Windows 检出是 CRLF，先把换行归一，
+        // 否则下面用 "\n}\n" 找函数结尾会静默失败（本仓踩过这个坑）。
+        let code = include_str!("update.rs").replace("\r\n", "\n");
+        // 针要拼出来：整段写成一个字面量会扫到本用例自己（负向断言恒失败）。
+        let forbidden = ["pub fn ", "replace_running_exe("].concat();
+        assert!(
+            !code.contains(&forbidden),
+            "不许再把下载到的安装包复制/改名成当前主程序"
+        );
+        let at = code
+            .find("pub fn launch_windows_installer")
+            .expect("找不到拉起安装器的入口");
+        let body = &code[at..];
+        let end = body.find("\n}\n").expect("找不到函数结尾");
+        let body = &body[..end];
+        assert!(body.contains("\"/P\""), "必须 passive：跳过卸载询问页");
+        assert!(body.contains("\"/R\""), "装完要由安装器拉起新主程序");
+        assert!(
+            !body.contains("std::fs::copy") && !body.contains("std::fs::rename"),
+            "安装器必须留在下载目录，不能往程序目录写文件"
+        );
     }
 }

@@ -11,7 +11,9 @@
 #   三平台的产物名因此出自同一条规则（见 release.yml 的 Resolve version）。
 #
 # 前置（只需一次）：
-#   cargo install cargo-packager --locked
+#   cargo install cargo-packager --locked --version ~0.11.8
+#   ↑ 版本要钉住：app/assets/installer.nsi 是 0.11.8 模板的整份副本（改成覆盖安装、
+#     不卸载）。升级 packager 前先 diff 上游模板，否则会静默退回「先卸载」的老行为。
 #   NSIS 工具链**不需要**手工安装：packager 会自己拉，本脚本另在打包前补一次缺
 #   （见下方「2/4 NSIS 工具链预置」——国内直连 github.com 会超时，必须兜住）。
 #
@@ -284,5 +286,6 @@ cat <<EOF
 
 完成。安装包：$OUT
   · NSIS 安装包（.exe）：装到当前用户目录（%LOCALAPPDATA%），不弹 UAC
-  · 安装前请先按需卸载旧版本；本安装包未做代码签名，SmartScreen 会提示「未知发布者」
+  · 升级为**覆盖安装**：直接替换旧文件，不卸载、不清用户数据，无需先卸载旧版本
+  · 本安装包未做代码签名，SmartScreen 会提示「未知发布者」
 EOF

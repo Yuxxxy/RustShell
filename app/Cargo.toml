@@ -71,6 +71,16 @@ formats = ["nsis"]
 before-packaging-command = "cargo build --release -p rustshell"
 
 [package.metadata.packager.nsis]
+# ⚠️ 自定义 NSIS 模板（2026-11-04）：上游模板在检测到旧版本时**默认「先卸载再安装」**，
+# 旧卸载器会按进程名找 rustshell.exe；而旧版在线更新把「安装包」复制成了主程序，
+# 于是卸载器把正在跑的安装程序当成 RustShell 杀掉 —— 旧版卸了、新版没装。
+# 这份模板改成**纯覆盖安装**：不弹重装页、不调用卸载器，并自带「安装器顶着
+# rustshell.exe 名字运行」时的自愈。详见 app/assets/installer.nsi 顶部说明。
+#
+# 路径按 **app/（本 crate 目录）** 解析，与其他 packager 路径同一口径（见上文）。
+# 模板是 cargo-packager 0.11.8 的整份副本，升级 packager 前先 diff 上游模板，
+# 否则会静默退回「先卸载」的老行为；release.yml 已把版本钉在 ~0.11.8。
+template = "assets/installer.nsi"
 # 装到当前用户（%LOCALAPPDATA%），安装过程不弹 UAC：终端工具不需要管理员权限，
 # 且「免管理员的绿色安装」对个人开发者更友好。
 #

@@ -151,6 +151,10 @@ cargo build --release -p rustshell
 ./scripts/package-linux.sh
 ```
 
+> **Windows 升级为覆盖安装**：检测到旧版本时安装器直接替换文件，不卸载、不清用户数据，
+> 无需先手工卸载旧版。模板在 `app/assets/installer.nsi`（vendored 自 cargo-packager
+> 0.11.8，改掉了上游「默认先卸载再安装」的重装页），配置见 `app/Cargo.toml`。
+
 > 三个脚本都使用 `cd "$(dirname "$0")/.."` 回到仓库根，因此在任意工作目录下调用均可；
 > 不带参数时**先编译再打包**，带一个二进制路径参数时只打包（CI 就是这么用的）。
 >   

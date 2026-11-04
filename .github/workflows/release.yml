@@ -367,9 +367,12 @@ jobs:
       # target/release/ —— macOS 的产物在 target/universal-apple-darwin/ 下，
       # 猜错就等于安静地打包一个不存在的文件。Windows 例外：cargo-packager
       # 的输入来自 cargo metadata，不读命令行参数（原因见下面那一步）。
+      # 版本钉在 0.11.8 这一档：Windows 用的是仓库里 vendor 的 NSIS 模板
+      # （app/assets/installer.nsi，改成「覆盖安装、不卸载」）。模板是那一版
+      # 的整份副本，换 packager 版本前必须先 diff 上游模板再重新施加改动。
       - name: Install cargo-packager (windows)
         if: matrix.target == 'windows'
-        run: cargo install cargo-packager --locked --version ^0.11
+        run: cargo install cargo-packager --locked --version ~0.11.8
 
       # 脚本内部：调用 packager → 把 `rustshell_<ver>_<arch>-setup.exe`
       # 改名成 `RustShell-<ver>-windows-<arch>.exe` → 校验体积。
