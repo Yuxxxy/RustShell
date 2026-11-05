@@ -30,6 +30,9 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use anyhow::{bail, Context as _};
 
 /// 项目主页（「关于」页的 GitHub 入口）。
@@ -270,6 +273,34 @@ pub fn download(asset: &Asset, dest: &Path) -> anyhow::Result<()> {
 
 // ── 安装 ──────────────────────────────────────────────────────────────────
 
+/// Windows 上「运行中的程序不能被覆盖」。shell-rs（`since2006/shell-rs`）处理同一个
+/// 问题的办法是：**不让安装器去杀进程**，而是另起一个**隐藏的 PowerShell 等着** ——
+/// 等本进程退出后跑安装器，装完（按需）再把程序拉起来。
+///
+/// 这样做的好处是安装器跑起来时本进程已经没了，目标 exe 没有任何人占着，覆盖写
+/// 就是一次干净的写；也不会出现「安装器正在杀程序、程序正在退」那种谁先谁后不
+/// 确定的竞态。
+///
+/// 脚本里**不拼任何路径**：路径全部走**环境变量**（shell-rs 的原话是 "values come
+/// in through the environment, not the script's text, so no path needs quoting"），
+/// 所以路径里有空格或引号也不会出事。
+///
+/// `/P` passive：只显示进度，跳过所有页面（尤其不会再弹「检测到旧版本」的卸载询问
+/// 页），进程检查在 passive 下也不弹确认框。
+/// `/R`：安装成功后由安装器 `Exec` 新主程序，用户视角就是「重启到新版本」。
+/// 这里**不再由 waiter 负责拉起**——安装器已经带 `/R` 了，两个都做会起两个实例。
+///
+/// 刻意**不用 `Start-Process`**：它要枚举环境变量拼字典，而开发机 / CI 上常有
+/// 大小写重复的键（`HTTPS_PROXY` 与 `https_proxy`），一撞上就抛
+/// 「已添加项。字典中的关键字:HTTPS_PROXY」—— 更新当场哑火。调用运算符 `&`
+/// 完全不碰环境字典，而且实测对 GUI 安装器 0.1s 就返回（不等它跑完，也就不会
+/// 因为安装器的 `/R` 拉起新主程序、而把 waiter 拖成一条常驻进程）。
+const WAITER_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+$waitFor = [int]$env:RSSHELL_UPDATE_PID
+while (Get-Process -Id $waitFor) { Start-Sleep -Milliseconds 100 }
+& $env:RSSHELL_UPDATE_SETUP /P /R
+"#;
+
 /// 拉起下载好的 Windows NSIS 安装包，做**覆盖安装**。调用方随后应退出本进程。
 ///
 /// 历史上这里是把下载到的 exe 复制成当前程序文件（`replace_running_exe`）。**不能
@@ -278,25 +309,60 @@ pub fn download(asset: &Asset, dest: &Path) -> anyhow::Result<()> {
 /// 按进程名 `rustshell.exe` 找「正在运行的 RustShell」时会把安装器自己杀掉 ——
 /// 于是「旧版已卸载、新版没装上」（2026-11-04）。
 ///
-/// 参数口径（NSIS 模板 `app/assets/installer.nsi` 认识这两个开关）：
-/// - `/P` passive：只显示进度，跳过所有页面，**尤其不会再弹「检测到旧版本」的
-///   卸载询问页**；进程检查在 passive 下也不弹确认框。
-/// - `/R`：安装成功后由安装器 `Exec` 新主程序，用户视角就是「重启到新版本」。
-///
-/// 只 `spawn` 不 `wait`：安装器是独立进程，本进程要立刻退出把 exe 的锁让出来。
+/// 首选 [`spawn_update_waiter`]（shell-rs 那一套）；万一拉不起来（比如机器上没有
+/// PowerShell），退回「直接拉起安装器 + 本进程立刻退出」的老路 —— NSIS 模板里
+/// 仍然有「杀运行中程序」和「让位重试」兜底。
 pub fn launch_windows_installer(installer: &Path) -> anyhow::Result<()> {
-    std::process::Command::new(installer)
-        .args(["/P", "/R"])
-        .spawn()
-        .with_context(|| format!("拉起安装包 {} 失败", installer.display()))?;
+    match spawn_update_waiter(installer) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log::warn!("拉起更新 waiter 失败（{e}），退回直接拉起安装器");
+            std::process::Command::new(installer)
+                .args(["/P", "/R"])
+                .spawn()
+                .with_context(|| format!("拉起安装包 {} 失败", installer.display()))?;
+            Ok(())
+        }
+    }
+}
+
+/// 隐藏的 PowerShell waiter：等本进程（PID）真正退出后，再跑安装器。
+///
+/// 只 `spawn` 不 `wait`：waiter 是独立进程，本进程要立刻退出把 exe 的锁让出来；
+/// waiter 自己会盯着 PID，直到本进程真的没了才动手。
+fn spawn_update_waiter(installer: &Path) -> anyhow::Result<()> {
+    let system_root =
+        std::env::var_os("SystemRoot").unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows"));
+    let powershell =
+        PathBuf::from(system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let mut cmd = std::process::Command::new(powershell);
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        WAITER_SCRIPT,
+    ])
+    .env("RSSHELL_UPDATE_PID", std::process::id().to_string())
+    .env("RSSHELL_UPDATE_SETUP", installer);
+    // CREATE_NO_WINDOW：RustShell 是 GUI 程序，直接 spawn 控制台程序会闪一个黑框。
+    // `-WindowStyle Hidden` 是 PowerShell 启动**之后**再隐藏（仍会闪一下），
+    // CREATE_NO_WINDOW 才是从根上不创建那个控制台。
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd.spawn().with_context(|| "拉起更新 waiter 失败")?;
     Ok(())
 }
 
-/// 启动时清掉历史更新留下的两类残留；删不掉（还被占用）就忽略，下次再试。
+/// 启动时清掉历史更新留下的残留；删不掉（还被占用）就忽略，下次再试。
 ///
 /// - `<exe>.old`：老版本 `replace_running_exe` 留下的旧主程序。
-/// - `<stem>.installer.old`：NSIS 模板的自愈逻辑把「顶着主程序名字运行的安装器」
-///   改名让位后留下的安装器本体（见模板 Section Install）。
+/// - `<stem>.installer.old`：NSIS 模板「让位」时挪开的旧文件（见模板 Section Install）。
+/// - `<临时目录>/<stem>-setup.exe`：安装器「自己顶着主程序名字运行」时复制出来的
+///   那份副本（见模板 .onInit 的自愈 A）。
 pub fn cleanup_stale_backup() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -317,6 +383,9 @@ pub fn cleanup_stale_backup() {
         .unwrap_or_default();
     if !stem.is_empty() {
         let _ = std::fs::remove_file(dir.join(format!("{stem}.installer.old")));
+        // 让位副本留在临时目录里，装完顺手带走。
+        let _ = std::fs::remove_file(download_dir().join(format!("{stem}-setup.exe")));
+        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("{stem}-setup.exe")));
     }
 }
 
@@ -424,12 +493,14 @@ mod tests {
         assert!(!installs_itself("dmg"));
     }
 
-    /// 钉死「安装包不再被复制成主程序」这条口径。
+    /// 钉死「安装包不再被复制成主程序」+「更新交给 waiter 顺序执行」这两条口径。
     ///
-    /// 这是一个**源码护栏**：把 `replace_running_exe` 加回来、或漏掉 `/P` / `/R`，
-    /// 编译与运行都不会立刻报错，只会在用户点「安装并重启」时表现为「旧版卸了、
-    /// 新版没装」或「装完不重启」。`/P` 尤其关键：没有它，安装器会弹上游那张
-    /// 「检测到旧版本 → 是否卸载」的页面。
+    /// 这是一个**源码护栏**：把 `replace_running_exe` 加回来、或漏掉 `/P` / `/R`、
+    /// 或去掉「等本进程退出再装」的顺序，编译与运行都不会立刻报错，只会在用户点
+    /// 「安装并重启」时表现为「旧版卸了、新版没装」「装完不重启」或
+    /// 「无法打开要写入的文件」（2026-11-05 实测：老客户端把安装包复制成主程序名
+    /// 运行，安装器改不动自己正在运行的映像，Windows 锁写 ⇒ 升级必失败）。
+    /// `/P` 尤其关键：没有它，安装器会弹上游那张「检测到旧版本 → 是否卸载」的页面。
     #[test]
     fn windows_update_only_launches_the_installer() {
         // include_str! 读到的是磁盘原始字节：Windows 检出是 CRLF，先把换行归一，
@@ -447,11 +518,74 @@ mod tests {
         let body = &code[at..];
         let end = body.find("\n}\n").expect("找不到函数结尾");
         let body = &body[..end];
-        assert!(body.contains("\"/P\""), "必须 passive：跳过卸载询问页");
-        assert!(body.contains("\"/R\""), "装完要由安装器拉起新主程序");
+        assert!(
+            body.contains("spawn_update_waiter"),
+            "必须走 shell-rs 那一套：让独立进程等本进程退出后再装"
+        );
         assert!(
             !body.contains("std::fs::copy") && !body.contains("std::fs::rename"),
             "安装器必须留在下载目录，不能往程序目录写文件"
+        );
+
+        // waiter 脚本本体：等 PID 消失 → 跑安装器 → 安装器带 /P /R。
+        assert!(
+            WAITER_SCRIPT.contains("Get-Process -Id $waitFor"),
+            "waiter 必须等本进程真的退出再去装（运行中的 exe 不能被覆盖）"
+        );
+        assert!(
+            WAITER_SCRIPT.contains("RSSHELL_UPDATE_SETUP"),
+            "安装器路径必须走环境变量，不能拼进脚本文本（路径里可能有空格/引号）"
+        );
+        assert!(
+            WAITER_SCRIPT.contains("/P /R"),
+            "必须 passive（跳过卸载询问页）且装完拉起新主程序"
+        );
+        assert!(
+            !WAITER_SCRIPT.contains("Start-Process"),
+            "不能用 Start-Process：它要枚举环境变量拼字典，大小写重复的键（HTTPS_PROXY / https_proxy）会让它当场抛错，更新直接哑火"
+        );
+        assert!(
+            !WAITER_SCRIPT.contains("RSSHELL_UPDATE_RELAUNCH"),
+            "拉起新主程序由安装器的 /R 负责；waiter 再拉一次会起两个实例"
+        );
+    }
+
+    /// 钉死 waiter 的接线：环境变量名与调用方式都不能漂。
+    ///
+    /// 这几行是「Rust 侧」与「PowerShell 侧」之间的唯一接口，改名不改脚本就会
+    /// 静默退化成「装不上」—— 没有编译错误，也没有运行时错误。
+    #[test]
+    fn the_waiter_gets_its_inputs_through_the_environment() {
+        let code = include_str!("update.rs").replace("\r\n", "\n");
+        let at = code
+            .find("fn spawn_update_waiter")
+            .expect("找不到 waiter 的实现");
+        let body = &code[at..];
+        let end = body.find("\n}\n").expect("找不到函数结尾");
+        let body = &body[..end];
+        for needle in [
+            "RSSHELL_UPDATE_PID",
+            "RSSHELL_UPDATE_SETUP",
+            "std::process::id()",
+            "-WindowStyle",
+            "Hidden",
+        ] {
+            assert!(body.contains(needle), "waiter 缺少 {needle}");
+        }
+        // 路径绝不进脚本文本
+        assert!(
+            !body.contains("WAITER_SCRIPT,") || body.contains(".env("),
+            "路径只能进环境变量，不能拼进脚本"
+        );
+        // 不能闪控制台黑框：RustShell 是 GUI 程序，spawn 控制台程序默认会弹窗。
+        assert!(
+            body.contains("creation_flags") && body.contains("0x0800_0000"),
+            "拉起 PowerShell 必须带 CREATE_NO_WINDOW，否则用户会看到一闪而过的黑框"
+        );
+        // `-Wait` 会连安装器 /R 拉起的新主程序一起等 ⇒ 隐藏的 PowerShell 常驻不退。
+        assert!(
+            !WAITER_SCRIPT.contains("-Wait"),
+            "waiter 不能用 -Wait：它会连安装器 /R 拉起的新主程序一起等，每次更新都留下一条常驻的隐藏 PowerShell"
         );
     }
 }
