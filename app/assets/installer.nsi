@@ -13,15 +13,31 @@
 ;   1. 删掉 PageReinstall 整页、依赖它的 EarlyChecks 版本判断、以及只剩它用的
 ;      StrFunc 宏：升级一律**覆盖安装**，安装程序永不调用旧卸载器，也不比版本。
 ;   2. Section Install 里显式 SetOverwrite on，把「覆盖」写成肉眼可见的约定。
-;   3. Section Install 里加自愈：若本安装程序恰以 rustshell.exe 之名运行，先把自身
-;      改名让出目标路径（Windows 允许给运行中的 exe 改名），再写入新主程序。
-;      这样老版本在线更新过来的用户也能自救，不需要先手工卸载。
+;   3. 【2026-11-05 修】两段自愈，治「无法打开要写入的文件」。
+;      现象：老版本在线更新把 NSIS 安装包复制成 $INSTDIR\rustshell.exe 后直接运行它，
+;      安装器于是**正顶着主程序的名字运行**，Windows 锁住这个文件 ⇒
+;      File 写不进去，弹出「无法打开要写入的文件」，升级失败。
+;      实测（2026-11-05，本机 cargo-packager 0.11.8 + NSIS 3.09 复现）：
+;        · $EXEFILE = 文件名（完整路径是 $EXEPATH），所以
+;          「$EXEFILE S== <主程序>.exe」这个判断是**成立**的；
+;        · 但 Rename **失败** —— 让位的目标正是自己正在运行的映像，
+;          锁写之下改名与写入都被拒；
+;        · nsis_tauri_utils::FindProcess 找不到**调用者自己**，所以按名字杀进程
+;          不会把安装器自己杀掉（上游的安全前提成立）。
+;      修法（两段合起来才管用）：
+;        A. .onInit：检测到「我正顶着主程序名字运行」就把自身复制到临时目录、
+;           另起进程安装、本进程立刻退出把锁让出来（副本文件名不同 ⇒ 不递归）；
+;        B. Section Install：**先杀正在运行的程序**（CheckIfAppIsRunning）→
+;           再把目标改名让位（.installer.old）→ 最后才写文件。顺序反了的话，
+;           程序已被改名挪走、再按进程名就找不到它了，老版本会继续在跑。
+;           改名改不动就说明还有人占着，等一下重试（最多约 20 秒）；
+;           首次安装（目标文件不存在）直接跳过让位循环，别白等。
 ;   4. CheckIfAppIsRunning 把 KillProcess 返回 2（进程已自行退出）当成功：在线更新
 ;      是「拉起安装器后立刻退出」，旧进程可能恰好落在 FindProcess 与 KillProcess
 ;      之间，上游会把这种「目标已达成」误判成「杀不掉」并 Abort。
 ;
 ; 维护约定：这是 packager 的**整份**模板，不是补丁。升级 cargo-packager 时必须
-;   diff 上游新版模板后重新施加上面三条；CI 已把版本钉在 0.11.8（见 release.yml）。
+;   diff 上游新版模板后重新施加上面这几条；CI 已把版本钉在 0.11.8（见 release.yml）。
 ; ===========================================================================
 
 ; Set the compression algorithm.
@@ -257,6 +273,9 @@ Function .onInit
 
   !insertmacro SetContext
 
+  ; ── 先把安装目录定下来 ──────────────────────────────────────────────────
+  ; 顺序要紧：下面的「自愈 A」要把 /D=<安装目录> 转给副本，$INSTDIR 这时
+  ; 必须已经是最终值（注册表里上次装的位置，或默认位置）。
   ${If} $INSTDIR == ""
     ; Set default install location
     !if "${INSTALLMODE}" == "perMachine"
@@ -282,6 +301,40 @@ Function .onInit
   !if "${INSTALLMODE}" == "both"
     !insertmacro MULTIUSER_INIT
   !endif
+
+  ; ── 自愈 A：安装器正顶着主程序的名字运行 ────────────────────────────────
+  ; 老版本在线更新把 NSIS 安装包复制成了 $INSTDIR\<主程序>.exe 并直接运行它。
+  ; 这时 NSIS 安装器**自己就打开着这个文件**（它要从自己的映像里读 payload），
+  ; 这个句柄没有 FILE_SHARE_DELETE ⇒ 不但写不进去，**连改名都被拒**
+  ; （实测 Rename 直接返回 FAIL，File 报「无法打开要写入的文件」）。
+  ; 光靠「先改名让位」救不了，因为让位的目标正是自己正在运行的映像。
+  ; 解法：把自身复制到临时目录、另起进程去装，本进程**立刻退出**把锁让出来。
+  ; 副本的文件名与主程序不同 ⇒ 副本不会再进这一段，不会递归。
+  ; 参数原样转给副本：/S 静默、/P passive、/R 装完拉起新主程序、/D= 安装目录。
+  ${If} "$EXEFILE" S== "${MAINBINARYNAME}.exe"
+    ; 复制一份到临时目录再装。复制失败就往下走正常流程（至少让用户看到
+    ; 原始错误，而不是静默退出、什么都不发生）。
+    ClearErrors
+    CopyFiles "$EXEPATH" "$TEMP\${MAINBINARYNAME}-setup.exe"
+    IfErrors self_heal_copy_failed
+    ; 参数原样转给副本：/S 静默、/P passive、/R 装完拉起新主程序。
+    ; /D= 必须是**最后一个**参数且不能带引号（NSIS 的规矩），所以放最后。
+    StrCpy $R0 ""
+    ${GetOptions} $CMDLINE "/S" $R1
+    IfErrors +2 0
+      StrCpy $R0 "/S"
+    ${If} $PassiveMode = 1
+      StrCpy $R0 "$R0 /P"
+    ${EndIf}
+    ${GetOptions} $CMDLINE "/R" $R1
+    IfErrors +2 0
+      StrCpy $R0 "$R0 /R"
+    ; ExecShell 而不是 Exec：Exec/nsExec 会**等子进程结束**，而子进程要等
+    ; 本进程退出才能拿到写权限 —— 那样就是死等。
+    ExecShell "open" "$TEMP\${MAINBINARYNAME}-setup.exe" "$R0 /D=$INSTDIR"
+    Quit
+    self_heal_copy_failed:
+  ${EndIf}
 FunctionEnd
 
 
@@ -339,20 +392,44 @@ Section Install
   ; 写在这里而不是只靠 NSIS 默认值，是为了让「升级 = 覆盖」成为显式约定。
   SetOverwrite on
 
-  ; ── 自愈：本安装程序可能正顶着主程序的名字运行 ──────────────────────────
-  ; 旧版在线更新把 NSIS 安装包复制成了 $INSTDIR\rustshell.exe，用户点「重启更新」
-  ; 后跑起来的其实是安装程序。此时 `File` 无法覆盖自己正在运行的映像（Windows
-  ; 锁写），升级会卡在写文件那一步。Windows 允许给**运行中的 exe 改名**，所以先把
-  ; 自身挪到 .installer.old，目标文件名就空出来了，下面的 File 可以正常写入。
-  ; 注意：插件的 FindProcess / KillProcess 会跳过自己的 PID，所以「按名字杀进程」
-  ; 不会杀到本安装程序；真正的危险来自旧卸载器（另一个进程），而它已不再被调用。
-  ; 遗留的 .installer.old 由应用启动时的 cleanup_stale_backup() 清掉。
-  ${If} "$EXEFILE" S== "${MAINBINARYNAME}.exe"
-    Delete "$INSTDIR\${MAINBINARYNAME}.installer.old"
-    Rename "$INSTDIR\${MAINBINARYNAME}.exe" "$INSTDIR\${MAINBINARYNAME}.installer.old"
-  ${EndIf}
-
+  ; ── 先把真正在跑的主程序关掉 ────────────────────────────────────────────
+  ; 顺序要紧：**先杀进程、再让位改名、最后才写文件**。
+  ; 反过来的话，程序已经被改名挪走（进程名还叫 rustshell.exe，映像文件却已经
+  ; 变成 .installer.old），再按进程名找不一定还能找到它 ⇒ 老版本继续在跑，
+  ; 用户以为没升级。
   !insertmacro CheckIfAppIsRunning
+
+  ; ── 让位：把目标主程序挪开，保证下面的 File 写得进去 ────────────────────
+  ; Windows 锁住**正在运行**的映像：写不进去（报「无法打开要写入的文件」）。
+  ; 但「改名」是可以的 —— 映像加载器是以 FILE_SHARE_DELETE 打开的 ⇒
+  ; 先把旧文件改名让出路径，再往空出来的路径写新文件，就是一次干净的覆盖。
+  ; 唯一改名也失败的情况是「安装器自己正顶着这个文件」（NSIS 要从自己的映像
+  ; 里读 payload，那个句柄没有 FILE_SHARE_DELETE）—— 那种情况由 .onInit 的
+  ; 「换副本安装」处理。
+  ; 改名出来的 .installer.old 是**旧主程序**，不是安装器残留；
+  ; 应用启动时的 cleanup_stale_backup() 会把它和 <exe>.old 一起清掉。
+  ;
+  ; 首次安装（目标文件压根不存在）直接跳过，别白等 20 秒。
+  IfFileExists "$INSTDIR\${MAINBINARYNAME}.exe" 0 room_done
+  StrCpy $R1 0
+  make_room:
+    ClearErrors
+    Delete "$INSTDIR\${MAINBINARYNAME}.installer.old"
+    ClearErrors
+    Rename "$INSTDIR\${MAINBINARYNAME}.exe" "$INSTDIR\${MAINBINARYNAME}.installer.old"
+    IfErrors room_busy room_ok
+    room_ok:
+      Goto room_done
+    room_busy:
+    ${If} $R1 >= 40
+      ; 20 秒还腾不出位置：交给下面的 File 去报错（NSIS 会弹出原始错误信息，
+      ; 用户至少知道「文件被占用」，而不是静默装一半）。
+      Goto room_done
+    ${EndIf}
+    IntOp $R1 $R1 + 1
+    Sleep 500
+    Goto make_room
+  room_done:
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"

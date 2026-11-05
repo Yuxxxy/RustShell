@@ -533,6 +533,46 @@ mod tests {
             nsi_code.contains("installer.old"),
             "老版本在线更新的残留（安装器顶着 rustshell.exe 运行）要能自愈"
         );
+        // 2026-11-05 事故：安装器**自己**正顶着 rustshell.exe 运行时，Windows 锁住
+        // 这个文件 ⇒ 写不进去、也改不动（实测 Rename 返回 FAIL），安装必然报
+        // 「无法打开要写入的文件」。修法是两段合起来：
+        //   A. .onInit 里把自身复制到临时目录、另起进程装、自己退出；
+        //   B. Section Install 里写文件前先把目标改名让位（改不动就等一下重试）。
+        assert!(
+            nsi_code.contains("CopyFiles \"$EXEPATH\" \"$TEMP\\"),
+            "安装器顶着主程序名字运行时，必须复制一份到临时目录另起进程安装"
+        );
+        assert!(
+            nsi_code.contains("ExecShell \"open\""),
+            "另起进程必须用 ExecShell（Exec/nsExec 会等子进程结束，和「本进程退出才能解锁」互相死等）"
+        );
+        assert!(
+            nsi_code.contains("Rename \"$INSTDIR\\${MAINBINARYNAME}.exe\""),
+            "写文件前必须先把目标改名让位，否则运行中的映像锁写"
+        );
+        assert!(
+            nsi_code.contains("Sleep 500") && nsi_code.contains("make_room"),
+            "改不动目标时要等一下重试（旧程序可能还没退干净）"
+        );
+        // 顺序：先杀进程、再让位改名、最后才写文件。
+        let kill_at = nsi_code
+            .find("!insertmacro CheckIfAppIsRunning")
+            .expect("安装流程里没有「先关掉正在运行的程序」这一步");
+        let room_at = nsi_code
+            .find("make_room:")
+            .expect("安装流程里没有「改名让位」这一步");
+        assert!(
+            kill_at < room_at,
+            "必须先杀掉正在运行的程序，再改名让位 —— 反过来的话，程序已经被改名挪走（映像变成 .installer.old），再按进程名找就不一定找得到它，老版本会继续在跑，用户以为没升级"
+        );
+        assert!(
+            nsi_code.contains("IfFileExists \"$INSTDIR\\${MAINBINARYNAME}.exe\""),
+            "首次安装（目标文件压根不存在）要直接跳过让位循环，别白等 20 秒"
+        );
+        assert!(
+            nsi_code.contains("IfErrors self_heal_copy_failed"),
+            "复制不出副本时要退回正常安装流程，不能静默退出（用户会看到「什么都没发生」）"
+        );
 
         let actions = prod(include_str!("update_actions.rs"));
         assert!(
