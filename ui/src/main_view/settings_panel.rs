@@ -1048,14 +1048,15 @@ impl MainView {
                                 SettingField::render(move |_options, _w, cx| {
                                     // 2026-10-29 用户要求：撤掉按钮**左侧**的状态提示行与
                                     // **右侧**的「详情」按钮，这一行只留一枚按状态换语义的按钮。
-                                    // 状态文字与详情入口没有消失 —— 标题栏徽标点开就是更新
-                                    // 对话框（那里带版本对比与发布说明）；这里再摆一遍是重复。
+                                    // 状态文字与详情入口没有消失 —— 标题栏徽标就是同一个
+                                    // 更新流程的入口（2026-11-05 起点它即「重启更新」）；
+                                    // 这里再摆一遍是重复。
                                     let phase = me_check.read(cx).io.update_phase.clone();
                                     let busy = phase.is_busy();
-                                    // 一枚按钮按状态换语义：没查过 = 检查；有新版 = 立即更新；
+                                    // 一枚按钮按状态换语义：没查过 = 检查；有新版 = 下载并重启；
                                     // 已就绪 = 重启；失败 = 重试。与标题栏徽标同一套判定。
                                     let primary = match phase {
-                                        super::UpdatePhase::Available => t("立即更新"),
+                                        super::UpdatePhase::Available => t("下载并重启"),
                                         super::UpdatePhase::Ready => t("重启以完成更新"),
                                         super::UpdatePhase::Failed(_) => t("重试"),
                                         super::UpdatePhase::Downloading => t("正在下载…"),
@@ -1072,9 +1073,9 @@ impl MainView {
                                                 .disabled(busy)
                                                 .on_click({
                                                     let me = me_check.clone();
-                                                    move |_e, w, cx: &mut App| {
+                                                    move |_e, _w, cx: &mut App| {
                                                         me.update(cx, |m, cx| {
-                                                            m.update_primary_action(w, cx)
+                                                            m.update_primary_action(cx)
                                                         });
                                                     }
                                                 }),
@@ -1494,10 +1495,13 @@ impl MainView {
                                     });
                                 },
                             )
-                            .default_value(SharedString::from(StartupAction::LocalShell.key())),
+                            // 「重置」回到**默认档**（2026-11-05 起是「什么也不做」）：
+                            // 与 `StartupAction::default()` 必须同源，否则点重置会把
+                            // 用户改回一个连默认值都不认得的档位。
+                            .default_value(SharedString::from(StartupAction::default().key())),
                         )
                         .description(t(
-                            "打开软件后直接进入什么。默认开一个本地终端；不需要终端时可选命令面板或不打开。",
+                            "打开软件后直接进入什么。默认什么都不做 —— 窗口里列出可一键连接的机器；也可以改成直接开本地终端或命令面板。",
                         )),
                     )
                 })
@@ -1912,10 +1916,10 @@ mod tests {
             d.terminal_line_height,
             rustshell_core::settings::DEFAULT_TERMINAL_LINE_HEIGHT
         );
-        // 启动动作（2026-09-28 新增）：默认打开本地终端
+        // 启动动作（2026-11-05 起）：默认「什么也不做」，空窗格给快速连接列表
         assert_eq!(
             d.startup_action,
-            rustshell_core::settings::StartupAction::LocalShell
+            rustshell_core::settings::StartupAction::Nothing
         );
     }
 

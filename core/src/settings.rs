@@ -180,9 +180,13 @@ pub struct Settings {
     /// 硬编码**（永远只开命令面板）等于用一个人的偏好覆盖所有人：power user
     /// 打开终端软件的第一诉求就是「给我一个 shell」，启动却总是先弹一个菜单。
     ///
-    /// 默认取 [`StartupAction::LocalShell`]：一个**终端软件**启动后给一个终端，
-    /// 是最不需要解释的行为；想要命令面板/恢复会话的人在设置里改一次即可
-    /// （与 `session_restore` 同一条口径：改默认必须由用户按下）。
+    /// 2026-11-05 用户要求「设置-窗口-启动时打开 默认什么都不做」：默认值改为
+    /// [`StartupAction::Nothing`] —— 空窗口里展示**快速连接列表**（命令面板里那份，
+    /// 按最近访问倒序），点一下就开一台机器。理由是这台软件的主场景是「连服务器」，
+    /// 开机先塞一个本地 Shell 反倒要用户自己关掉。
+    ///
+    /// 老 `settings.json` 里写着 `"startup_action": "local-shell"` 的**不迁移**：
+    /// 那是用户自己按过的选择（与 `session_restore` 同一条口径：改默认必须由用户按下）。
     pub startup_action: StartupAction,
     /// 上次退出时的窗口几何（位置 / 尺寸 / 是否最大化），下次启动据此还原。
     ///
@@ -343,17 +347,22 @@ impl PasteBehavior {
 }
 
 /// 启动动作（见 [`Settings::startup_action`]）。
+///
+/// **默认什么都不做**（2026-11-05 用户要求）：空窗口里展示「快速连接」列表
+/// （命令面板里那份，按最近访问倒序），点一下就开一台机器 —— 这比替用户
+/// 先开一个本地 Shell 更贴近「打开终端软件是要连服务器」的真实用法。
+/// 想开本地 Shell / 命令面板的人可以在设置里改一次。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupAction {
-    /// 启动即开一个本地 Shell（默认）
-    #[default]
+    /// 启动即开一个本地 Shell
     LocalShell,
     /// 启动打开命令面板
     CommandPalette,
     /// 启动尝试恢复上次的会话布局（F-9；无快照时退化为开本地 Shell）
     RestoreSession,
-    /// 启动什么都不做，只给一个空窗口
+    /// 启动什么都不做，只给一个空窗口（默认；空窗格里是快速连接列表）
+    #[default]
     Nothing,
 }
 
@@ -380,10 +389,17 @@ impl StartupAction {
 
     pub fn from_key(key: &str) -> Self {
         match key {
+            "local-shell" => Self::LocalShell,
             "command-palette" => Self::CommandPalette,
             "restore-session" => Self::RestoreSession,
             "nothing" => Self::Nothing,
-            _ => Self::LocalShell,
+            // 未知值退回**默认**（2026-11-05 起是 `Nothing`）：手改坏的
+            // `settings.json` 不该悄悄变成「一启动就开本地 Shell」。
+            //
+            // ⚠️ `"local-shell"` 必须**显式**列出来：它原来是靠 `_` 兜底接住的，
+            // 默认值一改，老配置（用户主动选过「打开本地终端」）就会静默变成
+            // 「什么都不做」—— 那是改默认，不是改语义的边界。
+            _ => Self::default(),
         }
     }
 
@@ -392,7 +408,9 @@ impl StartupAction {
     /// 两个入口，摆在一起会让人以为要配两次。面板只给三档，`restore-session`
     /// 只能手改 JSON（且必须同时把 `session_restore` 调成非 `never`）。
     pub fn panel_options() -> [Self; 3] {
-        [Self::LocalShell, Self::CommandPalette, Self::Nothing]
+        // 顺序即下拉顺序：**默认档排最前**（2026-11-05 起是「什么也不做」），
+        // 打开设置一眼就能看到「现在到底会做什么」的那一档在最上面。
+        [Self::Nothing, Self::LocalShell, Self::CommandPalette]
     }
 
     pub fn labels(self) -> (&'static str, &'static str) {
@@ -977,7 +995,8 @@ mod tests {
         assert_eq!(s.terminal_line_height, 1.2, "行高默认必须等于原硬编码值");
         assert_eq!(s.terminal_cursor_style, CursorStyle::Block);
         assert_eq!(s.terminal_paste_behavior, PasteBehavior::ConfirmMultiLine);
-        assert_eq!(s.startup_action, StartupAction::LocalShell);
+        // 2026-11-05：默认改成「什么也不做」（空窗格展示快速连接列表）
+        assert_eq!(s.startup_action, StartupAction::Nothing);
     }
 
     /// 行高钳制：`settings.json` 是用户可手改的，NaN / 越界都不能把终端画坏。
@@ -1067,10 +1086,8 @@ mod tests {
         ] {
             assert_eq!(StartupAction::from_key(a.key()), a);
         }
-        assert_eq!(
-            StartupAction::from_key("nonsense"),
-            StartupAction::LocalShell
-        );
+        // 未知值退回默认档（2026-11-05 起是 `Nothing`）
+        assert_eq!(StartupAction::from_key("nonsense"), StartupAction::Nothing);
         // 面板只给三档：`restore-session` 必须**不在**里面（避免与
         // `session_restore` 摆成两个入口）
         assert!(!StartupAction::panel_options().contains(&StartupAction::RestoreSession));
@@ -1195,6 +1212,7 @@ mod tests {
         assert_eq!(s.terminal_font_family, "Consolas");
         assert_eq!(s.terminal_line_height, DEFAULT_TERMINAL_LINE_HEIGHT);
         assert_eq!(s.terminal_cursor_style, CursorStyle::Block);
-        assert_eq!(s.startup_action, StartupAction::LocalShell);
+        // 老配置没有 `startup_action` 这个键 ⇒ 走默认值（2026-11-05 起是 Nothing）
+        assert_eq!(s.startup_action, StartupAction::Nothing);
     }
 }

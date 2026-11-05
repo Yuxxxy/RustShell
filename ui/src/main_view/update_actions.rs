@@ -4,8 +4,9 @@
 //!
 //! - **标题栏右侧一枚纯图标徽标**是唯一的主动提示：有新版本 / 已就绪 / 失败时
 //!   才出现，其余时候什么都不显示（不打扰）。图标取 shell-rs 的 `CircleArrowUp`，
-//!   版本 / 状态文字只在 hover 提示里，点它开更新对话框。
-//! - **设置 › 关于**那一行是常驻状态 + 手动入口（检查更新 / 立即更新 / 重启）。
+//!   版本 / 状态文字只在 hover 提示里。**点它就是「重启更新」**（2026-11-05）：
+//!   有新版就后台下载、下完自动重启安装，一步到位。
+//! - **设置 › 关于**那一行是常驻状态 + 手动入口（检查更新 / 下载并重启）。
 //!
 //! 这条分工是抄 shell-rs 的（它的 `UpdateBadge` 只在这三种状态下返回 `Some`，
 //! 状态行在「关于」页）。为什么不让它弹模态框：更新不是用户当下要做的事，
@@ -17,14 +18,16 @@
 //!
 //! - **检查**：启动后延迟一次（[`MainView::update_auto_check`]）+ 关于页手动触发。
 //!   自动检查失败**静默**（用户没问，不该被网络错误打扰），手动检查才报错。
-//! - **下载**：只在用户点了「立即更新」之后发生，不后台偷跑 —— 几十 MB 的流量
-//!   该由用户决定。
-//! - **安装**：Windows 的产物是 **NSIS 安装包**（不是主程序），下载完只置为
-//!   「已就绪」；用户点「重启以完成更新」时由
-//!   [`rustshell_core::update::launch_windows_installer`] 另起进程拉起覆盖安装，
-//!   本程序随即退出。**绝不把安装包复制/改名成 `rustshell.exe`** —— 那会让安装器
+//! - **下载**：用户点徽标（或关于页的按钮）那一刻立刻开始，**后台跑**、不阻塞 UI；
+//!   用户没点就不下 —— 几十 MB 的流量该由用户决定。
+//! - **安装**：Windows 的产物是 **NSIS 安装包**（不是主程序）。**下载完直接重启**，
+//!   由 [`rustshell_core::update::launch_windows_installer`] 另起进程拉起覆盖安装，
+//!   本程序随即退出 —— 2026-11-05 用户要求「更新提示按钮改为重启更新，后台下载完
+//!   自动重启更新，不要做成两步」：不再有「先点下载、再点重启」这种中间态。
+//!   **绝不把安装包复制/改名成 `rustshell.exe`** —— 那会让安装器
 //!   顶着主程序名字运行，被旧卸载器按进程名当成 RustShell 杀掉（2026-11-04）。
-//!   mac / linux 的 `.dmg` / `.deb` 交给系统安装器打开，本程序不碰 `/usr/bin`。
+//!   mac / linux 的 `.dmg` / `.deb` 交给系统安装器打开，本程序不碰 `/usr/bin`，
+//!   也不自动重启（那两个平台「装没装」由系统那一步决定，重启不解决问题）。
 
 use gpui::{Context, Window};
 
@@ -133,8 +136,18 @@ impl MainView {
                     }
                 }
                 if announce {
-                    let (line, trouble) = m.update_status_line();
-                    m.set_info(line, !trouble);
+                    // 手动检查 = 用户已经表达了「我要更新」的意图（2026-11-05 用户要求
+                    // 「设置中检查更新后，如果有需要更新的直接跳出更新图标触发的内容」）。
+                    // 所以查到新版就直接走徽标那条路：后台下载 → 下完自动重启。
+                    // 自动检查（announce=false）不这么做 —— 那只是开机时的静默探测，
+                    // 用户没表达任何意图，不能替他重启。
+                    if matches!(m.io.update_phase, super::UpdatePhase::Available) {
+                        log::info!("手动检查发现新版本，直接开始下载（完成后自动重启更新）");
+                        m.start_update_download(cx);
+                    } else {
+                        let (line, trouble) = m.update_status_line();
+                        m.set_info(line, !trouble);
+                    }
                 }
                 cx.notify();
             });
@@ -160,13 +173,16 @@ impl MainView {
         match &self.io.update_phase {
             super::UpdatePhase::Available => Some((
                 rustshell_core::i18n::ts(
-                    format!("新版本 v{version}"),
-                    format!("v{version} available"),
+                    format!("发现新版本 v{version}，点击后自动下载并重启更新"),
+                    format!("v{version} available — click to download and restart"),
                 ),
                 false,
             )),
             super::UpdatePhase::Downloading => Some((
-                rustshell_core::i18n::ts("正在下载更新…".into(), "Downloading…".into()),
+                rustshell_core::i18n::ts(
+                    "正在下载更新…（完成后自动重启）".into(),
+                    "Downloading… (restarts automatically)".into(),
+                ),
                 false,
             )),
             super::UpdatePhase::Ready => Some((
@@ -225,19 +241,17 @@ impl MainView {
             ),
             super::UpdatePhase::Ready => (
                 if cfg!(windows) {
-                    // Windows 的「已就绪」= 安装包已下载但**还没装**：点重启才拉起
-                    // 覆盖安装，安装器装完会自己重新打开主程序。写成「文件已换好」
-                    // 是老实现的说法，会让人以为此刻程序目录里已经是新版本。
+                    // Windows 的「已就绪」是一瞬间的过渡态：下载完立刻自动重启安装
+                    // （2026-11-05「不要做成两步」）。文案写成「文件已换好」那是老实现
+                    // 的说法，会让人以为此刻程序目录里已经是新版本。
                     rustshell_core::i18n::ts(
-                        format!("v{version} 安装包已就绪，重启后自动覆盖安装并重新打开。"),
-                        format!(
-                            "v{version} is ready — restart to install over the current version."
-                        ),
+                        format!("v{version} 已下载，正在重启以完成覆盖安装。"),
+                        format!("v{version} downloaded — restarting to install."),
                     )
                 } else {
                     rustshell_core::i18n::ts(
-                        format!("v{version} 已就绪，重启后生效。"),
-                        format!("v{version} is ready — restart to finish."),
+                        format!("v{version} 已就绪，请按系统安装器提示完成安装。"),
+                        format!("v{version} is ready — finish in the system installer."),
                     )
                 },
                 false,
@@ -246,11 +260,14 @@ impl MainView {
         }
     }
 
-    /// 有可用版本 → 下载产物并装好。
+    /// 有可用版本 → 后台下载产物，**下载完直接重启安装**（Windows）。
     ///
     /// 找不到本平台的产物（例如刚出了个只打了 tag 的版本）不报「下载失败」，
     /// 而是打开发布页让用户自己挑 —— 那才是真实原因。
-    pub fn start_update_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// ★ 不再需要 `Window`：整个流程只动状态与后台任务（原来那个 `window` 参数
+    /// 从未被使用，`let _ = window;` 是它唯一的痕迹）。
+    pub fn start_update_download(&mut self, cx: &mut Context<Self>) {
         let Some(release) = self.io.update_release.clone() else {
             return;
         };
@@ -294,9 +311,9 @@ impl MainView {
                     let asset = asset.clone();
                     async move {
                         // 只下载，**不安装**。Windows 的 exe 是 NSIS 安装包，绝不能在
-                        // 这里把它复制/改名成当前主程序（详见 update_actions.rs 顶部
-                        // 与 core/src/update.rs 的说明）；安装留到用户点「重启」时，
-                        // 由 restart_for_update 另起进程拉起。
+                        // 这里把它复制/改名成当前主程序（详见本文件顶部与
+                        // core/src/update.rs 的说明）；安装由 `restart_for_update`
+                        // 另起进程拉起。
                         update::download(&asset, &dest)?;
                         Ok::<_, anyhow::Error>(())
                     }
@@ -305,15 +322,22 @@ impl MainView {
             let _ = this.update(cx, |m, cx| {
                 match result {
                     Ok(()) => {
-                        // Windows：等用户点「重启以完成更新」再拉起安装器，
-                        // 这样他可以先把终端里的活干完（与原来的分寸一致）。
-                        // mac / linux：.dmg / .deb 直接交给系统安装器打开，
-                        // 装不装由系统那一步决定。
+                        // Windows（`install_here` = 产物是 self-installing 的 `.exe`）：
+                        // **下载完立刻重启**，不再停下来等用户点第二次
+                        // （2026-11-05 用户要求「后台下载完自动重启更新，不要做成两步」）。
+                        //
+                        // mac / linux 的 `.dmg` / `.deb` 没有「自己装好」这一步：
+                        // 先交给系统安装器打开，状态停在「已就绪」，用户装完自己重开 ——
+                        // 在这里替用户重启只会把旧版本重新拉起来。
                         if !install_here {
                             rustshell_platform::shell_open::open_path(&dest);
                         }
                         m.io.update_artifact = Some(dest.clone());
                         m.io.update_phase = super::UpdatePhase::Ready;
+                        if install_here {
+                            log::info!("更新包下载完成，自动重启以完成安装");
+                            m.restart_for_update(cx);
+                        }
                     }
                     Err(e) => {
                         let text = MainView::update_fail_text(&e);
@@ -325,7 +349,6 @@ impl MainView {
             });
         })
         .detach();
-        let _ = window;
     }
 
     fn fail_update(&mut self, text: String, cx: &mut Context<Self>) {
@@ -334,11 +357,38 @@ impl MainView {
         cx.notify();
     }
 
-    /// 徽标 / 关于页的「立即更新」都走这里。
-    pub fn update_primary_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.io.update_phase {
+    /// 关于页 / 更新对话框的主操作。**一步到位**：有新版就开始下载（下载完自动重启）。
+    pub fn update_primary_action(&mut self, cx: &mut Context<Self>) {
+        let phase = self.io.update_phase.clone();
+        match phase {
             super::UpdatePhase::Ready => self.restart_for_update(cx),
-            super::UpdatePhase::Available => self.start_update_download(window, cx),
+            super::UpdatePhase::Available => self.start_update_download(cx),
+            // 失败过、但还记着那个发布版本：直接重试下载，别让用户先退回「检查」。
+            super::UpdatePhase::Failed(_) if self.io.update_release.is_some() => {
+                self.io.update_phase = super::UpdatePhase::Available;
+                self.start_update_download(cx);
+            }
+            _ => self.check_for_updates(cx),
+        }
+    }
+
+    /// 标题栏徽标的点击处理 —— 用户点的就是「重启更新」这几个字。
+    ///
+    /// 2026-11-05 用户要求「更新提示按钮改为重启更新，后台下载完自动重启更新，
+    /// 不要做成两步」：所以这里没有「先弹框、再点立即更新」，
+    /// 也没有「先下载、再点重启」——
+    /// - 有新版本 → 直接后台下载，下完自动重启安装；
+    /// - 已就绪（此前下载过）→ 立刻重启安装；
+    /// - 正在下载 / 正在检查 → 什么都不做（这条路上再点没有意义）；
+    /// - 失败 → 弹更新框说明原因（唯一还需要人读一眼的状态），框里的按钮重试。
+    pub fn on_update_badge_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let phase = self.io.update_phase.clone();
+        match phase {
+            super::UpdatePhase::Available => self.start_update_download(cx),
+            super::UpdatePhase::Ready => self.restart_for_update(cx),
+            super::UpdatePhase::Downloading | super::UpdatePhase::Checking => {}
+            super::UpdatePhase::Failed(_) => self.open_update_dialog(window, cx),
+            // 没有待办版本（Idle / UpToDate）：点一下等于「重新查一次」。
             _ => self.check_for_updates(cx),
         }
     }
@@ -445,8 +495,8 @@ mod tests {
             "徽标要挂 `debug_selector`：用例靠它量位置"
         );
         assert!(
-            code.contains("m.open_update_dialog(w, cx)"),
-            "点徽标必须打开更新对话框（不是直接下载）"
+            code.contains("m.on_update_badge_click(w, cx)"),
+            "点徽标必须直接进入「重启更新」（2026-11-05：不再先弹对话框）"
         );
 
         let actions = prod(include_str!("update_actions.rs"));
@@ -551,6 +601,72 @@ mod tests {
         assert!(
             !body.contains("default_ssh_dir") && !body.contains("config_path"),
             "导入入口不该再自己拼默认路径（`~/.ssh/config`）"
+        );
+    }
+
+    /// 2026-11-05 用户要求「更新提示按钮改为重启更新，后台下载完自动重启更新，
+    /// 不要做成两步」「设置中检查更新后，如果有需要更新的直接跳出更新图标触发的内容」。
+    ///
+    /// 三条一起守，少任何一条都会退回「两步」：
+    /// ① 徽标点击 → 有新版就直接开始下载（不再先弹框）；
+    /// ② 下载成功 → **自动** `restart_for_update`（Windows 上就是拉起 NSIS 覆盖安装）；
+    /// ③ 手动检查（设置 › 关于那枚按钮）查到新版 → 自己开始下载，不留给人点第二次。
+    ///
+    /// 自动检查（`announce == false`，开机时那一次）**不许**走 ③ —— 用户没表达
+    /// 「我要更新」，替他把机器重启了是另一种打扰。
+    #[test]
+    fn the_update_is_one_step_from_badge_to_restart() {
+        let actions = prod(include_str!("update_actions.rs"));
+
+        // ① 徽标点击：Available → 下载；Ready → 重启；Failed → 弹框看原因。
+        let at = actions
+            .find("pub fn on_update_badge_click")
+            .expect("找不到徽标点击入口（标题栏那枚图标点了没反应）");
+        let tail = &actions[at..];
+        let body = &tail[..tail
+            .find("pub fn open_update_dialog")
+            .expect("找不到徽标入口的结束锚点")];
+        for needle in [
+            "super::UpdatePhase::Available => self.start_update_download(cx)",
+            "super::UpdatePhase::Ready => self.restart_for_update(cx)",
+            "super::UpdatePhase::Failed(_) => self.open_update_dialog(window, cx)",
+        ] {
+            assert!(
+                body.contains(needle),
+                "徽标入口缺一条分支 `{needle}` —— 点图标必须一步进入重启更新"
+            );
+        }
+
+        // ② 下载完成即重启（只在产物是「自己会装」的 Windows exe 上）。
+        let at = actions
+            .find("pub fn start_update_download")
+            .expect("找不到下载入口");
+        let tail = &actions[at..];
+        let body = &tail[..tail
+            .find("fn fail_update")
+            .expect("找不到下载入口的结束锚点")];
+        assert!(
+            body.contains("if install_here {") && body.contains("m.restart_for_update(cx)"),
+            "下载完成必须自动重启安装（2026-11-05：不要做成两步）"
+        );
+
+        // ③ 手动检查发现新版 → 直接开始下载。
+        assert!(
+            actions.contains("手动检查发现新版本，直接开始下载"),
+            "手动检查发现新版后要直接开始下载（日志是唯一的可观测证据）"
+        );
+        let at = actions.find("if announce {").expect("找不到手动检查分支");
+        let tail = &actions[at..];
+        let body = &tail[..tail
+            .find("cx.notify();")
+            .expect("找不到手动检查分支的结束锚点")];
+        assert!(
+            body.contains("m.start_update_download(cx)"),
+            "设置里检查到新版必须直接开下（不留给用户点第二次）"
+        );
+        assert!(
+            body.contains("matches!(m.io.update_phase, super::UpdatePhase::Available)"),
+            "只有「有新版本」才自动下载 —— UpToDate / 失败 都不该触发"
         );
     }
 

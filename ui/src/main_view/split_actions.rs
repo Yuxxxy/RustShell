@@ -10,7 +10,8 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
-    v_flex, IconName, Sizable as _,
+    scroll::ScrollableElement as _,
+    v_flex, Icon, IconName, Sizable as _,
 };
 
 use rustshell_core::session::SessionKind;
@@ -860,30 +861,162 @@ impl MainView {
     /// （点即执行），等于把原来那一个按钮铺开成了「此刻所有能做的事」。
     /// 行数据见 [`crate::keybinds::empty_state_hints`]：只列此刻真的有效的动作，
     /// 键位取**生效**值（用户改过绑定就显示改后的）。
+    ///
+    /// 2026-11-05 用户要求「设置-窗口-启动时打开 默认什么都不做，默认连接把之前
+    /// 命令面板中的快速连接列表展示出来」：所以空态的最上面现在是一张**快速连接
+    /// 表**（与命令面板同一个数据源 `command::quick_connect`：按最近访问倒序、
+    /// 从未连过的按名字升序 —— 排序完全确定，不会每次打开都在跳），点一行就连那台
+    /// 机器。原来的快捷键表退到下面，用一条分隔线隔开：先「连哪台机器」，
+    /// 再「没有连接时还能做什么」。
     fn render_no_session(&self, cx: &mut Context<Self>) -> AnyElement {
         let tok = crate::theme::current(cx);
         let hints = crate::keybinds::empty_state_hints(&self.panel_ui.keymap_rows);
+        // 与命令面板**同一份**数据：`quick_connect` 把连接配置摊成带 name /
+        // `用户名@主机:端口` / 分组名的条目，空态直接照它的口径画。
+        let connects = rustshell_core::command::quick_connect(&self.conn_store);
 
-        let mut list = v_flex()
-            .debug_selector(|| "empty-hints".to_string())
-            .w(px(340.))
-            .gap(px(2.));
-        for (id, (label, keys)) in crate::keybinds::EMPTY_STATE_ACTIONS.iter().zip(hints) {
-            list = list.child(no_session_hint_row(id, label, keys, cx));
+        let mut list = v_flex().w(px(400.)).gap(px(1.)).child(
+            div()
+                .px(px(10.))
+                .pb(px(4.))
+                .text_size(px(11.))
+                .text_color(hex(tok.fg_muted))
+                .child(rustshell_core::i18n::t("快速连接")),
+        );
+
+        if connects.is_empty() {
+            // 一台机器都没存：给一句实话 + 唯一的下一步（别让人对着空表发呆）。
+            list = list.child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(hex(tok.fg_muted))
+                            .child(rustshell_core::i18n::t("还没有保存的连接")),
+                    )
+                    .child(
+                        Button::new("empty-new-connection")
+                            .small()
+                            .label(rustshell_core::i18n::t("新建连接"))
+                            .on_click(cx.listener(|m, _: &ClickEvent, w, cx| {
+                                m.open_connect_dialog(None, w, cx)
+                            })),
+                    ),
+            );
+        } else {
+            // 连接很多时自己滚，不把下面的快捷键表顶出窗口。
+            let mut rows = v_flex()
+                .debug_selector(|| "empty-quick-connect".to_string())
+                .w_full()
+                .gap(px(1.))
+                .max_h(px(320.));
+            for entry in &connects {
+                rows = rows.child(no_session_connect_row(entry, cx));
+            }
+            list = list.child(rows.overflow_y_scrollbar());
         }
 
+        let mut hint_list = v_flex()
+            .debug_selector(|| "empty-hints".to_string())
+            .w_full()
+            .gap(px(2.));
+        for (id, (label, keys)) in crate::keybinds::EMPTY_STATE_ACTIONS.iter().zip(hints) {
+            hint_list = hint_list.child(no_session_hint_row(id, label, keys, cx));
+        }
         // 2026-09-22 用户要求「移除主窗格为空」：顶部那行「图标 + 主窗格为空」撤下。
         // 它说的是**用户已经知道的事**（窗格是空的 —— 一片空白本身就是证据），
-        // 却占着垂直居中区最显眼的位置；下面那张快捷键表才是这个空态唯一的信息
-        // （此刻能做什么、按什么键）。`gap_4` 随之作废：只剩一个子元素，没有间距可言。
+        // 却占着垂直居中区最显眼的位置。现在这一屏的结构是「快速连接 → 分隔线 →
+        // 快捷键表」，每一块都是「此刻能做的事」。
+        list = list.child(
+            div()
+                .h(px(1.))
+                .w_full()
+                .my(px(8.))
+                .bg(hex(tok.border_subtle)),
+        );
+        list = list.child(hint_list);
+
         v_flex()
             .size_full()
-            .items_center()
-            .justify_center()
+            // 2026-11-05 用户要求「快速连接靠近上面」：不再垂直居中、也不再水平居中，
+            // 改成贴**左上**角留一档内边距。理由有两层：
+            // ① 居中的表在空窗格里会浮在半空，眼睛还得先去找它；贴左上则与标签栏、
+            //    侧栏同一视觉起点，打开就知道「从这里连」；
+            // ② 左边距用固定 `pl`（而不是靠 `items_center` 算中缝）—— 这套空态在
+            //    不同窗口宽度下都要落在同一处，居中会让列表随窗口宽度左右漂移。
+            .items_start()
+            .pt(px(20.))
+            .pl(px(24.))
             .bg(crate::theme::surface(1.0, tok.bg_base))
             .child(list)
             .into_any_element()
     }
+}
+
+/// 空态快速连接的一行：名称 + `用户名@主机:端口` + 所属分组，点整行即连接。
+///
+/// 数据取自 [`rustshell_core::command::quick_connect`]，所以与命令面板里那一份
+/// **完全同构**（同样是两行文字 + 右侧分组名）；差别只是这里铺成静态列表，
+/// 不用再输入搜索词。
+fn no_session_connect_row(
+    entry: &rustshell_core::command::CommandEntry,
+    cx: &mut Context<MainView>,
+) -> AnyElement {
+    let tok = crate::theme::current(cx);
+    let rustshell_core::command::CommandOrigin::ConnectProfile { profile_id } = &entry.origin
+    else {
+        // 内置命令 / AI 直通不该出现在这张表里（`quick_connect` 只会产出连接条目）；
+        // 真出现了就留空，别把「新增连接」点成「连接某个 id」。
+        return div().into_any_element();
+    };
+    let id = profile_id.clone();
+    h_flex()
+        .id(SharedString::from(format!("empty-connect-{id}")))
+        .w_full()
+        .items_center()
+        .gap_2()
+        .px(px(10.))
+        .py(px(5.))
+        .rounded(px(6.))
+        .hover(|s| s.bg(hex(tok.bg_overlay)))
+        .on_click(cx.listener(move |m, _: &ClickEvent, w, cx| m.connect_profile(&id, w, cx)))
+        .child(
+            Icon::new(IconName::Globe)
+                .small()
+                .text_color(hex(tok.fg_muted)),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(12.5))
+                        .text_color(hex(tok.fg_primary))
+                        .child(SharedString::from(entry.label.clone())),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(10.5))
+                        .text_color(hex(tok.fg_muted))
+                        .child(SharedString::from(entry.detail.clone().unwrap_or_default())),
+                ),
+        )
+        .children(entry.group.clone().map(|g| {
+            div()
+                .flex_shrink_0()
+                .text_size(px(10.))
+                .text_color(hex(tok.fg_muted))
+                .child(SharedString::from(g))
+        }))
+        .into_any_element()
 }
 
 /// 空窗格提示表里的一行：左「动作名」右「键帽组」，整行可点（点即执行）。
@@ -1128,6 +1261,50 @@ mod tests {
         assert!(
             code.contains("pane_context_menu(menu)"),
             "`pane_context_menu` 没有挂到窗格上（`context_menu` 回调），改了等于没改。"
+        );
+    }
+
+    /// 2026-11-05 用户要求「启动时打开默认什么都不做」「默认连接把之前命令面板
+    /// 中的快速连接列表展示出来」：空窗格必须直接给出**连接表**，而且与命令面板
+    /// 用同一份数据源。
+    ///
+    /// 三条一起钉：
+    /// ① 数据源是 `command::quick_connect`（另写一份手列表 ⇒ 两处口径迟早漂移，
+    ///    比如一边按最近访问倒序、另一边按名字）；
+    /// ② 点整行走 `connect_profile`（不是新开一个本地 Shell —— 空态的主角是「连哪台」）；
+    /// ③ 连接表排在快捷键表**前面**（先给入口，再给「没有连接时还能做什么」）。
+    #[test]
+    fn the_empty_pane_lists_quick_connects_first() {
+        let code = prod(include_str!("split_actions.rs"));
+        let at = code
+            .find("fn render_no_session(")
+            .expect("找不到空窗格的渲染函数");
+        let body = &code[at..];
+        let end = body.find("\n}\n").expect("找不到空窗格函数结尾");
+        let body = &body[..end];
+
+        assert!(
+            body.contains("rustshell_core::command::quick_connect(&self.conn_store)"),
+            "空窗格必须用命令面板那份 `quick_connect`（排序与字段口径同源）"
+        );
+        let connects = body
+            .find("no_session_connect_row")
+            .expect("空窗格没有渲染连接行");
+        let hints = body
+            .find("no_session_hint_row")
+            .expect("空窗格的快捷键表不见了");
+        assert!(
+            connects < hints,
+            "连接表必须排在快捷键表前面：空窗格的第一诉求是「连哪台机器」"
+        );
+
+        let at = code
+            .find("fn no_session_connect_row(")
+            .expect("找不到空窗格的连接行");
+        let row = &code[at..];
+        assert!(
+            row.contains("m.connect_profile(&id, w, cx)"),
+            "点连接行必须走 `connect_profile`（连接那台机器），不是开本地终端"
         );
     }
 

@@ -2576,7 +2576,7 @@ impl MainView {
         }
 
         let primary_label = match phase {
-            super::UpdatePhase::Available => rustshell_core::i18n::t("立即更新"),
+            super::UpdatePhase::Available => rustshell_core::i18n::t("下载并重启"),
             super::UpdatePhase::Downloading => rustshell_core::i18n::t("正在下载…"),
             super::UpdatePhase::Ready => rustshell_core::i18n::t("重启以完成更新"),
             super::UpdatePhase::Failed(_) => rustshell_core::i18n::t("重试"),
@@ -2607,7 +2607,7 @@ impl MainView {
                     .primary()
                     .label(primary_label)
                     .disabled(busy)
-                    .on_click(cx.listener(|m, _e, w, cx| m.update_primary_action(w, cx))),
+                    .on_click(cx.listener(|m, _e, _w, cx| m.update_primary_action(cx))),
             );
 
         let view = cx.entity();
@@ -2621,8 +2621,8 @@ impl MainView {
                 DialogButtonProps::default()
                     // Enter = 主操作（与右下的按钮同义）。业务侧不回关窗：
                     // 下载 / 重启都要留在框里看状态。
-                    .on_ok(move |_, w, cx| {
-                        view.update(cx, |m, cx| m.update_primary_action(w, cx));
+                    .on_ok(move |_, _w, cx| {
+                        view.update(cx, |m, cx| m.update_primary_action(cx));
                         false
                     })
                     .on_cancel(|_, _w, _cx| true),

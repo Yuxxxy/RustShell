@@ -182,15 +182,13 @@ pub struct SwitchTab {
 /// 2026-09-18 运行反馈「最上面标题栏稍微降一点高度」：官方
 /// `gpui_component::TitleBar` 默认 `TITLE_BAR_HEIGHT = 34px`（那是为「标题 +
 /// 系统按钮」留的余量，本应用标题栏里只有一行品牌名与版本号，显得空）。压到
-/// 30px —— 再矮于 28px 时 Windows 的最小化/最大化/关闭三枚 35px 宽按钮的可点
-/// 高度会明显变小，手感变差，故只收 4px。
+/// 30px，2026-09-21 又收到 **28px**（Windows 三枚 35px 宽系统按钮的可点高度下限）。
 ///
-/// 2026-09-21 用户要求「标题栏和中间内容区的空白区域紧凑一点」：再收到 **28px**
-/// —— 这正是上面那条下限，系统按钮的可点高度还剩 28px，不再继续收。
-///
-/// 官方渲染里 `.h(TITLE_BAR_HEIGHT)` 之后才 `refine_style(&self.style)`，而
-/// `TitleBar` 实现了 `Styled`，所以调用点的 `.h(px(TITLE_BAR_HEIGHT))` 能覆盖它。
-const TITLE_BAR_HEIGHT: f32 = 28.;
+/// 2026-11-05 用户要求「标题行加高一点点」：28 → **32**。这一轮同时撤掉了标题栏
+/// 中段那个「搜索命令」框（见 `render` 里的注释），整条只剩左边的品牌名 / 版本号
+/// 与右边的一枚更新徽标 —— 28px 时上下几乎没有余量，显得比内容还紧。32 比官方
+/// 默认的 34 只矮 2px，更新徽标（图标 + 4px 内边距 ≈ 24px）上下各余 4px。
+const TITLE_BAR_HEIGHT: f32 = 32.;
 
 /// 标题栏品牌名字号（px）。
 ///
@@ -203,56 +201,6 @@ const TITLE_BAR_HEIGHT: f32 = 28.;
 /// 那层同时决定右上角三枚系统按钮的图标尺寸（`Icon::render` 取继承来的字号）。
 const TITLE_BAR_BRAND_SIZE: f32 = 13.;
 
-/// 标题栏中段「命令入口」的宽度（px）。
-///
-/// 它长得像一个输入框、点一下就唤起命令面板（真正的输入由面板自己的输入框接管，
-/// 见 `title_bar_command_entry` 的推导）。
-const TITLE_BAR_CMD_W: f32 = 340.;
-
-/// 标题栏命令入口的**视觉竖向微调**（px；正值 = 下移）。
-///
-/// 2026-10-09 运行反馈「搜索命令框往下一点」。命令入口在布局上**本来就是居中**的
-/// （官方 `#bar` 的 `items_center`；`title_bar_command_entry_sits_below_the_bar_centre`
-/// 量到：偏移归零时它的中心正好落在 14px = 标题栏中线）。偏上的是**观感** ——
-/// 实机抓帧逐行取色（本机 1.5× DPI）：
-/// - 标题栏可见带（`#0D1117` 从哪一行开始）= 物理 y 2..41；
-/// - 命令入口 = y 5..34（30px = 20 逻辑 px）⇒ **上余 3px、下余 7px**（1:2.3）。
-///
-/// 差在哪：**可见带的上边界比布局盒的上边界低约 3 物理 px** —— 窗口最顶上那两行
-/// 是系统画的窗口边框（浅色 `#B2B4B7`），不是应用内容。所以"布局居中"被削成
-/// "屏幕上偏高"，这不是布局错了，改布局也治不好。
-///
-/// 取 **1px**（1.5× 下 = 1.5 物理 px）：命令入口中心移到可见带正中的 21.5 行 ⇒
-/// 上余 5 行、下余 5 行（改前 3/7），把上面那点亏损补回来。**不取更大**：
-/// 再往下就轮到"下余 < 上余"，从偏高翻成偏低。也**不能**用"看到偏上就补 2px"
-/// 那种目测值 —— 实测亏损是 3 物理 px（1.5× 下 = 2 逻辑 px 量级），补多了就过头。
-/// 换机器/换 Windows 版本（系统边框厚度、缩放不同）要**重新量一次**，判据就一句：
-/// 可见带上下余量相等。
-///
-/// ★ 用相对偏移 `top` 而**不是** margin/padding：`div` 默认 `position: relative`，
-/// `top` 只是一次绘制与命中的偏移、不参与布局 ⇒ 既不挤动左右两个 `flex_1` 配平块
-/// （中段仍落在窗口几何中心，那是 `render` 刻意维持的性质），也不把 20px 的盒子撑高。
-/// 反馈只针对这一个控件，影响面就钉在这一个盒子上。
-///
-/// 验收：`title_bar_command_entry_sits_below_the_bar_centre`（真渲染量几何、带变异
-/// 验证）＋ 实机抓帧逐行取色（before/after 像素见 `.workbuddy/memory/` 当日日志）。
-const TITLE_BAR_CMD_DY: f32 = 4.;
-
-/// 标题栏中段的命令面板入口：一个「看起来是输入框」的按钮。
-///
-/// 为什么不放一个**真的** `TextInput`：真输入框要先拿到焦点才能打字，而焦点一旦
-/// 落在标题栏，命令面板弹出来再抢焦点就是两个句柄打架（一个 `FocusId` 只能有一个
-/// 认领者，见本仓「空主窗格快捷键」那条铁律）。做成按钮则只有一条路径：点它 →
-/// 开面板 → 焦点自然归面板的输入框，用户「点一下再打字」的体感完全一致。
-///
-/// ★ `occlude()` 是这里能点得动的**唯一原因**，不能删：官方 `TitleBar` 把整条
-/// `div#bar` 标成了 `WindowControlArea::Drag`，而 Windows 侧 `WM_NCHITTEST` 命中
-/// 该区域就返回 `HTCAPTION` ⇒ 走系统非客户区拖动，应用**一个鼠标事件都收不到**。
-/// gpui 的判定是「该窗口控制命中框的 id 是否在 `mouse_hit_test.ids` 里」，而
-/// `hit_test` 会把光标下**所有**命中框都收进去（含祖先）⇒ 光靠「画在上层」没用。
-/// `HitboxBehavior::BlockMouse` 是唯一能让 `hit_test` **提前 break** 的行为，
-/// 祖先命中框因此不进 `ids`，Drag 也就不会被上报 —— 等于在拖动区里挖出一个
-/// 可点击的洞。其余部分仍可拖动窗口。
 /// 标题栏右侧的更新徽标（2026-10-28，位置对齐 shell-rs）。
 ///
 /// **只画一枚图标**（2026-11-04 用户要求）：shell-rs 标题栏那枚 `update-available`
@@ -284,7 +232,7 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         // 量取钩子：用例靠它确认徽标真的落在标题栏里（`debug_bounds` 只认 selector）。
         .debug_selector(|| "titlebar-update-badge".to_string())
         // 标题栏整块是拖动区：不加 `occlude()` 时点击会被 `WM_NCHITTEST` 当成拖动，
-        // 按钮就「点不动」（与命令入口同一手法，见 `title_bar_command_entry` 上方注释）。
+        // 按钮就「点不动」。`occlude()` 是这里的唯一解法，详见下方说明。
         .occlude()
         .items_center()
         // 只留图标 + 内边距（内边距是命中区，不是视觉元素）。
@@ -299,64 +247,13 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         .hover(|s| s.bg(hex(t.bg_overlay)))
         // 文字只在 hover 时出现，且不在标题栏里占位置（与 shell-rs 的 tooltip 同口径）。
         .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
-        .on_click(cx.listener(|m, _e, w, cx| m.open_update_dialog(w, cx)))
+        .on_click(cx.listener(|m, _e, w, cx| m.on_update_badge_click(w, cx)))
         .child(
             Icon::new(gpui_kit_assets::IconName::CircleArrowUp)
                 .small()
                 .text_color(hex(color)),
         )
         .into_any_element()
-}
-
-fn title_bar_command_entry(cx: &mut Context<MainView>) -> impl IntoElement {
-    use crate::theme::to_hsla as hex;
-
-    let t = crate::theme::current(cx);
-    div()
-        .id("titlebar-command-entry")
-        // 只给测试量几何用（正式构建里不产生任何东西）：本盒子没有 `TextInput`，
-        // 只有一个 `id()`，而 `debug_bounds` **只认** `debug_selector`
-        // ⇒ 不挂它，`title_bar_command_entry_sits_below_the_bar_centre` 就量不到。
-        .debug_selector(|| "titlebar-command-entry".to_string())
-        .occlude()
-        .flex()
-        .items_center()
-        .gap_2()
-        .flex_none()
-        .h(px(20.))
-        .w(px(TITLE_BAR_CMD_W))
-        // 用户反馈「搜索命令框往下一点」的视觉微调，取值与推导见 `TITLE_BAR_CMD_DY`。
-        // 相对偏移：不参与布局、不挤动兄弟节点，命中区跟着一起下移。
-        .top(px(TITLE_BAR_CMD_DY))
-        .px_2()
-        .rounded(px(5.))
-        .bg(hex(t.bg_base))
-        .border_1()
-        .border_color(hex(t.border_subtle))
-        .cursor_pointer()
-        .hover(|s| s.border_color(hex(t.accent)))
-        .on_click(cx.listener(|m, _ev, w, cx| m.open_command_palette(w, cx)))
-        .child(
-            Icon::new(IconName::Search)
-                .small()
-                .text_color(hex(t.fg_muted)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(px(11.))
-                .text_color(hex(t.fg_muted))
-                .text_ellipsis()
-                .child(rustshell_core::i18n::t("搜索命令…")),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_size(px(10.))
-                .text_color(hex(t.fg_muted))
-                .child("Ctrl+Shift+P"),
-        )
 }
 
 /// 采样温度滑块的步长（2026-09-18 运行反馈「采样温度改为滑动轴 0.1 一个间隔」）。
@@ -2930,9 +2827,15 @@ impl Render for MainView {
         }
 
         // 标题栏。`TitleBar` 官方默认取主题 bar 底色（不透明），盖住主区域顶部。
-        // 高度收一档见 `TITLE_BAR_HEIGHT`；品牌名后补版本号（2026-09-18 反馈
-        // 「增加版本显示」）——版本号取 `core::APP_VERSION`（= 工作区 Cargo.toml 的
-        // `workspace.package.version`），不写死字面量，发版时不会忘记同步。
+        // 高度见 `TITLE_BAR_HEIGHT`（2026-11-05 加高到 32px）；品牌名后补版本号
+        // （2026-09-18 反馈「增加版本显示」）——版本号取 `core::APP_VERSION`
+        // （= 工作区 Cargo.toml 的 `workspace.package.version`），不写死字面量，
+        // 发版时不会忘记同步。
+        //
+        // 2026-11-05 用户要求「移除搜索命令栏」：中段那个「看起来是输入框」的命令
+        // 入口整个撤掉了。它长得像输入框、点开却是命令面板 —— 输入由面板自己的框
+        // 接管，等于一个没有实际作用的仿制品；腾出来的中间正好让标题行清爽。
+        // 命令面板本身仍有 Ctrl+Shift+P，功能一点没少。
         root = root.child(
             gpui_component::TitleBar::new()
                 .h(px(TITLE_BAR_HEIGHT))
@@ -2960,8 +2863,9 @@ impl Render for MainView {
                         .w_full()
                         .items_center()
                         .child(
-                            // 左侧「品牌名 + 版本号」占 `flex_1`，与右侧等宽空占位配平 ⇒
-                            // 中段的命令入口落在窗口几何中心，而不是被左侧文字挤偏。
+                            // 左侧「品牌名 + 版本号」占 `flex_1`，右侧一枚更新徽标靠右贴身
+                            // （外层同样是 `flex_1` + `justify_end`）⇒ 标题行两端对齐，
+                            // 中间留白可拖动窗口（2026-11-05 撤掉中段命令入口后布局就这么简单）。
                             h_flex()
                                 .flex_1()
                                 .min_w_0()
@@ -2985,9 +2889,7 @@ impl Render for MainView {
                                     ),
                                 ),
                         )
-                        .child(title_bar_command_entry(cx))
-                        // 右侧：更新徽标靠右贴住窗口控制按钮（`justify_end`），
-                        // 外层仍是 `flex_1` ⇒ 中段命令入口的居中不被打破。
+                        // 右侧：更新徽标靠右贴住窗口控制按钮（`justify_end`）。
                         .child(
                             h_flex()
                                 .flex_1()
@@ -3055,10 +2957,16 @@ impl Render for MainView {
             // 它原先挂在`right_col`下，横跨「侧栏 + 终端区」；
             // 移进`pane`后宽度由右面板决定，与终端区严格对齐，
             // 且侧栏折叠/拖宽时跟随，不需要任何宽度同步代码。
-            pane = pane.child(crate::perf_probe::timed(
-                &crate::perf_probe::QUICKBAR_US,
-                || super::quick_commands_bar::render(self, cx),
-            ));
+            //
+            // 2026-11-05 用户要求「没有 tab 也不用展示这行」：**一个标签都没有时整条不画**。
+            // 那一行在空窗格里既没有可投递目标（点胶囊只会弹「没有可用会话」），
+            // 又把空窗格的快速连接列表往上挤 —— 空态的入口应该是连接，不是命令。
+            if !self.tabs_state.tabs.is_empty() {
+                pane = pane.child(crate::perf_probe::timed(
+                    &crate::perf_probe::QUICKBAR_US,
+                    || super::quick_commands_bar::render(self, cx),
+                ));
+            }
             // 「没有可用会话」提示：覆盖在终端区正中（2026-09-17 运行反馈
             // 「显示在主窗口中间」；2026-09-18 起改为无需确认的弹出消息，
             // 见 `render_no_session_notice`）。排在最后 ⇒ 画在终端内容之上；
@@ -3355,54 +3263,28 @@ mod tests {
         assert!(!chain.contains(".border_b_1()"), "标题栏下边框又被画回来了");
     }
 
-    /// 回归（2026-10-09 用户要求「搜索命令框往下一点」，见 `TITLE_BAR_CMD_DY`）。
+    /// 2026-11-05 用户要求「移除搜索命令栏」：标题栏中段那个假输入框撤掉了 ——
+    /// 它长得像输入框、点开却是命令面板，本身就是个多余的仿制品
+    /// （命令面板真正的入口是 Ctrl+Shift+P，输入由面板自己的框接管）。
     ///
-    /// 钉**行为**而不是常量字面量：真渲染一帧后量命令入口的竖向中心，它必须落在
-    /// 「标题栏中线 + `TITLE_BAR_CMD_DY`」上。只钉源码锚点（"链上有 `.top(..)`"）
-    /// 不够 —— 相对偏移要**真生效**才算数，而它完全可能被上游抵消（父容器的
-    /// `items_center` 把外框摆回中间、或盒子被包进另一层时 `top` 落在了外层），
-    /// 那时源码看着没变、用户看到的位置却回去了。
-    ///
-    /// 容差 ±0.75：官方 `TitleBar` 那条 1px 下边框算在 28px 之内还是之外
-    /// （`h()` 的盒模型语义）会让"中线"差 0.5px，两种解释都必须过。
-    /// 注意**不能**改用 `prod()` 扫源码：`prod` 从 `#[cfg(test)]` 起截断，
-    /// 而这段断言与 `debug_bounds` 都活在测试模块里。
-    #[gpui::test]
-    fn title_bar_command_entry_sits_below_the_bar_centre(cx: &mut gpui::TestAppContext) {
-        use gpui::AppContext as _;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        use super::{AppShell, MainView, TITLE_BAR_CMD_DY, TITLE_BAR_HEIGHT};
-
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
-        });
-
-        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
-        let (_, vcx) = {
-            let slot = slot.clone();
-            cx.add_window_view(move |window, cx| {
-                let main = cx.new(|cx| MainView::new(window, cx));
-                *slot.borrow_mut() = Some(main.clone());
-                let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
-            })
-        };
-        vcx.run_until_parked();
-
-        let b = vcx.debug_bounds("titlebar-command-entry").expect(
-            "标题栏里量不到命令入口 —— 缺 `titlebar-command-entry` 的 `debug_selector`？\
-             （`debug_bounds` 只认它，`.id()` 不算）",
-        );
-        let centre: f32 = (b.origin.y + b.size.height / 2.0).into();
-        let want = TITLE_BAR_HEIGHT / 2.0 + TITLE_BAR_CMD_DY;
+    /// 三条一起钉：
+    /// ① 那个调试选择器在产物里彻底消失（组件真的不在了，不是被 `hidden` 掉）；
+    /// ② 尺寸 / 竖向偏移常量也删干净（留着就会被下次「顺手恢复」捡回去）；
+    /// ③ 标题行高度是加高后那一档（28 → 32px，用户同日要求「标题行加高一点点」）。
+    #[test]
+    fn the_title_bar_has_no_command_box() {
+        let code = prod(include_str!("main_view.rs"));
         assert!(
-            (centre - want).abs() <= 0.75,
-            "命令入口的竖向中心在 {centre}px，期望 ≈{want}px（标题栏中线 {}px + 下移 {TITLE_BAR_CMD_DY}px）—— \
-             偏回 14px 附近说明那处 `top` 没生效或被上游对齐抵消了",
-            TITLE_BAR_HEIGHT / 2.0
+            !code.contains("titlebar-command-entry"),
+            "标题栏的「搜索命令」框又回来了 —— 用户 2026-11-05 要求移除（入口仍是 Ctrl+Shift+P）"
+        );
+        assert!(
+            !code.contains("TITLE_BAR_CMD_W") && !code.contains("TITLE_BAR_CMD_DY"),
+            "命令入口的尺寸 / 偏移常量还留着：说明只删了挂载点、没真删干净"
+        );
+        assert!(
+            code.contains("const TITLE_BAR_HEIGHT: f32 = 32.;"),
+            "标题行高度应为 32px（2026-11-05 用户要求「标题行加高一点点」）"
         );
     }
 
@@ -3583,8 +3465,8 @@ mod tests {
     ///
     /// 历史：2026-09-17 的运行反馈是「打开软件默认不打开本地 shell，打开命令窗口」，
     /// 于是启动被写死为永远只开命令面板 —— 那是用一个人的偏好覆盖所有人。
-    /// 一个终端软件启动后给一个终端是最不需要解释的行为，现在默认
-    /// `StartupAction::LocalShell`，其余档位在设置里选。
+    /// 现在**默认什么都不做**（2026-11-05 用户要求，空窗格里是快速连接列表），
+    /// 其余档位在设置里选。
     ///
     /// 扫的是 `shell/src/app.rs`（启动顺序在本仓的这一处），钉住两条：
     /// ① 启动走**分派函数**（而不是某一条写死的入口）；② 那个分派按设置取值。
@@ -3601,7 +3483,7 @@ mod tests {
             "启动分派必须把用户设置传进去，否则分派函数只能吃一个固定值。"
         );
 
-        // 分派函数本身：四个档位都必须有明确落点，且默认档是「开本地终端」。
+        // 分派函数本身：四个档位都必须有明确落点。
         let dispatch = prod(include_str!("main_view.rs"));
         for branch in [
             "StartupAction::LocalShell",
@@ -3614,10 +3496,11 @@ mod tests {
                 "启动分派漏了 {branch} 这一档 —— 选了它的用户会得到一个空窗口。"
             );
         }
-        // 默认值：终端软件启动后给一个终端
+        // 默认值：**什么都不做**（2026-11-05 用户要求「启动时打开 默认什么都不做」）
         assert_eq!(
             rustshell_core::settings::StartupAction::default(),
-            rustshell_core::settings::StartupAction::LocalShell
+            rustshell_core::settings::StartupAction::Nothing,
+            "启动动作默认档必须是「什么也不做」—— 空窗格会给快速连接列表"
         );
     }
 
@@ -4054,6 +3937,18 @@ mod tests {
             !after.contains("quick_commands_bar::render"),
             "快捷命令栏不得挂在 right_col 下：right_col 位于 ResizablePanelGroup 之外，\n\
              会把命令栏横跨到侧栏下方，与「和终端区保持同一宽度」相冲突。"
+        );
+
+        // 4) 一个标签都没有时**整条不画**（2026-11-05 用户要求「没有 tab 也不用
+        //    展示这行」）：空窗格里它既没有可投递目标（点胶囊只会弹「没有可用会话」），
+        //    又把空态的快速连接列表挤小。
+        let at = body
+            .find("quick_commands_bar::render")
+            .expect("找不到快捷命令栏挂载点");
+        let around = &body[at.saturating_sub(600)..at];
+        assert!(
+            around.contains("if !self.tabs_state.tabs.is_empty()"),
+            "快捷命令栏必须挂在「有标签」的条件里 —— 空窗格不画这一行"
         );
     }
 

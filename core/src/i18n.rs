@@ -565,10 +565,12 @@ fn translate(zh: &'static str) -> &'static str {
             "Font and color changes apply instantly; encoding applies to new terminals."
         }
         "启动时打开" => "Open on startup",
-        "打开软件后直接进入什么。默认开一个本地终端；不需要终端时可选命令面板或不打开。" => {
-            "What opens when the app starts. The default starts a local shell; \
-             choose the command palette or nothing if you do not need a terminal."
+        "打开软件后直接进入什么。默认什么都不做 —— 窗口里列出可一键连接的机器；也可以改成直接开本地终端或命令面板。" => {
+            "What opens when the app starts. By default nothing happens: the window \
+             lists your saved connections for one-click connect. You can also start a \
+             local shell or the command palette instead."
         }
+        "还没有保存的连接" => "No saved connections yet",
         "未分组" => "Ungrouped",
         // 连接分组：新建与改名共用同一个「分组名」对话框，入口都在连接树的右键菜单里
         //（连接对话框里的自由文本分组名已取消）。
@@ -920,7 +922,7 @@ fn translate(zh: &'static str) -> &'static str {
         "打开发布页" => "Open release page",
         // 在线更新（2026-10-28）：检查 → 下载 → 安装 → 重启
         "软件更新" => "Software Update",
-        "立即更新" => "Update Now",
+        "下载并重启" => "Download and Restart",
         "正在下载…" => "Downloading…",
         "重启以完成更新" => "Restart to Finish",
         "稍后" => "Later",
