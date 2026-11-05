@@ -191,6 +191,13 @@ pub fn run() {
 
             let _handle = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| MainView::new(window, cx));
+                // 打开软件就检查更新（2026-11-05 用户要求）。
+                //
+                // 挂在这里而不是等首帧 `render`：`render` 每次重绘都会走一遍，把网络
+                // 动作放在渲染路径上、只靠一个闩兜着太脆；启动点只有这一处，语义直白。
+                // `update_auto_check` 自带「每进程只发起一次」的闩，首帧 `render` 里
+                // 那次兜底调用撞上它会直接返回，不会发两次请求。
+                view.update(cx, |v, cx| v.update_auto_check(cx));
                 // 外壳视图负责挂载官方 Dialog / Sheet 层。
                 //`gpui_component::Root::render`并不挂这两层，必须由业务视图挂；
                 // 且不能在 MainView 自身 render 里挂（render_dialog_layer 会同步执行

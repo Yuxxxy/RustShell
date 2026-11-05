@@ -33,18 +33,28 @@ use rustshell_core::update;
 use super::MainView;
 
 /// 自动检查的延迟：等首屏、连接恢复这些更要紧的事先做完。
-const AUTO_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(8);
+///
+/// 8s → 2s（2026-11-05）：用户反馈「打开软件就该检查更新」。首屏在 300ms 内就画完了，
+/// 8 秒纯属白等 —— 那段时间里用户往往已经切去干别的，徽标出现了也没人看见。
+/// 检查本身在后台执行器上跑，不占 UI 线程，提前发起不会影响首屏帧率。
+const AUTO_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl MainView {
     /// 启动后自动查一次更新（延迟 [`AUTO_CHECK_DELAY`]，失败静默）。
     ///
-    /// 由 `render` 首帧调用：`cx.new(|cx| …)` 期间拿不到自身实体，也就没法 spawn。
+    /// **主触发点是应用启动**（`shell/src/app.rs` 里建完 `MainView` 立刻调一次），
+    /// 2026-11-05 用户要求：「打开软件就调用更新检查，不是打开设置才查」。挂在启动点
+    /// 而不是只挂首帧 `render`，是因为 `render` 每次重绘都会走一遍 —— 把一个网络动作
+    /// 放在渲染路径上、只靠一个闩兜着太脆；启动点只有一处，语义也更直白。
+    /// 首帧 `render` 里仍留一次调用当兜底（其它入口直接 `cx.new(MainView::new)` 时
+    /// 也能查到），闩保证**一次进程只发一次请求**。
+    ///
     /// 闩在 `update_auto_started` 上（不能用「阶段是 Idle」判断 —— 自动检查失败后
     /// 阶段本来就回到 Idle，那样每帧都会再发一次请求）。
     pub fn update_auto_check(&mut self, cx: &mut Context<Self>) {
         // 测试里不发真实请求：不少 UI 用例用 `advance_clock` 推进时钟（`dead_session`
-        // 那套按 20ms 步进），推过 8 秒就会真去请求 GitHub —— CI 的成败就挂到网络上了。
-        // 守卫用例只查源码结构（见本文件测试模块），不依赖这条分支。
+        // 那套按 20ms 步进），推过 [`AUTO_CHECK_DELAY`] 就会真去请求 GitHub ——
+        // CI 的成败就挂到网络上了。守卫用例只查源码结构（见本文件测试模块）。
         if cfg!(test) {
             return;
         }
@@ -52,6 +62,10 @@ impl MainView {
             return;
         }
         self.io.update_auto_started = true;
+        log::info!(
+            "启动自动检查更新：{AUTO_CHECK_DELAY:?} 后发起（本机 v{}）",
+            rustshell_core::APP_VERSION
+        );
         // 顺手清掉上次更新留下的 `<exe>.old`：那时它还被旧进程锁着删不掉。
         update::cleanup_stale_backup();
         cx.spawn(async move |this, cx| {
@@ -87,7 +101,20 @@ impl MainView {
             let _ = this.update(cx, |m, cx| {
                 match result {
                     Ok(release) => {
-                        if update::is_newer(&release.version, rustshell_core::APP_VERSION) {
+                        let newer = update::is_newer(&release.version, rustshell_core::APP_VERSION);
+                        // 落一条日志：不写的话「启动到底查没查」在日志里完全无从判断
+                        // （2026-11-05 用户反馈「只有打开设置才检查」时就是这么被误导的）。
+                        log::info!(
+                            "检查更新完成：远端 tag=v{}，本机 v{} ⇒ {}",
+                            release.version,
+                            rustshell_core::APP_VERSION,
+                            if newer {
+                                "有新版本"
+                            } else {
+                                "已是最新"
+                            }
+                        );
+                        if newer {
                             m.io.update_release = Some(release);
                             m.io.update_phase = super::UpdatePhase::Available;
                         } else {
@@ -96,6 +123,7 @@ impl MainView {
                         }
                     }
                     Err(e) => {
+                        log::warn!("检查更新失败（announce={announce}）：{e}");
                         // 自动检查失败不该给用户看网络错误：他根本没要求查。
                         m.io.update_phase = if announce {
                             super::UpdatePhase::Failed(super::MainView::update_fail_text(&e))
@@ -438,17 +466,34 @@ mod tests {
         );
     }
 
-    /// 每次启动都检查，且每次只发起一次、从 render 首帧触发。
+    /// 每次启动都检查，且每次只发起一次；**主触发点是应用启动**。
     ///
     /// 这里守的是那个**闩**：用「阶段是 Idle」判断会死循环 —— 自动检查失败后阶段
     /// 本来就回到 Idle，于是每帧都发一次请求。反过来，闩只存在进程内存里，
     /// `MainView::new` 每次都把它置回 false，所以**每个新进程都会重新查一次**。
+    ///
+    /// 2026-11-05 用户要求「打开软件就调用更新检查，不是打开设置才查」：
+    /// 主触发点从「首帧 render」前移到 `shell/src/app.rs` 建窗口那一步。
     #[test]
     fn the_startup_check_fires_exactly_once() {
+        // ② 主触发点：应用启动、建完 MainView 就调（早于任何 render）。
+        let app = prod(include_str!("../../../shell/src/app.rs"));
+        let boot = app
+            .find("update_auto_check(cx)")
+            .expect("应用启动时必须发起一次更新检查（2026-11-05 用户要求）");
+        let shell = app
+            .find("AppShell::new(view)")
+            .expect("找不到外壳视图装配点");
+        assert!(
+            boot < shell,
+            "更新检查要在建完 MainView 后立刻发起，不能等到别的时机"
+        );
+
+        // ① 兜底：首帧 render 也调一次（其它入口直接 `cx.new(MainView::new)` 时仍能查到）。
         let main = prod(include_str!("../main_view.rs"));
         assert!(
             main.contains("self.update_auto_check(cx)"),
-            "首帧必须发起自动检查"
+            "首帧要留一次兜底调用"
         );
         assert!(
             main.contains("update_auto_started: false"),
@@ -457,17 +502,28 @@ mod tests {
         let actions = prod(include_str!("update_actions.rs"));
         assert!(
             actions.contains("if self.io.update_auto_started {"),
-            "自动检查必须有「只发起一次」的闩"
+            "自动检查必须有「只发起一次」的闩（两处调用也不能发两次请求）"
         );
         assert!(
             actions.contains("background_executor().timer(AUTO_CHECK_DELAY)"),
             "自动检查要延迟：别和首屏抢网络"
+        );
+        // 延迟不许回到「等很久」：用户要的是打开软件就能看到有没有新版本。
+        assert!(
+            actions.contains("Duration::from_secs(2)"),
+            "自动检查最多等 2 秒（曾经是 8 秒，用户根本等不到徽标）"
         );
         // 自动检查失败要静默（`announce == false`），手动检查才报错
         assert!(
             actions.contains("run_update_check(false, cx)"),
             "自动检查失败不该弹错误给用户（他没要求查）"
         );
+        // 必须落日志：不然「启动到底查没查」在日志里完全看不出来。
+        assert!(
+            actions.contains("检查更新完成：远端 tag=v{}"),
+            "检查结果要落日志，否则无法自证「启动就查了」"
+        );
+        assert!(actions.contains("启动自动检查更新"), "发起时也要落一条日志");
     }
 
     /// 「从 OpenSSH 导入」现在必须**先弹系统选文件对话框**。
