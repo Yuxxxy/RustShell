@@ -263,6 +263,9 @@ const TITLE_BAR_CMD_DY: f32 = 4.;
 /// **只在「有新版 / 已就绪 / 失败」三种状态下出现**，其余时候不画任何东西 ——
 /// 标题栏不该常驻一枚「检查更新」，那是「设置 › 关于」的事。这条分工抄的也是
 /// shell-rs：它的 `UpdateBadge` 只在这三种状态返回 `Some`，平时不占位置。
+///
+/// **没有外框**（2026-11-05 用户：「图标外框去掉，太丑了」）：不画底色、不画边框，
+/// 只剩一枚着色的图标；hover 时才浮一层浅底提示可点击。原因见函数体里的注释。
 fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElement {
     use crate::theme::to_hsla as hex;
 
@@ -284,13 +287,16 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         // 按钮就「点不动」（与命令入口同一手法，见 `title_bar_command_entry` 上方注释）。
         .occlude()
         .items_center()
+        // 只留图标 + 内边距（内边距是命中区，不是视觉元素）。
+        //
+        // **不画底色、不画边框**（2026-11-05 用户：「图标外框去掉，太丑了」）。
+        // 之前是 `bg(bg_base)` + 1px 主题色边框，结果在 `bg_elevated` 的标题栏上
+        // 出现一个比周围**更暗**的方块 + 一圈彩边 —— 既不像按钮也不像图标。
+        // hover 时才浮出一层浅底（`bg_overlay` 比 `bg_elevated` 亮一档）提示可点击。
         .p_1()
-        .rounded(px(5.))
-        .bg(hex(t.bg_base))
-        .border_1()
-        .border_color(hex(color))
+        .rounded(px(4.))
         .cursor_pointer()
-        .hover(|s| s.bg(hex(t.bg_elevated)))
+        .hover(|s| s.bg(hex(t.bg_overlay)))
         // 文字只在 hover 时出现，且不在标题栏里占位置（与 shell-rs 的 tooltip 同口径）。
         .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
         .on_click(cx.listener(|m, _e, w, cx| m.open_update_dialog(w, cx)))
@@ -3299,6 +3305,22 @@ mod tests {
         assert!(
             body.contains(".tooltip("),
             "版本 / 状态只在 hover 提示里出现，不常驻标题栏"
+        );
+        // 2026-11-05 用户：「图标外框去掉，太丑了」。之前 `bg(bg_base)` + 1px 彩边
+        // 在 `bg_elevated` 的标题栏上会画出「更暗的方块 + 一圈彩边」。
+        assert!(
+            !body.contains(".border_1()") && !body.contains(".border_color("),
+            "徽标不许画边框（2026-11-05 用户要求去掉外框）"
+        );
+        // 底色只许出现在 hover 回调里（`s.bg(..)`）：元素自身挂底色 = 又画回一个方块。
+        assert_eq!(
+            body.matches(".bg(hex(").count(),
+            body.matches("s.bg(hex(").count(),
+            "徽标平时不许有底色；只有 hover 才浮一层浅底提示可点击"
+        );
+        assert!(
+            body.contains(".hover(|s| s.bg("),
+            "去掉外框后要靠 hover 底色提示「这里能点」"
         );
     }
 
