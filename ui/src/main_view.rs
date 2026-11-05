@@ -2940,11 +2940,21 @@ impl Render for MainView {
             // `size_full` 而不是 `flex_1`：它现在的父节点是卡片壳（普通块容器），
             // 不再是 flex 行，`flex_1` 在块流里不起作用（高度会塌成内容高）。
             let mut pane = v_flex().size_full().min_w_0().min_h_0();
-            // Tab 栏
-            pane = pane.child(crate::perf_probe::timed(
-                &crate::perf_probe::TABBAR_US,
-                || self.render_tab_bar(cx),
-            ));
+            // Tab 栏。**一个标签都没有时整条不画**（2026-11-05 用户要求「没有 tab
+            // 也不用展示这行」，配图就是那条只剩溢出箭头 + 全屏按钮的空灰条）：
+            // 空的标签轨道既没有内容，也提供不了任何操作 —— 新建入口仍在 Ctrl+T /
+            // 终端右键菜单 / 空窗格的快捷键表里。
+            //
+            // ⚠️ **全屏时例外**：标签栏尾那枚「退出全屏」是终端全屏唯一的鼠标出口
+            // （没有它，全屏后只能靠重启/快捷键逃出来）。它一直只是**入口**（空窗格里
+            // 点不到全屏），但 `toggle_terminal_fullscreen` 也可能被别处调用，
+            // 所以条件里补上 `terminal_fullscreen`：一旦进了全屏，这条必须画出来。
+            if !self.tabs_state.tabs.is_empty() || self.terminal_fullscreen {
+                pane = pane.child(crate::perf_probe::timed(
+                    &crate::perf_probe::TABBAR_US,
+                    || self.render_tab_bar(cx),
+                ));
+            }
             // 终端内容区：内容 / 占位卡 / 搜索浮层 / 滚动条 / 右键菜单，
             // 统一由`render_workspace`派发（未分屏 = 单窗格；分屏 = 两个
             // 可拖拽窗格）。数据按各自 session 现场取，故这里不再预先
@@ -3939,17 +3949,24 @@ mod tests {
              会把命令栏横跨到侧栏下方，与「和终端区保持同一宽度」相冲突。"
         );
 
-        // 4) 一个标签都没有时**整条不画**（2026-11-05 用户要求「没有 tab 也不用
-        //    展示这行」）：空窗格里它既没有可投递目标（点胶囊只会弹「没有可用会话」），
-        //    又把空态的快速连接列表挤小。
-        let at = body
-            .find("quick_commands_bar::render")
-            .expect("找不到快捷命令栏挂载点");
-        let around = &body[at.saturating_sub(600)..at];
-        assert!(
-            around.contains("if !self.tabs_state.tabs.is_empty()"),
-            "快捷命令栏必须挂在「有标签」的条件里 —— 空窗格不画这一行"
-        );
+        // 4) 一个标签都没有时，**标签栏与快捷命令栏两条都不画**（2026-11-05 用户要求
+        //    「没有 tab 也不用展示这行」，配图那条就是空的标签轨道：只剩溢出箭头
+        //    + 全屏按钮的灰条）。空窗格里它们既没有内容也没有可投递目标，
+        //    还占着空态快速连接列表的高度。标签栏另有一个 `|| self.terminal_fullscreen`
+        //    例外 —— 全屏下那枚「退出全屏」是唯一的鼠标出口，不能一起藏掉。
+        for (needle, what) in [
+            ("render_tab_bar(cx)", "标签栏"),
+            ("quick_commands_bar::render", "快捷命令栏"),
+        ] {
+            let at = body
+                .find(needle)
+                .unwrap_or_else(|| panic!("找不到{what}挂载点"));
+            let around = &body[at.saturating_sub(600)..at];
+            assert!(
+                around.contains("if !self.tabs_state.tabs.is_empty()"),
+                "{what}必须挂在「有标签」的条件里 —— 一个标签都没有时不该画这一行"
+            );
+        }
     }
 
     /// 回归护栏（2026-09-17 运行反馈「主窗格为空界面，命令窗口快捷键无法使用」）。
