@@ -7,8 +7,9 @@
 //! - [`download`]：把对应平台的产物流式写到本地临时目录，并核对 GitHub 给的字节数
 //!   —— 「下载完了」不能只看 `Ok(())`，半截文件也是 `Ok`。
 //! - [`launch_windows_installer`]：Windows 的产物是 **NSIS 安装包**，不是主程序。
-//!   由我们自己以 `/P /R` 另起一个进程拉起它做覆盖安装；mac / linux 的 `.dmg` /
-//!   `.deb` 则交给系统安装器（调用方拿到路径后 `open` 出去）。
+//!   不直接跑它 —— 拉起一个**隐藏的 PowerShell waiter**，等本进程（PID）真正退出
+//!   之后才以 `/P /R` 跑安装器做覆盖安装。mac / linux 的 `.dmg` / `.deb` 则交给
+//!   系统安装器（调用方拿到路径后 `open` 出去）。
 //!
 //! # 为什么不是「把下载到的 exe 复制到当前程序路径」
 //!
@@ -383,7 +384,8 @@ pub fn cleanup_stale_backup() {
         .unwrap_or_default();
     if !stem.is_empty() {
         let _ = std::fs::remove_file(dir.join(format!("{stem}.installer.old")));
-        // 让位副本留在临时目录里，装完顺手带走。
+        // 自愈 A 的副本落在**系统临时目录**（NSIS 的 `$TEMP` 就是它）；下载目录
+        // 那一条是给「将来把副本挪进下载目录」留的，删不到就算了。
         let _ = std::fs::remove_file(download_dir().join(format!("{stem}-setup.exe")));
         let _ = std::fs::remove_file(std::env::temp_dir().join(format!("{stem}-setup.exe")));
     }
@@ -572,10 +574,11 @@ mod tests {
         ] {
             assert!(body.contains(needle), "waiter 缺少 {needle}");
         }
-        // 路径绝不进脚本文本
+        // 脚本文本里不许出现任何字面路径：路径只许从环境变量来，否则带空格或
+        // 引号的安装目录会把命令行拆坏（`` `&` 后面不带引号也一样安全``）。
         assert!(
-            !body.contains("WAITER_SCRIPT,") || body.contains(".env("),
-            "路径只能进环境变量，不能拼进脚本"
+            !WAITER_SCRIPT.contains(":\\") && !WAITER_SCRIPT.contains(":/"),
+            "waiter 脚本里不许出现字面路径，路径必须走环境变量"
         );
         // 不能闪控制台黑框：RustShell 是 GUI 程序，spawn 控制台程序默认会弹窗。
         assert!(

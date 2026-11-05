@@ -346,9 +346,10 @@ FunctionEnd
 {{/if}}
 
 !macro CheckIfAppIsRunning
-  ; nsis_tauri_utils 按**进程名**匹配并跳过调用者自己的 PID。安装器这一侧调用它
-  ; 是为了关掉真正在跑的 RustShell（否则 exe 被锁、File 写不进去）；卸载器那一侧
-  ; 只在用户主动卸载时才会走到。安装流程里不再有第二个进程来按名字杀进程。
+  ; nsis_tauri_utils 按**进程名**匹配，但**匹配不到调用者自己**（实测「就是自己」
+  ; 与「进程不存在」都返回 1），所以按名字杀进程不会把安装器自己杀掉。安装器这一
+  ; 侧调用它是为了关掉真正在跑的 RustShell（否则 exe 被锁、File 写不进去）；卸载器
+  ; 那一侧只在用户主动卸载时才会走到。安装流程里不再有第二个进程来按名字杀进程。
   nsis_tauri_utils::FindProcess "${MAINBINARYNAME}.exe"
   Pop $R0
   ${If} $R0 = 0
