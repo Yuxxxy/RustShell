@@ -30,22 +30,29 @@ impl gpui::AssetSource for AppAssets {
     }
 }
 
-fn keybindings() -> Vec<KeyBinding> {
+fn keybindings(cx: &gpui::App) -> Vec<KeyBinding> {
     use rustshell_platform::keymap as km;
     // M3：键位来自 默认表 + 用户覆盖（keymap.json），支持导入/导出
     // 绑定构建与运行时重绑定共用 rustshell_ui::keybinds::make_binding，避免两处漂移
     let mut bindings = Vec::new();
     for (id, keys) in km::effective(&rustshell_platform::paths::keymap_path()) {
-        if let Some(b) = rustshell_ui::keybinds::make_binding(&id, &keys) {
+        if let Some(b) = rustshell_ui::keybinds::make_binding(&id, &keys, cx) {
             bindings.push(b);
         }
     }
     for i in 1..=9usize {
-        bindings.push(KeyBinding::new(
+        // 键位串是运行时拼出来的（`mod-1` / `cmd-1`…），不是 `'static` 字面量，
+        // 所以和 `make_binding` 一样走 `KeyBinding::load`（见该函数的注释）。
+        if let Ok(b) = KeyBinding::load(
             &km::bind(&i.to_string()),
-            SwitchTab { index: i - 1 },
+            Box::new(SwitchTab { index: i - 1 }),
             None,
-        ));
+            false,
+            None,
+            cx,
+        ) {
+            bindings.push(b);
+        }
     }
     // Tab/Shift+Tab 终端补全：cx.bind_keys 在 gpui_component::init 之后调用，
     // 同深度后注册胜出（key_dispatch.rs），覆盖 Root 的焦点遍历绑定；
@@ -165,10 +172,17 @@ pub fn run() {
                 &rustshell_platform::paths::settings_path(),
             );
             rustshell_ui::theme::apply_theme_mode(cx, settings.theme_mode);
+            // 输入框光标节奏跟随「终端光标闪烁」那条偏好（gpui-kit 0.9.0 的
+            // `Theme::cursor_blink`）。必须排在 apply_theme_mode 之后 —— 见该函数注释。
+            rustshell_ui::theme::apply_cursor_blink(
+                cx,
+                settings.terminal_cursor_blink,
+                settings.terminal_cursor_blink_ms,
+            );
             // 界面语言（M4 国际化：zh/en）
             rustshell_core::i18n::set_lang_str(&settings.language);
 
-            cx.bind_keys(keybindings());
+            cx.bind_keys(keybindings(cx));
             cx.activate(true);
 
             // 窗口几何：有上次的记录就还原，没有就走「1400×900、屏幕 85%、居中」。
@@ -252,11 +266,15 @@ mod tests {
     ///
     /// 条数 = 默认表条数 + 9 + 3。少一条就意味着某个快捷键静默失效
     /// （界面上还印着键帽，按下去没反应）。
-    #[test]
-    fn keybindings_include_every_default_plus_the_extra_ones() {
+    ///
+    /// 2026-11-06：装配要 `&App` 了（动态键位走 `KeyBinding::load`，见
+    /// `rustshell_ui::keybinds::make_binding` 的注释），所以从 `#[test]` 换成
+    /// `#[gpui::test]` 拿一个 TestAppContext —— 断言口径一个字没变。
+    #[gpui::test]
+    fn keybindings_include_every_default_plus_the_extra_ones(cx: &mut gpui::TestAppContext) {
         use rustshell_platform::keymap as km;
 
-        let bindings = super::keybindings();
+        let bindings = cx.update(|cx| super::keybindings(cx));
         let expected = km::DEFAULT_BINDINGS.len() + 9 + 3;
         assert_eq!(
             bindings.len(),
@@ -269,10 +287,10 @@ mod tests {
     }
 
     /// 重复装配不 panic、不产生重复条数（`run()` 与热重绑路径都可能再调一次）。
-    #[test]
-    fn keybindings_are_repeatable() {
-        let first = super::keybindings().len();
-        let second = super::keybindings().len();
+    #[gpui::test]
+    fn keybindings_are_repeatable(cx: &mut gpui::TestAppContext) {
+        let (first, second) =
+            cx.update(|cx| (super::keybindings(cx).len(), super::keybindings(cx).len()));
         assert_eq!(
             first, second,
             "两次装配条数不一致：{first} vs {second}（装配过程有隐藏状态？）"

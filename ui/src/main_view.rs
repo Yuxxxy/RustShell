@@ -4081,7 +4081,11 @@ mod tests {
             let mut bindings: Vec<gpui::KeyBinding> = rustshell_platform::keymap::DEFAULT_BINDINGS
                 .iter()
                 .filter_map(|(id, spec)| {
-                    crate::keybinds::make_binding(id, &rustshell_platform::keymap::resolve(spec))
+                    crate::keybinds::make_binding(
+                        id,
+                        &rustshell_platform::keymap::resolve(spec),
+                        cx,
+                    )
                 })
                 .collect();
             bindings.push(gpui::KeyBinding::new("tab", TermTab, None));

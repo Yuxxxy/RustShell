@@ -2714,12 +2714,7 @@ impl TerminalView {
     ///
     /// 普通缓冲：滚动 display_offset 查看历史滚回（Scroll::Delta 正值=向上翻历史）；
     /// 备用屏（vim/htop 等）：不滚动，改发方向键序列（APP_CURSOR 时用 SS3 形式）。
-    fn on_scroll(
-        &mut self,
-        event: &ScrollWheelEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_scroll(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
         use crate::mouse::pixels_to_scroll_lines;
         use alacritty_terminal::grid::Scroll;
         use alacritty_terminal::term::TermMode;
@@ -3462,7 +3457,9 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            // 2026-11-06（gpui-kit 0.9.0）：`on_scroll_wheel` 改名 `on_scroll`，
+            // 事件类型 `ScrollWheelEvent` 改名 `ScrollEvent` —— 载荷未变。
+            .on_scroll(cx.listener(Self::on_scroll))
             .child(
                 canvas(
                     move |bounds, _window, _cx| {

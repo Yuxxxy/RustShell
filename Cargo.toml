@@ -13,13 +13,26 @@ authors = ["yuxinyu"]
 # 选它而不是 lrzsz 绑定：纯 Rust、可跨所有传输（本地 PTY / SSH / 将来的串口），
 # 且协议层不碰文件系统 —— 收发落点全由本仓决定。
 zmodem2 = "0.7.3"
-# --- GPUI 生态（统一版本线：gpui-kit v0.8.0 发布线 + gpui-fast 引擎） ---
+# --- GPUI 生态（统一版本线：gpui-kit v0.9.0 发布线 + gpui-fast 引擎） ---
 #
 # 2026-10-19：从「gpui-pre 0.3.x + gpui-component 0.6.1」升级到 gpui-kit 0.7.3 线，
 # 引擎同时换成 longbridge/gpui-fast 0.1.9（gpui 的 fork，带 retained rendering 与
 # 布局优化；gpui-kit 的 `gpui-fast` feature 指向它）。
 # 2026-10-20：升到 gpui-kit 0.8.0 线，引擎与平台层一并跟到 gpui-fast 0.1.10；gpui-component 同时
 # 打开 `syntect`（见该条目下的说明）。
+# 2026-11-06：升到 gpui-kit 0.9.0 线，引擎与平台层一并跟到 gpui-fast 0.1.13。
+# 这条线的破坏性变更与迁移点（本仓都已处理，改这里之前先读一遍）：
+#   · 主题结构体全部 `#[non_exhaustive]` —— `Theme { .., ..Default::default() }`
+#     这种字面量在外部 crate 编不过，只能 `Theme::default()` 后逐字段赋值。
+#     本仓的主题装配本来就走「`Theme::change` + 逐字段写」，天然免疫。
+#   · `KeyBinding::new` 收紧为 `keystrokes: &'static str`。动态键位（keymap.json
+#     的用户覆盖、运行时重绑定）必须改走 `KeyBinding::load(.., cx)`，见
+#     `ui/src/keybinds.rs::make_binding`。
+#   · `ScrollWheelEvent` / `on_scroll_wheel` 改名 `ScrollEvent` / `on_scroll`。
+#   · `Window::text_system()` 返回 `&Rc<..>`（原 `&Arc<..>`），且不再 Send/Sync；
+#     `Animation` 改读执行器时钟（睡眠等时长的用例要用 `advance_clock`）。
+#   · 布局引擎 taffy 0.13/0.14 → **0.15**（0.9.0 的传递依赖），flex 细节有变，
+#     升级后必须跑全量 UI 用例并实机看一遍版式。
 #
 # ⚠️ 一旦启用 gpui-fast，**全图必须同源**，这是这条线最容易踩的一条：
 # gpui-component / gpui-base / gpui-kit-assets 的 `gpui-fast`
@@ -46,7 +59,7 @@ zmodem2 = "0.7.3"
 # 不会因 engine 升级而自动跳版本，Cargo.lock 里就一直是 0.1.9。自检：
 #   cargo tree -i gpui-fast-platform
 # 输出应与 `gpui-fast` 的版本一致。
-gpui = { package = "gpui-fast", version = "0.1.10" }
+gpui = { package = "gpui-fast", version = "0.1.13" }
 # 平台后端门面（gpui_platform）：按目标平台转发到 gpui-fast-windows / -macos /
 # -linux（`gpui_platform::application()` 内部就是 `current_platform` 的一层 cfg 壳）。
 #
@@ -87,19 +100,19 @@ gpui = { package = "gpui-fast", version = "0.1.10" }
 # `Cargo.lock` 会多出 zed-font-kit 及其依赖，属正常（与上面 x11/wayland 同一个道理）。
 #
 # `runtime_shaders`：macOS 上把 Metal shader 改成**运行时编译**，而不是构建期用
-# `metal` 命令行工具预编译。gpui-kit 0.8.0 对平台层正是这么配的（见其 Cargo.toml），
+# `metal` 命令行工具预编译。gpui-kit 0.9.0 对平台层正是这么配的（见其 Cargo.toml），
 # 我们也跟上 —— 构建期编译要求机器装齐 Xcode 的 Metal Toolchain
 # （`xcodebuild -downloadComponent MetalToolchain`），CI 的 `macos-latest` 上是个额外地雷；
 # 运行时编译只多几十毫秒首帧，换来「没有 Metal 工具链也能编」。
 # 自检命令（在 Windows/Linux 上也能跑，看的是 macOS 目标的 feature 解析）：
 #   cargo tree --target aarch64-apple-darwin -e features -i gpui-fast-macos
-gpui-platform = { package = "gpui-fast-platform", version = "0.1.10", features = [
+gpui-platform = { package = "gpui-fast-platform", version = "0.1.13", features = [
     "x11",
     "wayland",
     "font-kit",
     "runtime_shaders",
 ] }
-# ── gpui-component 0.8.0（= gpui-kit v0.8.0 发布线）──
+# ── gpui-component 0.9.0（= gpui-kit v0.9.0 发布线）──
 #
 # **0.7.0 的架构调整（本次升级的核心，不是「顺手升个版本」）**：
 #
@@ -132,14 +145,14 @@ gpui-platform = { package = "gpui-fast-platform", version = "0.1.10", features =
 # 深浅色下需要肉眼确认。代价是编译 syntect + two-face（内嵌 bat 语法集，纯 Rust、
 # 无原生依赖），构建时间与二进制体积会涨；流式输出时代码块文本每帧变化，会重新
 # 高亮（未变化的块有缓存）。tree-sitter 更重（每种语言一个 grammar crate），不选。
-gpui-component = { version = "0.8.0", features = ["gpui-fast", "syntect"] }
+gpui-component = { version = "0.9.0", features = ["gpui-fast", "syntect"] }
 # 图标全量目录（Lucide）：
 # `gpui_component::IconName` 只是**组件默认子集**（约 90 个，清单见
 # gpui-kit-assets/default-icons.txt），`Trash` / `Brain` / `MessageSquare` 之类
 # 根本不在枚举里（写出来直接编译不过，不是「图标空白」这种软失败）。
 # 全量枚举 + `IconNamed` 实现由 gpui-kit-assets 提供，且与 gpui-component 同版本线
 # ——它本来就在依赖图里（gpui-component 的传递依赖），加为直接依赖不引入新下载。
-gpui-kit-assets = { version = "0.8.0", features = ["gpui-fast"] }
+gpui-kit-assets = { version = "0.9.0", features = ["gpui-fast"] }
 # 窗口级「纯文本可拖选」元素（`gpui_base::SelectableText`）：
 # AI 面板里 agent 工具的**展开明细**（`run_command` 之类工具的原样输出）与思考正文
 # 要能用鼠标拖选、并能被 Ctrl+C / 右键复制取走。
@@ -151,7 +164,7 @@ gpui-kit-assets = { version = "0.8.0", features = ["gpui-fast"] }
 # 选区的全局状态由 **gpui-component 的 `Root`** 持有（`TextSelectionLayer` + `Copy`），
 # 版本线走岔时表现是「拖了没高亮、Ctrl+C 没反应」且**编译不报错**，
 # 故 `ui/src/ai_panel.rs` 里配了一条编译期护栏把两条版本线钉在一起。
-gpui-base = { version = "0.8.0", features = ["gpui-fast"] }
+gpui-base = { version = "0.9.0", features = ["gpui-fast"] }
 # 终端引擎（本仓自有 crate）
 rustshell-terminal = { path = "terminal" }
 

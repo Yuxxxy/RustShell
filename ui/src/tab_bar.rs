@@ -57,7 +57,7 @@
 use gpui::{
     div, point, px, Animation, AnimationExt as _, AnyElement, AppContext as _, BoxShadow,
     ClickEvent, Context, DragMoveEvent, Hsla, InteractiveElement as _, IntoElement, IsZero as _,
-    MouseButton, ParentElement as _, Pixels, Render, ScrollWheelEvent, SharedString,
+    MouseButton, ParentElement as _, Pixels, Render, ScrollEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
 use gpui_component::{
@@ -1039,7 +1039,9 @@ impl MainView {
             .id(SharedString::from("main-tab-strip"))
             .flex_1()
             .min_w_0()
-            .on_scroll_wheel(cx.listener(|m, e: &ScrollWheelEvent, w, cx| {
+            // 2026-11-06（gpui-kit 0.9.0）：`on_scroll_wheel` 改名 `on_scroll`，
+            // 事件类型 `ScrollWheelEvent` 改名 `ScrollEvent` —— 语义与载荷都没变。
+            .on_scroll(cx.listener(|m, e: &ScrollEvent, w, cx| {
                 m.scroll_tabs_by_wheel(e, w, cx);
             }))
             .on_drag(BarPan, {
@@ -1159,7 +1161,7 @@ impl MainView {
     /// 重置会让下一帧把用户刚滚出来的位置又拽回激活标签，变成「滚不动」。
     pub(super) fn scroll_tabs_by_wheel(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2502,9 +2504,9 @@ mod tests {
     fn tab_strip_wires_the_wheel_to_horizontal_scroll() {
         let code = production_source();
         assert!(
-            code.contains("on_scroll_wheel"),
-            "标签轨道必须接上滚轮监听（`on_scroll_wheel`）—— 否则纵向滚轮推不动它，\
-             被挤出视口的标签在鼠标下没有入口。"
+            code.contains("on_scroll"),
+            "标签轨道必须接上滚轮监听（`on_scroll`，0.9.0 起由 `on_scroll_wheel` 改名）\
+             —— 否则纵向滚轮推不动它，被挤出视口的标签在鼠标下没有入口。"
         );
         assert!(
             code.contains("wheel_scroll_target"),

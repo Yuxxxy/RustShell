@@ -232,6 +232,36 @@ pub fn apply_theme_mode(cx: &mut App, mode: ThemeMode) {
     theme.focus_ring = false;
 }
 
+/// 输入框 / 编辑器的光标节奏，跟随「终端光标闪烁」那一条用户偏好。
+///
+/// 这是 gpui-kit **0.9.0 新增**的 `Theme::cursor_blink`（`CursorBlink::steady()` /
+/// `blinking(interval)` / `with_idle_timeout(..)`）：此前每个输入框的光标都由
+/// 组件库内部写死 500ms，应用改不了。
+///
+/// 为什么让它跟随终端、而不是再开一个设置项：同一个窗口里终端光标 530ms 一闪、
+/// 搜索框光标 500ms 一闪，肉眼就是「两套节奏」，像哪里没对齐；而终端那条偏好
+/// 早就在 `settings.json` 里了（`terminal_cursor_blink` / `_ms`），复用它既不用
+/// 新增 UI，也不会出现两处说法打架 —— 用户关掉终端闪烁时，所有输入框的光标
+/// 一起变成常亮。
+///
+/// 顺序要求：必须在 [`apply_theme_mode`] **之后**调用。`Theme::change` 会重建
+/// 整个主题对象，但会原样保留 `cursor_blink`（组件库的
+/// `cursor_blink_survives_theme_updates_and_mode_changes` 用例钉住了这点），
+/// 所以切主题不会把它冲掉，反过来先设后切也没问题 —— 这里按「跟着主题装配走」
+/// 放在后面，读起来更直。
+pub fn apply_cursor_blink(cx: &mut App, blinking: bool, interval_ms: u64) {
+    let policy = if blinking {
+        // 夹到 1ms：`blinking(ZERO)` 在组件库里等价于 steady，但用户写 0 的语义是
+        // 「想闪、只是没填数字」，不该被解释成「常亮」。
+        gpui_base::input::CursorBlink::blinking(std::time::Duration::from_millis(
+            interval_ms.max(1),
+        ))
+    } else {
+        gpui_base::input::CursorBlink::steady()
+    };
+    Theme::global_mut(cx).cursor_blink = policy;
+}
+
 /// 滚动条滑块三态取色（唯一入口；终端窗格与 Tab 栏共用）。
 ///
 /// 为什么必须自己定色：官方滑块读的是预设里的 `tokens.scrollbar_thumb`，浅色预设下
@@ -301,6 +331,48 @@ impl TokenColor for gpui::App {
 mod tests {
     use super::*;
     use gpui::Hsla;
+
+    /// gpui-kit 0.9.0 的 `Theme::cursor_blink`：值要真的落到全局主题上，
+    /// 而且**切主题不能把它冲回默认**（否则用户关掉闪烁后点一下主题就复活）。
+    #[gpui::test]
+    fn cursor_blink_follows_the_terminal_preference(cx: &mut gpui::TestAppContext) {
+        use std::time::Duration;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            apply_theme_mode(cx, ThemeMode::Dark);
+
+            // 终端光标常亮 ⇒ 输入框光标也常亮
+            apply_cursor_blink(cx, false, 530);
+            assert!(
+                Theme::global(cx).cursor_blink.is_steady(),
+                "终端光标设为常亮时，输入框光标必须同为常亮（否则窗口里两套光标节奏）"
+            );
+
+            // 终端光标 530ms ⇒ 输入框也是 530ms，而不是组件库写死的 500ms
+            apply_cursor_blink(cx, true, 530);
+            assert_eq!(
+                Theme::global(cx).cursor_blink.interval(),
+                Some(Duration::from_millis(530)),
+                "输入框光标没有跟随 terminal_cursor_blink_ms（还是组件库默认的 500ms？）"
+            );
+
+            // 切主题（会重建整个 Theme）之后，节奏必须还在
+            apply_theme_mode(cx, ThemeMode::Light);
+            assert_eq!(
+                Theme::global(cx).cursor_blink.interval(),
+                Some(Duration::from_millis(530)),
+                "切主题把光标闪烁设置重置了 —— Theme::change 没有保留 cursor_blink"
+            );
+
+            // 0 不能解释成「常亮」：用户的语义是「想闪、只是没填数字」
+            apply_cursor_blink(cx, true, 0);
+            assert_eq!(
+                Theme::global(cx).cursor_blink.interval(),
+                Some(Duration::from_millis(1)),
+                "interval_ms = 0 被当成了常亮，应夹到 1ms"
+            );
+        });
+    }
 
     /// 回归：深色主题下`Theme.tokens.*`必须与`Theme.colors.*`同源，不得残留`Theme::init`启动时写入的 Light 预设。
     #[gpui::test]

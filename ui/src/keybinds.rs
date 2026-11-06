@@ -142,24 +142,40 @@ pub fn display_spec(spec: &str) -> String {
 }
 
 /// action id + 平台键位串 到 KeyBinding（与 shell 启动注册逻辑一致）
-pub fn make_binding(action_id: &str, keys: &str) -> Option<KeyBinding> {
+///
+/// 2026-11-06（gpui-kit 0.9.0 / gpui-fast 0.1.13）：`KeyBinding::new` 收紧成
+/// `keystrokes: &'static str` —— 它是给**编译期常量**用的静态入口。而我们的键位
+/// 有两个动态来源：`keymap.json` 里的用户覆盖、设置面板里的运行时重绑定，
+/// 都是 `String`，拿不到 `'static`，于是 `new` 直接报 `borrowed data escapes`。
+///
+/// 改走 `KeyBinding::load`：它收 `&str` 并在内部把键位串拷成 `Keystroke`，
+/// 正是「动态键位」那条路。代价是多一个 `cx`（load 要用 `cx.keyboard_mapper()`，
+/// 并用 `cx.platform_info().os` 解析 `secondary-` 这类前缀）—— 三个调用点本来
+/// 都在 `App` 上下文里，无需额外改造。
+///
+/// 解析失败从「panic」变成返回 `None`：调用方一律是 `if let Some(..)` /
+/// `filter_map`，本来就按「这条绑不出来就跳过」处理，不该让一条写错的
+/// keymap.json 在启动时把整个应用带崩。
+pub fn make_binding(action_id: &str, keys: &str, cx: &App) -> Option<KeyBinding> {
     use crate::main_view::{SearchInTerminal, SwitchTab, TermShiftTab, TermTab};
-    Some(match action_id {
-        "NewTab" => KeyBinding::new(keys, NewTab, None),
-        "CloseTab" => KeyBinding::new(keys, CloseTab, None),
-        "TabNext" => KeyBinding::new(keys, TabNext, None),
-        "TabPrev" => KeyBinding::new(keys, TabPrev, None),
-        "OpenSettings" => KeyBinding::new(keys, OpenSettings, None),
-        "CommandPalette" => KeyBinding::new(keys, CommandPalette, None),
-        "SearchInTerminal" => KeyBinding::new(keys, SearchInTerminal, None),
-        "SplitRight" => KeyBinding::new(keys, SplitRight, None),
-        "SplitDown" => KeyBinding::new(keys, SplitDown, None),
+    let action: Box<dyn gpui::Action> = match action_id {
+        "NewTab" => Box::new(NewTab),
+        "CloseTab" => Box::new(CloseTab),
+        "TabNext" => Box::new(TabNext),
+        "TabPrev" => Box::new(TabPrev),
+        "OpenSettings" => Box::new(OpenSettings),
+        "CommandPalette" => Box::new(CommandPalette),
+        "SearchInTerminal" => Box::new(SearchInTerminal),
+        "SplitRight" => Box::new(SplitRight),
+        "SplitDown" => Box::new(SplitDown),
         // 不可重绑定的固定绑定（终端补全 / 数字切 Tab），仅用于启动注册
-        "TermTab" => KeyBinding::new(keys, TermTab, None),
-        "TermShiftTab" => KeyBinding::new(keys, TermShiftTab, None),
-        "SwitchTab" => KeyBinding::new(keys, SwitchTab { index: 0 }, None),
+        "TermTab" => Box::new(TermTab),
+        "TermShiftTab" => Box::new(TermShiftTab),
+        "SwitchTab" => Box::new(SwitchTab { index: 0 }),
         _ => return None,
-    })
+    };
+    // context / action_input 都没有：与原先 `KeyBinding::new(keys, action, None)` 同义。
+    KeyBinding::load(keys, action, None, false, None, cx).ok()
 }
 
 fn action_type_id(action_id: &str) -> Option<TypeId> {
@@ -179,7 +195,7 @@ pub fn apply_override_live(cx: &mut App, action_id: &str, new_keys: &str) {
     let Some(tid) = action_type_id(action_id) else {
         return;
     };
-    let Some(new_binding) = make_binding(action_id, new_keys) else {
+    let Some(new_binding) = make_binding(action_id, new_keys, cx) else {
         return;
     };
     let keymap = cx.key_bindings();

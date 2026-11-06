@@ -4898,7 +4898,7 @@ pub(in crate::main_view) mod tests {
         };
         let rel0 = rel(vcx);
         let center = b.center();
-        vcx.simulate_event(gpui::ScrollWheelEvent {
+        vcx.simulate_event(gpui::ScrollEvent {
             position: center,
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-60.))),
             ..Default::default()

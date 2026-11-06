@@ -1163,7 +1163,7 @@ mod tests {
         let boxed = vcx.debug_bounds("ai-wl-box").expect("名单盒子没渲染出来");
         let off0 = scroll_y(vcx);
         assert_eq!(off0, 0., "刚打开时名单不该是滚过的状态（偏移为 {off0}）");
-        vcx.simulate_event(gpui::ScrollWheelEvent {
+        vcx.simulate_event(gpui::ScrollEvent {
             position: boxed.center(),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-60.))),
             ..Default::default()
