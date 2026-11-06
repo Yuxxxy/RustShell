@@ -3067,6 +3067,13 @@ impl Render for MainView {
                 let (pl, pr) = pad(lead);
                 group = group.child(
                     gpui_component::resizable::resizable_panel()
+                        // 主区（终端列）必须**显式**声明「吃掉剩余空间 + 可以被压到
+                        // 任意窄」：定宽面板（侧栏 / AI）都写了 `.flex_none()`，这块
+                        // 什么都不写时宽度会退化成「按内容撑」，一旦内容里有
+                        // `w_full()` 的块（空窗格就是）就会把面板撑到比窗口还宽，
+                        // 表现为「内容偏到右侧、右端被窗口裁掉」（2026-11-06 实测）。
+                        .flex_1()
+                        .min_w_0()
                         .pl(px(pl))
                         .pr(px(pr))
                         .py(px(CARD_GAP))
