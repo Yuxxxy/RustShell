@@ -26,3 +26,9 @@ rustls.workspace = true
 rustls-native-certs.workspace = true
 # russh 默认加密后端 aws-lc-sys 在 Windows 需要 NASM；启用预编译对象绕过
 aws-lc-sys = { version = "0.45", features = ["prebuilt-nasm"] }
+
+# 更新下载要跟着 Windows「Internet 选项」里的系统代理走（直连 github.com 在本机
+# 15s 超时、api.github.com 却通，2026-11-06 真机故障）。只在 Windows 上需要。
+# 版本与依赖树里已有的那条对齐，不引入第二份。
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

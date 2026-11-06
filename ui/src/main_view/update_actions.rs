@@ -155,8 +155,15 @@ impl MainView {
         .detach();
     }
 
+    /// 失败的提示文案。
+    ///
+    /// 用 `{e:#}`（anyhow 的「链式」格式）而不是 `{e}`：`{}` 只打**最外层**
+    /// context，于是 2026-11-06 那次网络故障在弹窗里只剩一句
+    /// 「下载 RustShell-1.1.5-windows-x64.exe 失败」——用户完全看不出是超时、
+    /// 是 DNS、还是写盘失败。`{:#}` 会串成「下载 … 失败: connection timed out」，
+    /// 一眼能分辨「网络/代理」还是「磁盘」。
     fn update_fail_text(e: &anyhow::Error) -> String {
-        rustshell_core::i18n::ts(format!("更新失败：{e}"), format!("Update failed: {e}"))
+        rustshell_core::i18n::ts(format!("更新失败：{e:#}"), format!("Update failed: {e:#}"))
     }
 
     /// 标题栏徽标：(文案, 是否是坏消息)。`None` = 不显示。

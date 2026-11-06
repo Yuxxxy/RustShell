@@ -69,11 +69,132 @@ pub struct LatestRelease {
     pub assets: Vec<Asset>,
 }
 
+/// 更新用的 HTTP agent（查与下载共用）。
+///
+/// # 为什么必须跟着代理走（2026-11-06 真机故障）
+///
+/// 用户机器上 `https://api.github.com/...` **直连 200 / 0.6s**，可
+/// `https://github.com/.../releases/download/...` **直连 15s 超时** —— 两个都是
+/// GitHub，但在国内网络里是两条不同的路。于是症状极具欺骗性：**能查到新版本、
+/// 一点下载就「下载失败」**（弹窗里只有「下载 xxx 失败」，因为当时没展开错误链）。
+///
+/// 而浏览器能下，是因为浏览器走系统代理。ureq 默认**完全不读**系统代理，所以这里
+/// 补两条（按优先级）：
+/// ① 环境变量（`ALL_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY`，ureq 自带
+///    [`ureq::AgentBuilder::try_proxy_from_env`]）；
+/// ② **Windows 系统代理**（「Internet 选项」里那一栏）。Clash / v2rayN 之类开
+///    「系统代理」时**只改注册表、不设环境变量**，光靠 ① 读不到 —— 这正是本次
+///    故障的场景。mac / linux 没有等价的通用读取口子，只保留 ①。
+///
+/// 只在环境变量**一个都没设**时才用系统代理：显式设了环境变量的（CI、容器、
+/// 手工调试）应当以环境变量为准。
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
+    let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
-        .build()
+        .try_proxy_from_env(true);
+
+    if !env_proxy_is_set() {
+        if let Some(url) = system_proxy() {
+            match ureq::Proxy::new(&url) {
+                Ok(proxy) => {
+                    log::info!("更新请求走系统代理 {url}");
+                    builder = builder.proxy(proxy);
+                }
+                // 代理配置坏了不该让更新直接哑火：退回直连，失败时错误链里
+                // 会带上真实的网络原因。
+                Err(e) => log::warn!("系统代理 {url} 无法解析，改走直连：{e}"),
+            }
+        }
+    }
+
+    builder.build()
+}
+
+/// 环境里有没有任何一条代理变量（大小写都算）。
+///
+/// 大小写两种都要查：Windows 上 `HTTPS_PROXY` 与 `https_proxy` 常同时存在，
+/// 而 `ureq` 读的是小写那几个。
+fn env_proxy_is_set() -> bool {
+    const KEYS: [&str; 6] = [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ];
+    KEYS.iter().any(|k| std::env::var_os(k).is_some())
+}
+
+/// 读 Windows「Internet 选项 › 局域网设置」里的代理，返回 `http://host:port`。
+///
+/// 非 Windows 恒 `None`（那边没有统一的系统代理读取接口）。
+#[cfg(windows)]
+fn system_proxy() -> Option<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+
+    let key = winreg::RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            KEY_READ,
+        )
+        .ok()?;
+    // `ProxyEnable` 是 DWORD，0 = 用户关了系统代理。
+    if key.get_value::<u32, _>("ProxyEnable").ok()? == 0 {
+        return None;
+    }
+    let raw: String = key.get_value("ProxyServer").ok()?;
+    parse_proxy_server(&raw)
+}
+
+#[cfg(not(windows))]
+fn system_proxy() -> Option<String> {
+    None
+}
+
+/// 把注册表里的 `ProxyServer` 归一成 ureq 能吃的 `scheme://host:port`。
+///
+/// 这个值的两种合法写法都要认（实测都出现过）：
+///
+/// - `127.0.0.1:7897` —— 一种协议一个地址，所有请求共用；
+/// - `http=127.0.0.1:7897;https=127.0.0.1:7897;socks=...` —— 分协议列表。
+///   分协议时优先级 **https > http > socks**：更新全是 https 请求。
+///
+/// 返回 `None` 表示「没有可用的 http(s) 代理」（空值、只有 `ftp=`、只有 `socks=` 等）。
+fn parse_proxy_server(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let pick = |scheme: &str| -> Option<&str> {
+        raw.split(';')
+            .filter_map(|part| part.split_once('='))
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case(scheme))
+            .map(|(_, v)| v.trim())
+    };
+
+    let (host, scheme) = if raw.contains('=') {
+        match (pick("https"), pick("http"), pick("socks")) {
+            (Some(h), _, _) => (h, "http"),
+            (_, Some(h), _) => (h, "http"),
+            (_, _, Some(h)) => (h, "socks5"),
+            _ => return None,
+        }
+    } else {
+        (raw, "http")
+    };
+
+    let host = host
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("socks5://")
+        .trim_end_matches('/');
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
 }
 
 fn get_json(agent: &ureq::Agent, url: &str) -> anyhow::Result<serde_json::Value> {
@@ -590,5 +711,106 @@ mod tests {
             !WAITER_SCRIPT.contains("-Wait"),
             "waiter 不能用 -Wait：它会连安装器 /R 拉起的新主程序一起等，每次更新都留下一条常驻的隐藏 PowerShell"
         );
+    }
+
+    /// 2026-11-06 真机故障：**能查到新版本、一点下载就失败**。
+    ///
+    /// 根因是 ureq 默认不读系统代理：`api.github.com` 直连通、`github.com` 直连超时，
+    /// 而浏览器走系统代理所以能下。这里钉住那条修法：agent 必须
+    /// ① 读环境变量代理；② 在 Windows 上补读注册表里的系统代理。
+    #[test]
+    fn the_update_agent_follows_the_system_proxy() {
+        let code = include_str!("update.rs").replace("\r\n", "\n");
+        let at = code.find("fn agent()").expect("找不到 agent()");
+        let body = &code[at..];
+        let end = body.find("\n}\n").expect("找不到 agent() 结尾");
+        let body = &body[..end];
+
+        assert!(
+            body.contains(".try_proxy_from_env(true)"),
+            "agent 必须读环境变量代理（ALL_PROXY / HTTPS_PROXY），否则 CI 与容器里下不动"
+        );
+        assert!(
+            body.contains("system_proxy()"),
+            "agent 必须补读 Windows 系统代理：Clash 这类客户端开「系统代理」只改注册表，\
+             不设环境变量，光靠 try_proxy_from_env 读不到（2026-11-06 就是栽在这）"
+        );
+        assert!(
+            body.contains("env_proxy_is_set()"),
+            "显式设了环境变量时应以环境变量为准，不能被系统代理覆盖"
+        );
+        assert!(
+            body.contains("log::info!") || body.contains("log::warn!"),
+            "用了哪条代理必须留日志，否则下次「下载失败」又只能靠猜"
+        );
+    }
+
+    /// 真机联网用例（`--ignored` 才跑）：查最新版 → 挑本平台产物 → 真下载。
+    ///
+    /// 这条刻意**不进默认测试集**（CI 是离线的，且发版产物随时会变），
+    /// 它的用途是「改完网络相关代码后，在本机证明一次端到端能通」：
+    ///
+    /// ```text
+    /// env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
+    ///   cargo test -p rustshell-core --lib real_download -- --ignored --nocapture
+    /// ```
+    ///
+    /// 上面显式 unset 环境变量是为了强制走**系统代理**那条路 —— 2026-11-06 的
+    /// 「能查不能下」正是栽在这里：查走 api.github.com 直连通，下载走
+    /// github.com/…/download 直连超时。
+    #[test]
+    #[ignore = "联网：需要能访问 GitHub（走系统代理）"]
+    fn real_download_works_end_to_end() {
+        let latest = check_latest().expect("查不到最新版（网络或代理不通）");
+        println!("最新版 = {}", latest.version);
+        let (triplet, ext) = target_triplet().expect("本平台没有产物");
+        let asset = pick_asset(&latest.assets, triplet, ext)
+            .unwrap_or_else(|| panic!("{} 没有 {} 的产物", latest.version, triplet));
+        println!("产物 = {} ({} 字节)", asset.name, asset.size);
+
+        let dest = std::env::temp_dir().join(&asset.name);
+        download(asset, &dest).expect("下载失败");
+        let got = std::fs::metadata(&dest).expect("下载后读不到文件").len();
+        assert!(
+            got > 1024 * 1024,
+            "下到的文件太小（{got} 字节），不像一个安装包"
+        );
+        println!("落盘 = {} 字节 → {}", got, dest.display());
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    /// 注册表里 `ProxyServer` 的两种写法都要认。
+    #[test]
+    fn parses_both_shapes_of_proxy_server() {
+        // ① 单一地址：所有协议共用
+        assert_eq!(
+            parse_proxy_server("127.0.0.1:7897").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        // ② 分协议列表：更新全是 https，优先 https
+        assert_eq!(
+            parse_proxy_server("http=10.0.0.1:8080;https=10.0.0.1:8443").as_deref(),
+            Some("http://10.0.0.1:8443")
+        );
+        // 只给了 http 的也能用
+        assert_eq!(
+            parse_proxy_server("http=10.0.0.1:8080").as_deref(),
+            Some("http://10.0.0.1:8080")
+        );
+        // 只有 socks：转成 socks5
+        assert_eq!(
+            parse_proxy_server("socks=127.0.0.1:1080").as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+        // 用户手抄进去带了 scheme / 结尾斜杠：别二次拼成 http://http://
+        assert_eq!(
+            parse_proxy_server(" http://192.168.1.2:8080/ ").as_deref(),
+            Some("http://192.168.1.2:8080")
+        );
+        // 没有可用代理的各种写法
+        assert_eq!(parse_proxy_server(""), None);
+        assert_eq!(parse_proxy_server("   "), None);
+        assert_eq!(parse_proxy_server("ftp=1.2.3.4:21"), None);
+        assert_eq!(parse_proxy_server("https=  "), None);
     }
 }
