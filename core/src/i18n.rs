@@ -129,6 +129,13 @@ fn translate(zh: &'static str) -> &'static str {
         "复制连接" => "Duplicate Connection",
         "编辑配置文件" => "Edit Config File",
         "打开设置" => "Open Settings",
+        // 命令面板条目（2026-11-12 缺陷修复）：`command::builtin_commands()` 的标签
+        // 本身就是词条 key，面板经 `display_label()` 取词。此前面板直接画 `label`
+        // 且这三条没进表，英文界面下半截仍是中文（README 英文截图对不上）。
+        // 「打开设置」上面已有，故这里只补缺的三条。
+        "新增连接" => "New Connection",
+        "新增本地 Shell" => "New Local Shell",
+        "AI助手" => "AI Assistant",
 
         // ActivityBar / 面板
         "概览" => "Dashboard",

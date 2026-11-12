@@ -243,6 +243,37 @@ mod tests {
         }
     }
 
+    /// 命令面板的标签必须**全部**有英文映射（2026-11-12）。
+    ///
+    /// 缺陷现场：英文界面下命令面板上半截是英文、下半截「命令」组仍是
+    /// 「新增连接 / 新增本地 Shell / AI助手 / 打开设置」。两个原因叠加 ——
+    /// ① 面板直接画 `label`（中文原文）而不是 `display_label()`；
+    /// ② 后三条在词条表里根本没有 key（「打开设置」早就有）。
+    ///
+    /// 所以判据钉在**面板真正渲染的那条路径** `display_label()` 上，而不是 `label`：
+    /// 只补词条表、不改渲染，或者只改渲染、不补词条，这条用例都会红。
+    #[test]
+    fn every_builtin_label_is_translated_in_en() {
+        let _g = crate::i18n::test_support::lang_guard();
+        let zh: Vec<String> = builtin_commands()
+            .iter()
+            .map(|c| c.display_label())
+            .collect();
+        crate::i18n::set_lang(crate::i18n::Lang::En);
+        let en: Vec<String> = builtin_commands()
+            .iter()
+            .map(|c| c.display_label())
+            .collect();
+        crate::i18n::set_lang(crate::i18n::Lang::Zh);
+        for (z, e) in zh.iter().zip(en.iter()) {
+            assert_ne!(z, e, "命令「{z}」在英文模式下没有翻译 —— 词条表缺这个 key");
+            assert!(
+                !e.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "命令「{z}」的英文名里仍有汉字：{e}"
+            );
+        }
+    }
+
     /// 2026-10-29 用户要求「快捷命令面板，恢复上次会话功能移除」。
     ///
     /// 单独钉一条：恢复链本身还在（`RestoreLastSession` 动作与 `layout_restore_now`

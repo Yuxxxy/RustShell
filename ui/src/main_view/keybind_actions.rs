@@ -315,7 +315,10 @@ impl MainView {
         let items_of = |list: &[rustshell_core::command::CommandEntry]| -> Vec<CommandItem> {
             list.iter()
                 .map(|c| {
-                    let label = c.label.clone();
+                    // 2026-11-12：**必须走 `display_label()`**，不能直接画 `label`。
+                    // `label` 是中文原文（内置命令的 i18n key 恰好等于它），英文模式下
+                    // 直接画就会在英文界面里冒出「新增连接」「打开设置」。
+                    let label = c.display_label();
                     let mut it = CommandItem::new().label(label.clone());
                     if let Some(sc) = c.default_shortcut {
                         it = it.keywords([sc]);
@@ -489,6 +492,27 @@ impl MainView {
 #[cfg(test)]
 mod tests {
     use super::MainView;
+    use crate::test_support::prod;
+
+    /// 命令面板的行标签必须走 **`display_label()`**（i18n 出口），不能直接画 `label`。
+    ///
+    /// 2026-11-12 缺陷：英文界面里命令面板上半截是英文、下半截仍是
+    /// 「新增连接 / 新增本地 Shell / AI助手 / 打开设置」—— 这里画的是 `c.label.clone()`，
+    /// 而 `label` 是中文原文。core 那边另有一条用例钉「每条内置命令都有英文词条」，
+    /// 两条一起才闭合：只补词条不改这里 = 英文界面照旧中文；只改这里不补词条
+    /// = 英文界面照旧中文（词条表回退原文）。
+    #[test]
+    fn palette_rows_render_the_translated_label() {
+        let code = prod(include_str!("keybind_actions.rs"));
+        assert!(
+            code.contains("c.display_label()"),
+            "命令面板的行标签必须经 `display_label()` 走 i18n，否则英文界面会冒出中文"
+        );
+        assert!(
+            !code.contains(".label(c.label.clone())"),
+            "面板又直接画了 `c.label`（中文原文）—— 英文界面会退化成中文"
+        );
+    }
 
     // ---------------------------------------------------------------------
     // F-24 / 命令面板：AI 直通判定（`parse_ai_query`）
