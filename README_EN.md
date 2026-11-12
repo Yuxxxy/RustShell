@@ -2,9 +2,9 @@
 
 # RustShell
 
-**A cross-platform desktop terminal / SSH / SFTP client written in Rust + GPUI**
+**A cross-platform terminal / SSH / SFTP desktop client built with Rust + GPUI**
 
-English · [简体中文](./README.md) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Contributing](#contributing)
+English · [简体中文](./README.md) · [Architecture](#architecture)
 
 [![CI](./.github/badges/ci.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml)
 [![Release Build](./.github/badges/release.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml)
@@ -18,14 +18,14 @@ English · [简体中文](./README.md) · [Quick Start](#quick-start) · [Archit
 
 ## Screenshots
 
-> Real screenshots captured on Windows 11. Connections, hostname and IPs shown are demo data.
+> Real screenshots captured on Windows 11. Connections, hostnames and IPs in the shots are demo data.
 > Badges are self-hosted SVGs committed in this repo — no external image host involved.
 
-**Dark / Light themes** — Dark / Light / Follow-system, switched by a token-driven theme layer
+**Dark / Light themes** — Dark / Light / Follow-system, a token-driven global re-skin
 
 ![Dark and light theme comparison](./docs/images/theme-compare-en.png)
 
-**System monitor overview** — 1 s sampling of CPU / memory / swap / network / disk with a hand-drawn AreaChart
+**System monitor overview** — CPU / memory / swap / network / disk sampled at 1 s, hand-drawn AreaChart trends
 
 ![System monitor overview](./docs/images/en-overview-dark.png)
 
@@ -33,163 +33,75 @@ English · [简体中文](./README.md) · [Quick Start](#quick-start) · [Archit
 
 <p align="center">
   <img src="./docs/images/en-palette-dark.png" width="49%" alt="Command palette" />
-  <img src="./docs/images/en-settings-light.png" width="49%" alt="Settings · Appearance" />
+  <img src="./docs/images/en-settings-light.png" width="49%" alt="Settings · Connections" />
 </p>
 
-<p align="center"><sub>Left: command palette (<code>Ctrl+Shift+P</code>) unifying quick-connect and commands · Right: Settings → Appearance (theme mode / background image / panel opacity)</sub></p>
+<p align="center"><sub>Left: command palette (<code>Ctrl+Shift+P</code>) — quick connect and commands in one search · Right: Settings → Connections (import / export, timeouts, reconnection)</sub></p>
 
 ---
 
 ## What is RustShell
 
-RustShell is an open-source desktop terminal and server management tool built with Rust and
-[GPUI](https://gpui.rs). It bundles a local terminal, SSH sessions, SFTP file transfer, quick-command
-snippets, live system monitoring and an opt-in AI assistant into a single native-feeling window —
-with its own terminal engine (`rustshell-terminal`) rather than an embedded web view.
+RustShell is a **cross-platform desktop terminal and server management tool** written in Rust + GPUI:
 
-No Electron, no WebView: terminal rendering is handled by the in-repo **`rustshell-terminal`** crate
-(`alacritty_terminal` for VTE parsing + GPUI for GPU painting), so startup and scroll costs stay native
-(measured warm release startup: 144–152 ms).
+local terminal, SSH sessions, SFTP file transfer, quick commands, system monitoring and an optional AI
 
-> **AI assistant:** not an external dependency but a self-built, safety-gated **domain-specific
-> agent harness**. `runner` drives the control loop, `ai.rs` handles LLM communication, and
-> `agent/` owns tool definitions plus the security/budget arbitration; the frontend (`ui/`)
-> only consumes progress over the `AgentUiEvent` channel.
+assistant — all inside one native window.
+
+It uses no Electron / WebView. Terminal rendering is handled by the in-repo engine **`rustshell-terminal`**
+
+(`alacritty_terminal` for VTE parsing + GPUI for GPU painting), so startup and scrolling stay at native
+
+level (measured warm release start: 144–152 ms).
 
 ### Features
 
 | Area | Capability |
 | --- | --- |
-| **Local terminal** | ConPTY / PTY sessions, multi-tab, split panes (right / bottom, optionally shared or fresh session), tab context menu with disconnect and in-place reconnect, async startup that never freezes the UI |
-| **Terminal engine** | Full ANSI escape sequences, 256-color / 24-bit truecolor, bold-italic-underline variants, inverse video, three cursor shapes with blink, bracketed paste, OSC 52 clipboard, GBK / Big5 / Shift_JIS transcoding |
-| **Selection & search** | Drag select / double-click word / triple-click line (copies on select), scrollback history, `Ctrl+F` regex search with hit navigation (into scrollback, wrapping around) |
-| **SSH** | `russh` sessions (password / private key), `known_hosts` validation in OpenSSH format with first-use fingerprint confirmation, end-to-end timeouts (handshake 20s, auth and PTY 15s each) so it never hangs |
-| **SFTP** | Remote directory browsing, upload / download, mkdir, rename / delete, transfer queue with progress, sharing one connection with the metrics service |
-| **Connection manager** | Tree-structured groups, double-click to connect, context menus, command palette for quick connect |
+| **Local terminal** | ConPTY / PTY sessions; multi-tab and split panes (right / bottom, sharing the current session or starting a new one); tab context menu with disconnect and in-place reconnect; async startup that never freezes the UI |
+| **Terminal engine** | Full ANSI escape sequences; 256-color / 24-bit truecolor; bold, italic and underline variants; inverse video; three cursor shapes with blinking; bracketed paste; OSC 52 clipboard; GBK / Big5 / Shift_JIS transcoding |
+| **Selection and search** | Drag-select / double-click a word / triple-click a line (copy on select); scroll wheel through history; `Ctrl+F` regex search with hit-to-hit jumping (scrollback included, wrapping around) |
+| **SSH** | `russh` sessions (password / private key); `known_hosts` checks in OpenSSH format with first-use fingerprint confirmation; end-to-end timeouts (20 s handshake, 15 s each for auth and PTY) so it never hangs |
+| **SFTP** | Remote directory browsing; upload / download; create directory; rename / delete; transfer queue with progress; shares one connection with the metrics service |
+| **Connection manager** | Tree-style groups, double-click to connect, context menus, quick connect from the command palette |
 | **Quick commands** | Group management, drag-and-drop ordering, move up / down, multi-line scripts sent line by line, risk interception with confirmation cards, pinned slots |
-| **System monitoring** | Overview-panel CPU / MEM / SWP / network / disk sampled at 1s into a 300-point ring buffer; trend charts (self-drawn AreaChart), >85% turns red, sampling drops to 5s when the window loses focus |
-| **AI assistant** | OpenAI-compatible endpoints (incl. local gateways / Ollama), SSE streaming, L1 Q&A + L2 command generation, three-tier risk classification with interception, auto-approve allowlist, multi-provider fallback |
-| **Appearance** | Dark / Light / Follow-system themes, system-following window decorations, bilingual UI |
-| **Keybindings** | Record-and-rebind inside the settings panel (applied instantly), conflict detection, JSON import / export |
-| **Observability** | Runtime logs (5 MB × 3 rotation + panic to disk), AI and quick-command audit logs (JSON Lines), one-click diagnostic bundle export |
+| **System monitoring** | Overview panel sampling CPU / MEM / SWP / network / disk at 1 s into a 300-point ring buffer; hover or expand for trends (hand-drawn AreaChart); turns red above 85%; sampling drops to 5 s when the window loses focus |
+| **AI assistant** | OpenAI-compatible endpoints (including local gateways / Ollama), SSE streaming rendering, L1 Q&A + L2 command generation, three-level risk grading with interception, auto-approve allowlist, multi-provider fallback |
+| **Appearance** | Dark / Light / Follow-system themes, system-following window decorations, Chinese and English UI |
+| **Keybindings** | Record-to-rebind inside the settings panel (effective immediately), conflict detection, JSON import / export |
+| **Observability** | Runtime logs (5 MB × 3 rotation + panic dump), audit logs for AI and quick commands (JSON Lines), one-click diagnostic bundle export |
 
 ### Security design (AI and command execution)
 
-The AI assistant is **optional** — with no Provider configured, RustShell is fully offline. Once enabled:
+AI is an **optional** capability — with no provider configured it stays completely offline. Once enabled:
 
-- **Controlled upload scope:** only your input + metadata of the currently bound server + the last N lines of the active terminal (200 by default, 10–2000 adjustable). Passwords, private keys and other sessions are **never** uploaded.
-- **Redaction before sending:** password / token assignment patterns, `sk-` / `ghp_` / `AKIA` key literals, IP-address regexes; truncated at ≤8 KiB
-- **Keys encrypted at rest:** Windows DPAPI, macOS Keychain, Linux Secret Service (`keyring`); the JSON only stores a reference
-- **Three-tier risk model:** queries run directly / state changes require confirmation / destructive commands (`mkfs`, `dd`, `rm -rf /`, fork bombs, …) are blocked outright and cannot be allow-listed
-- **Full auditing:** `agent-audit.log` records time, type, risk level, command and whether it executed — **blocked attempts are logged too**
-
----
-
-## Quick Start
-
-### Option 1: Download a prebuilt package
-
-Grab a build from [Releases](https://github.com/Yuxxxy/RustShell/releases) or the Artifacts of
-[Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml).
-Each platform ships exactly **one installer**, named `RustShell-<version>-<platform>-<arch>.<ext>`:
-
-- Windows 10/11 (x64): `RustShell-<version>-windows-x64.exe` — NSIS installer, installs to the current user without admin rights
-- macOS (Intel / Apple Silicon): `RustShell-<version>-macos-universal.dmg` — open it and drag RustShell into Applications
-- Linux (x64 / arm64): `RustShell-<version>-linux-<x64|arm64>.deb` — `sudo apt install ./RustShell-<version>-linux-x64.deb`
-
-> Pushing a `v*` tag publishes these files to the Releases page automatically; a manual
-> workflow run only produces Actions artifacts (GitHub wraps them in a zip on download —
-> the file inside is the one listed above).
->
-> First launch: the Windows installer is not code-signed, so SmartScreen reports an unknown
-> publisher; the macOS app is ad-hoc signed only (not notarized) — right-click → Open, or run
-> `xattr -dr com.apple.quarantine /Applications/RustShell.app`.
->
-> Windows upgrades are **in-place**: the installer overwrites the existing files and never runs
-> the old uninstaller, so you do not need to uninstall the previous version first. The customized
-> NSIS template lives in `app/assets/installer.nsi`.
-
-### Option 2: Build from source
-
-Prerequisites:
-
-- **Rust** stable ≥ 1.85 (`terminal/` uses edition 2024)
-- **Windows:** Visual Studio 2022 Build Tools (MSVC linker and `rc.exe`)
-- **macOS:** Xcode Command Line Tools (`xcode-select --install`)
-- **Linux:** a desktop environment plus these dev packages (Ubuntu / Debian; `./scripts/package-linux.sh` checks them up front):
-
-  ```bash
-  sudo apt-get install -y build-essential pkg-config \
-    libdbus-1-dev libx11-dev libxcb1-dev libfontconfig1-dev libfreetype-dev
-  ```
-
-  At runtime you also need `libxkbcommon.so.0`, `libwayland-client.so.0`, `libX11.so.6`, fontconfig /
-  freetype, `libdbus-1`, and a Vulkan or OpenGL driver (desktop distros ship these anyway).
-
-```bash
-git clone https://github.com/Yuxxxy/RustShell.git
-cd RustShell
-
-# Development build
-cargo build -p rustshell
-cargo run -p rustshell
-
-# Release build (thin LTO + strip, ~28 MB)
-cargo build --release -p rustshell
-```
-
-Packaging (scripts live in [`scripts/`](./scripts); run them from the repo root):
-
-```bash
-# Windows: NSIS installer -> dist/RustShell-<version>-windows-x64.exe
-./scripts/package-windows.sh
-
-# macOS: universal binary + .app + dmg -> dist/RustShell-<version>-macos-universal.dmg
-./scripts/package-macos.sh
-
-# Linux: .deb -> dist/RustShell-<version>-linux-<x64|arm64>.deb
-./scripts/package-linux.sh
-```
-
-> All three scripts do `cd "$(dirname "$0")/.."`, so they resolve the repo root and can be invoked from
-> any working directory. Without arguments they **build first, then package**; pass a binary path to
-> package an existing build (that is how CI uses them). Windows keeps its intermediate output in
-> **`dist/packager/`** (`out-dir = "../dist/packager"` resolves relative to `app/`, `cargo-packager`'s
-> working directory) and writes the renamed installer to `dist/`.
->
-> Before packing, each script asserts that the artifact architecture matches the file name
-> (`lipo -archs` for the macOS dual-arch binary, `file` for the Linux ELF), so a mislabelled artifact
-> cannot slip out silently.
-
-Pushing a tag triggers CI builds for all three platforms (four matrix entries):
-
-```bash
-git tag v1.0.0 && git push origin v1.0.0
-```
+- **Upload scope you control:** only your input + metadata of the currently bound server + the last N lines of the active terminal (200 by default, adjustable from 10 to 2000). Passwords, private keys and other sessions are **never** uploaded
+- **Redaction before sending:** password / token assignment patterns, `sk-` / `ghp-` / `AKIA` key literals, and IP regexes are filtered out; truncated at ≤8 KiB
+- **Encrypted keys at rest:** Windows DPAPI, macOS Keychain, Linux Secret Service (`keyring`); the JSON only stores a reference
+- **Three-level risk model:** queries run directly / state changes need confirmation / destructive ones (`mkfs`, `dd`, `rm -rf /`, fork bombs and the like) are blocked outright and cannot be allow-listed
+- **Full auditing:** `agent-audit.log` records time, type, risk level, command and whether it ran — **interceptions are logged too**
 
 ---
 
 ## Architecture
 
-Dependencies flow strictly one way: `app → shell → ui → core → platform`. The core layer has zero UI
-dependencies and is unit-testable on its own.
+Dependencies flow strictly one way: `app → shell → ui → core → platform`. The core layer has zero UI dependencies and is unit-testable on its own.
 
 ```
-┌─────────────────────────────────────────────┐
-│ app      binary entry: exe icon / version   │
-├─────────────────────────────────────────────┤
+┌──────────────────────────────────────────────┐
+│ app      binary entry: exe icon / version    │
+├──────────────────────────────────────────────┤
 │ shell    window assembly: titlebar, lifecycle│
 │          keybinding registration             │
-├─────────────────────────────────────────────┤
+├──────────────────────────────────────────────┤
 │ ui       screens and widgets, theme mapping, │
 │          context menus                       │
-├─────────────────────────────────────────────┤
+├──────────────────────────────────────────────┤
 │ core     session / SSH / SFTP / AI / metrics │
 │          / i18n                              │
-├─────────────────────────────────────────────┤
-│ platform PTY, secret storage, logging, paths,│
-│          system metrics                      │
-└─────────────────────────────────────────────┘
+├──────────────────────────────────────────────┤
+│ platform PTY, secrets, logging, paths, sys   │
+└──────────────────────────────────────────────┘
         terminal — an independently evolving
         in-house terminal engine
 ```
@@ -203,10 +115,6 @@ dependencies and is unit-testable on its own.
 | [`platform/`](./platform) | System abstraction: PTY, Keychain/DPAPI, logging, paths, sampling |
 | [`terminal/`](./terminal) | `rustshell-terminal`: VTE parsing + grid + scrollback + GPU rendering |
 
-The engine is plugged in through a thin adapter in the UI layer (`ui/src/terminal_view.rs`); SSH channels
-are wrapped as PTY-like byte streams and fed to the engine, so local and remote sessions share one
-rendering pipeline.
-
 ---
 
 ## Keyboard shortcuts
@@ -216,28 +124,29 @@ rendering pipeline.
 | Command palette | `Ctrl+Shift+P` (`Ctrl+K` passes through to the shell when the terminal is focused) | `⌘K` (`⌘⇧P` when the terminal is focused) |
 | New / close tab | `Ctrl+T` / `Ctrl+W` | `⌘T` / `⌘W` |
 | Switch to tab 1–9 | `Ctrl+1`…`Ctrl+9` | `⌘1`…`⌘9` |
-| Switch panel | via the `Ctrl+Shift+P` command palette | same | `⌘⇧1`…`⌘⇧5` |
+| Switch panel | pick it in the `Ctrl+Shift+P` palette | pick it in the `⌘⇧P` palette |
 | Search in terminal | `Ctrl+F` | `⌘F` |
 | Copy / paste in terminal | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `⌘C` / `⌘V` |
-| Split (right / bottom) | `Alt+R` / `Alt+D` | `⌥R` / `⌥D` | `⌘D` / `⌘⇧D` |
+| Split (right / bottom) | `Alt+R` / `Alt+D` | `⌥R` / `⌥D` |
 | Settings | `Ctrl+,` | `⌘,` |
-| — (no dedicated shortcut) | toggle the three-state theme in Settings → Appearance | same | `⌘⇧L` |
-| — (no dedicated shortcut) | open the AI panel via the activity bar or command palette | same | `⌘⇧A` |
 
-All bindings can be re-recorded in Settings → Shortcuts and imported / exported. The design deliberately
-avoids keys like `Ctrl+K` and `Ctrl+L` that carry meaning in readline — those always pass through to the
-shell when the terminal is focused.
+Every binding can be re-recorded and imported / exported in Settings → Keyboard Shortcuts. The design
+
+deliberately avoids keys such as `Ctrl+K` and `Ctrl+L` that carry meaning in readline — those always pass
+
+through to the shell when the terminal is focused.
 
 ---
 
 ## Configuration and data directories
 
 `<config>` resolves per platform: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS,
+
 `~/.config` on Linux.
 
 | File | Path | Description |
 | --- | --- | --- |
-| `settings.json` | `<config>/rustshell/` | Theme, terminal, connections, performance, AI settings; atomic writes |
+| `settings.json` | `<config>/rustshell/` | Theme, terminal, connections, performance and AI settings; atomic writes |
 | `quick_commands.json` | `<config>/rustshell/` | Quick commands (schema v2); atomic writes |
 | `ai_config.json` | `<config>/rustshell/` | Provider config; **API keys are encrypted via the system keychain, the JSON stores only a reference** |
 | `keymap.json` | `<config>/rustshell/` | User keybinding overrides |
@@ -247,35 +156,9 @@ shell when the terminal is focused.
 
 ---
 
-
-
 ## Known limitations
 
-- **Windows 11 is the platform tested day to day**: `gpui-fast-platform` 0.1.10 ships Windows / macOS / Linux backends and the release workflow builds for all three (runners: `windows-latest`, `macos-latest`, `ubuntu-22.04`, `ubuntu-22.04-arm`). The macOS artifact is a real `lipo`-merged universal binary; the Linux artifacts are built on Ubuntu 22.04 (minimum glibc 2.35). The macOS / Linux paths have no on-device runtime regression suite yet — the build passing is all they guarantee
-- Built on the `gpui-fast` engine (`gpui` fork with retained rendering / layout optimizations, `gpui-kit` 0.8 line) and `gpui-component` 0.8.x; upstream APIs may still change
-- Terminal selection, hyperlink recognition, OSC title / cwd tracking and similar details are still being polished
-- Release artifacts are not code-signed; first launch on macOS requires manual approval (the scripts strip the quarantine attribute)
-
----
-
-## Contributing
-
-Issues and PRs are welcome. Before submitting, make sure this gate is green (same as CI):
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --no-run     # compile all test targets (incl. integration tests)
-cargo test --workspace --lib        # fast unit tests
-```
-
-A few conventions:
-
-- **Spec before feature:** any functional change starts with a written spec and acceptance criteria
-- **No hard-coded colors:** new UI goes through theme tokens
-- **Every new string must be wired into i18n:** keep `core/src/i18n.rs` Chinese/English tables in sync; all static keys must be covered
-- Prefer quantitative UI regression via `#[gpui::test] + VisualTestContext` (`debug_bounds` for geometry, `simulate_click` for real hit-testing) over screenshot comparison
-- Commit messages may be in Chinese or English, but please explain **why**
+- Running in a poor-GPU intranet environment may feel sluggish
 
 ---
 
@@ -283,14 +166,6 @@ A few conventions:
 
 The original code in this project is licensed under the [Apache License 2.0](./LICENSE)
 ([full text](https://www.apache.org/licenses/LICENSE-2.0)).
-
-`terminal/` (`rustshell-terminal`) is derived from
-[`zortax/gpui-terminal`](https://github.com/zortax/gpui-terminal) (MIT OR Apache-2.0 dual license).
-This repository distributes the **Apache-2.0** variant and, as upstream requires, retains its MIT copyright
-notice and the full Apache-2.0 text — see [`terminal/LICENSE-MIT`](./terminal/LICENSE-MIT) and
-[`terminal/LICENSE-APACHE`](./terminal/LICENSE-APACHE).
-
-All dependencies have completed a license audit; the repository contains no GPL / AGPL dependencies.
 
 ---
 

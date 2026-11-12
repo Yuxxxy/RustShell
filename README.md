@@ -4,7 +4,7 @@
 
 **Rust + GPUI 打造的跨平台终端 / SSH / SFTP 一体化桌面客户端**
 
-[English](./README_EN.md) · 简体中文 · [快速开始](#快速开始) · [架构](#架构) · [贡献](#贡献)
+[English](./README_EN.md) · 简体中文 · [架构](#架构)
 
 [![CI](./.github/badges/ci.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/ci.yml)
 [![Release Build](./.github/badges/release.svg)](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml)
@@ -35,30 +35,24 @@
 
 <p align="center">
   <img src="./docs/images/palette-dark.png" width="49%" alt="命令面板" />
-  <img src="./docs/images/settings-light.png" width="49%" alt="设置 · 外观" />
+  <img src="./docs/images/settings-light.png" width="49%" alt="设置 · 连接" />
 </p>
 
-<p align="center"><sub>左：命令面板（<code>Ctrl+Shift+P</code>），快速连接与命令一体检索 · 右：设置 → 外观（主题三态 / 背景图 / 面板不透明度）</sub></p>
+<p align="center"><sub>左：命令面板（<code>Ctrl+Shift+P</code>），快速连接与命令一体检索 · 右：设置 → 连接（导入 / 导出、握手与认证超时、断线重连）</sub></p>
 
 ---
 
 ## RustShell 是什么
 
 RustShell 是一个用 Rust + GPUI 编写的**跨平台桌面终端与服务器管理工具**：本地终端、SSH 会话、
-  
+
 SFTP 文件传输、快捷指令、系统监控与可选的 AI 助手，全部在一个原生窗口里完成。
 
 它不使用 Electron / WebView，终端渲染由本仓自有的引擎 **`rustshell-terminal`** 承担
-  
-（`alacritty_terminal` 做 VTE 解析 + GPUI 做 GPU 绘制），因此启动与滚动开销都保持在原生级别
-  
-（release 热启动实测 144–152 ms）。
 
-> **AI 助手**不是一个外部依赖，而是仓库自研的、带安全闸的 **domain-specific agent harness**：
->   
-> `runner` 编排 control loop、`ai.rs` 负责 LLM 通信、`agent/` 负责工具定义与安全 / 预算裁决，
->   
-> 前端（`ui/`）仅通过 `AgentUiEvent` 通道消费进度。
+（`alacritty_terminal` 做 VTE 解析 + GPUI 做 GPU 绘制），因此启动与滚动开销都保持在原生级别
+
+（release 热启动实测 144–152 ms）。
 
 ### 特性
 
@@ -86,90 +80,6 @@ AI 是**可选**能力，默认不配置任何 Provider 即完全离线。开启
 - **密钥加密落盘**：Windows DPAPI、macOS Keychain、Linux Secret Service（`keyring`），JSON 只存引用
 - **风险三级模型**：查询类直跑 / 状态变更类确认 / 破坏类（`mkfs`、`dd`、`rm -rf /`、fork 炸弹等）直接拦截且不可加入白名单
 - **全量审计**：`agent-audit.log` 记录时间、类型、风险级、命令与是否执行，**拦截行为同样留痕**
-
----
-
-## 快速开始
-
-### 方式一：下载预构建包
-
-在 [Releases](https://github.com/Yuxxxy/RustShell/releases) 或
-
-[Release Build](https://github.com/Yuxxxy/RustShell/actions/workflows/release.yml) 的 Artifacts 中取包。
-每个平台只有一个**安装文件**，命名统一为 `RustShell-<版本号>-<平台>-<架构>.<扩展名>`：
-
-- Windows 10/11（x64）：`RustShell-<version>-windows-x64.exe` —— NSIS 安装包，装到当前用户目录，不弹 UAC
-- macOS（Intel / Apple Silicon）：`RustShell-<version>-macos-universal.dmg` —— 打开后把 RustShell 拖进「应用程序」
-- Linux（x64 / arm64）：`RustShell-<version>-linux-<x64|arm64>.deb` —— `sudo apt install ./RustShell-<version>-linux-x64.deb`
-
-> 推 `v*` tag 会自动发布到 Releases 页（下载即是上面的文件）；手动跑 workflow 只在
-> Artifacts 里出包（Actions 的 artifact 下载时会被 GitHub 包一层 zip，解压后就是该文件）。
->
-> 首次运行提示：Windows 安装包未做代码签名，SmartScreen 会提示「未知发布者」；
-> macOS 侧的 App 只做了 ad-hoc 签名、未公证，首次请**右键 → 打开**（或
-> `xattr -dr com.apple.quarantine /Applications/RustShell.app`）。
-
-### 方式二：从源码构建
-
-前置依赖：
-
-- **Rust** stable ≥ 1.85（`terminal/` 使用 edition 2024）
-- **Windows**：Visual Studio 2022 Build Tools（MSVC 链接器与 `rc.exe`）
-- **macOS**：Xcode Command Line Tools（`xcode-select --install`）
-- **Linux**：桌面环境 + 下列开发包（Ubuntu / Debian；`./scripts/package-linux.sh` 会先检查这几项）：
-
-  ```bash
-  sudo apt-get install -y build-essential pkg-config \
-    libdbus-1-dev libx11-dev libxcb1-dev libfontconfig1-dev libfreetype-dev
-  ```
-
-  运行时还需要 `libxkbcommon.so.0`、`libwayland-client.so.0`、`libX11.so.6`、fontconfig / freetype、
-  `libdbus-1` 以及一份 Vulkan 或 OpenGL 驱动（桌面发行版通常自带）。
-
-```bash
-git clone https://github.com/Yuxxxy/RustShell.git
-cd RustShell
-
-# 开发构建
-cargo build -p rustshell
-cargo run -p rustshell
-
-# Release 构建（thin LTO + strip，约 28 MB）
-cargo build --release -p rustshell
-```
-
-打包分发（脚本位于 [`scripts/`](./scripts)，从仓库根执行）：
-
-```bash
-# Windows：NSIS 安装包 -> dist/RustShell-<version>-windows-x64.exe
-./scripts/package-windows.sh
-
-# macOS：通用二进制 + .app + dmg -> dist/RustShell-<version>-macos-universal.dmg
-./scripts/package-macos.sh
-
-# Linux：.deb -> dist/RustShell-<version>-linux-<x64|arm64>.deb
-./scripts/package-linux.sh
-```
-
-> **Windows 升级为覆盖安装**：检测到旧版本时安装器直接替换文件，不卸载、不清用户数据，
-> 无需先手工卸载旧版。模板在 `app/assets/installer.nsi`（vendored 自 cargo-packager
-> 0.11.8，改掉了上游「默认先卸载再安装」的重装页），配置见 `app/Cargo.toml`。
-
-> 三个脚本都使用 `cd "$(dirname "$0")/.."` 回到仓库根，因此在任意工作目录下调用均可；
-> 不带参数时**先编译再打包**，带一个二进制路径参数时只打包（CI 就是这么用的）。
->   
-> Windows 的中间产物位于 **`dist/packager/`**（`app/Cargo.toml` 中 `out-dir = "../dist/packager"`，
->   
-> 相对 `cargo-packager` 的工作目录 `app/` 解析），改名后的安装包落在 `dist/`。
->   
-> 三个脚本在打包前都会断言产物架构与文件名一致（macOS 用 `lipo -archs` 查双架构、
-> Linux 用 `file` 查 ELF 架构），避免出现「名字写着 x64 却是 arm64」这类静默错配。
-
-打 tag 即触发 CI 构建三个平台（四个构建矩阵项）的全部产物：
-
-```bash
-git tag v1.0.0 && git push origin v1.0.0
-```
 
 ---
 
@@ -201,10 +111,6 @@ git tag v1.0.0 && git push origin v1.0.0
 | [`platform/`](./platform) | 系统抽象：PTY、Keychain/DPAPI、日志、路径、采样                               |
 | [`terminal/`](./terminal) | `rustshell-terminal`：VTE 解析 + 网格 + 滚回 + GPU 渲染                 |
 
-终端引擎通过 UI 层的薄适配层（`ui/src/terminal_view.rs`）接入，SSH 信道被包装为 PTY-like 字节流后喂给引擎，
-  
-因此本地会话与远端会话共用同一条渲染管线。
-
 ---
 
 ## 常用快捷键
@@ -222,7 +128,7 @@ git tag v1.0.0 && git push origin v1.0.0
 
 
 全部绑定可在「设置 → 快捷键」中录制重绑并导入 / 导出。设计上刻意避开了 `Ctrl+K`、`Ctrl+L`
-  
+
 等在 readline 中有含义的键位，终端聚焦时一律透传给 shell。
 
 ---
@@ -243,48 +149,15 @@ git tag v1.0.0 && git push origin v1.0.0
 
 ---
 
----
-
 ## 已知限制
 
 - GPU较差的内网环境运行可能会卡顿
 
 ---
 
-## 贡献
-
-欢迎 Issue 与 PR。提交前请先确认这套门禁全绿（与 CI 一致）：
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --no-run     # 编译全部测试目标（含集成测试）
-cargo test --workspace --lib        # 快速单测
-```
-
-几点约定：
-
-- **功能先有需求文档**：任何功能改动先产出规格与验收要点，再进入开发
-- **不硬编码颜色**：新增 UI 一律走主题 Token
-- **新增文案必须接 i18n**：`core/src/i18n.rs` 中英对照，静态 key 需全覆盖
-- UI 缺陷优先用 `#[gpui::test] + VisualTestContext` 做定量回归（`debug_bounds` 量几何、`simulate_click` 走真实命中测试），而不是靠截图比对
-- 提交信息用中文或英文均可，但请写清「为什么」
-
----
-
 ## 许可证
 
 本项目的原创代码统一以 [Apache License 2.0](./LICENSE) 授权（[协议全文](https://www.apache.org/licenses/LICENSE-2.0)）。
-
-`terminal/`（`rustshell-terminal`）派生自 [`zortax/gpui-terminal`](https://github.com/zortax/gpui-terminal)
-  
-（MIT OR Apache-2.0 双许可）。本仓选择其中的 **Apache-2.0** 分支分发，并按上游要求原样保留
-  
-其 MIT 版权声明与 Apache-2.0 全文，见 [`terminal/LICENSE-MIT`](./terminal/LICENSE-MIT) 与
-  
-[`terminal/LICENSE-APACHE`](./terminal/LICENSE-APACHE)。
-
-全部依赖已完成许可证审计，仓库内不含 GPL / AGPL 依赖。
 
 ---
 
