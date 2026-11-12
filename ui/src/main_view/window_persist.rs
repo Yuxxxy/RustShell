@@ -16,7 +16,26 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{Context, Window};
-use rustshell_core::window_bounds::WindowBoundsRecord;
+use rustshell_core::window_bounds::{WindowBoundsRecord, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
+
+/// 平台层读出来的几何是否可信（2026-11-12 实机定位「窗口大小记忆没了」）。
+///
+/// ★ 根因：gpui-fast-windows 的 `calculate_window_bounds()` 在 `GetWindowPlacement`
+/// 失败时**只 `log_err()`**，然后照样把那份全 0 的 `WINDOWPLACEMENT::default()`
+/// 算成窗口矩形（`showCmd=0` ⇒ 也判成「未最大化」）。窗口销毁 / 覆盖安装重启那一刻，
+/// `render` 的每帧兜底读取会撞上无效句柄（日志：`failed to get window placement:
+/// 无效的窗口句柄 (0x80070578)`），于是 `read_window()` 拿到 `0×0 / maximized=false`
+/// 并写进 `settings.json`。下次启动 `fitted_to` 把 `0×0` 钳到最小 `720×480` 并居中
+/// —— 用户看到的就是「每次都变成最小的小窗，尺寸完全没记住」。
+///
+/// 判据**不用** `MIN_WINDOW_*` 做硬下限：gpui 会从 `rcNormalPosition` 里扣掉窗口
+/// 边框，边界情况下合法尺寸可能略小于最小值。这里只拦「明显是失败占位」的值
+/// （0 / 负 / 非有限 / 小于半个最小尺寸），正常窗口一律放行。
+fn is_plausible(rec: WindowBoundsRecord) -> bool {
+    let finite =
+        rec.x.is_finite() && rec.y.is_finite() && rec.width.is_finite() && rec.height.is_finite();
+    finite && rec.width >= MIN_WINDOW_WIDTH * 0.5 && rec.height >= MIN_WINDOW_HEIGHT * 0.5
+}
 
 use super::MainView;
 
@@ -86,6 +105,12 @@ impl MainView {
     /// 再标一次脏，等于给每次拖拽多加一帧。
     pub(super) fn window_bounds_observed(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         let rec = read_window(window);
+        // 窗口句柄已失效时平台层给的是 0×0 占位值（见 `is_plausible`）。丢掉它，
+        // 让 `current` 保持在**最后一次有效**几何上：退出钩子随后写的仍是那一份，
+        // 而不是把整份记录清成小窗。
+        if !is_plausible(rec) {
+            return;
+        }
         if self.window_mem.current != Some(rec) {
             self.window_mem.current = Some(rec);
         }
@@ -131,6 +156,11 @@ impl MainView {
         let Some(cur) = self.window_mem.current else {
             return false;
         };
+        // 双保险：即便有别处把脏值塞进 `current`，也绝不让它落到用户配置里。
+        // 这份文件一旦被 0×0 污染，下次启动就会被钳成 720×480 的小窗。
+        if !is_plausible(cur) {
+            return false;
+        }
         if self.window_mem.saved == Some(cur) {
             return false;
         }
@@ -248,6 +278,82 @@ mod tests {
         assert!(
             me.contains(".detach()"),
             "`on_app_quit` 的返回值必须就地 detach()，否则钩子根本没挂上"
+        );
+    }
+
+    /// `GetWindowPlacement` 失败时平台层返回全 0 的 `WINDOWPLACEMENT`，
+    /// 算出来的矩形是 0×0（甚至扣完边框为负）。这类值绝不能被当成「用户把窗口
+    /// 缩到了最小」记住 —— 那正是「每次启动都是 720×480 小窗」的成因。
+    #[test]
+    fn implausible_geometry_is_rejected() {
+        for bad in [
+            WindowBoundsRecord::new(0.0, 0.0, 0.0, 0.0, false),
+            WindowBoundsRecord::new(100.0, 100.0, -720.0, -480.0, false),
+            WindowBoundsRecord::new(100.0, 100.0, f32::NAN, 800.0, false),
+            WindowBoundsRecord::new(100.0, 100.0, f32::INFINITY, 800.0, false),
+            WindowBoundsRecord::new(100.0, 100.0, 1.0, 1.0, false),
+        ] {
+            assert!(!is_plausible(bad), "无效几何不该被记住: {bad:?}");
+        }
+        // 合法值必须放行：含最小尺寸（边框扣减后可能略小于 720×480）与最大化态。
+        for good in [
+            WindowBoundsRecord::new(120.0, 80.0, 1300.0, 860.0, true),
+            WindowBoundsRecord::new(600.0, 336.0, 720.0, 480.0, false),
+            WindowBoundsRecord::new(-8.0, -8.0, 700.0, 460.0, true),
+        ] {
+            assert!(is_plausible(good), "正常窗口被误杀: {good:?}");
+        }
+    }
+
+    /// 落盘本体也得自己挡一道：脏值不能写出一份坏 `settings.json`。
+    #[gpui::test]
+    fn flush_refuses_implausible_geometry(cx: &mut gpui::TestAppContext) {
+        let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
+        let path = tmp_path("bad");
+        let _ = std::fs::remove_file(&path);
+
+        main.update_in(vcx, |m, _w, _cx| {
+            m.window_mem.current = Some(WindowBoundsRecord::new(0.0, 0.0, 0.0, 0.0, false));
+            assert!(!m.window_flush(&path), "0×0 不该被落盘");
+            assert!(!path.exists(), "不该为一份脏几何写出 settings.json");
+
+            // 换成有效值后必须立刻能写（不能把状态卡死在「永不落盘」）。
+            m.window_mem.current = Some(WindowBoundsRecord::new(120.0, 80.0, 1300.0, 860.0, true));
+            assert!(m.window_flush(&path), "恢复有效几何后要能正常落盘");
+            let back = rustshell_core::settings::Settings::load(&path);
+            assert_eq!(back.window_bounds.map(|r| r.width), Some(1300.0));
+        });
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 接线护栏：过滤只写在函数里不算数，观察与落盘两个入口都必须真的调它。
+    /// 漏接的症状是「单测全绿、用户重启后窗口又变回小窗」。
+    #[test]
+    fn geometry_filter_is_wired_to_both_entry_points() {
+        let me = prod(include_str!("window_persist.rs"));
+        assert!(me.contains("fn is_plausible"), "有效性判据本身不能丢");
+
+        let observe_at = me
+            .find("fn window_bounds_observed")
+            .expect("window_bounds_observed 必须存在");
+        let observe_end = me[observe_at..]
+            .find("fn window_poll(")
+            .map(|i| observe_at + i)
+            .unwrap_or(me.len());
+        assert!(
+            me[observe_at..observe_end].contains("is_plausible"),
+            "观察回调没过滤无效几何：窗口销毁时的 0×0 会被记住"
+        );
+
+        let flush_at = me.find("fn window_flush(").expect("window_flush 必须存在");
+        let flush_end = me[flush_at..]
+            .find("match self.settings.save")
+            .map(|i| flush_at + i)
+            .unwrap_or(me.len());
+        assert!(
+            me[flush_at..flush_end].contains("is_plausible"),
+            "落盘本体没挡脏值：一旦被 0×0 污染，下次启动就钳成 720×480"
         );
     }
 }

@@ -87,8 +87,21 @@ fn screen_rect_of(display: &dyn gpui::PlatformDisplay) -> ScreenRect {
 ///
 /// 为什么要两侧都 `fitted_to`：记录可能来自一块已经拔掉的外接屏。挑不到屏时退回
 /// 主屏而不是最左边那块，装的是一台笔记本时两者相同，外接屏一拔就未必。
+/// 只把可信的记录交给恢复逻辑。
+///
+/// 2026-11-12 实机定位：v0.1.9 之前，窗口句柄失效时 `GetWindowPlacement` 的
+/// 失败占位值（0×0 / 非有限）会被当成真几何写进 `settings.json`；`fitted_to`
+/// 再把它钳成 720×480 并居中，用户看到的就是「每次启动都是最小小窗」。
+/// 这类残留记录一律当「没记过」，走默认的 1400×900，而不是继续当真。
+/// 判据只拦明显无效值：正常的小窗（哪怕被边框扣减过）仍按原尺寸恢复。
+fn restorable(saved: Option<WindowBoundsRecord>) -> Option<WindowBoundsRecord> {
+    saved.filter(|rec| {
+        rec.width.is_finite() && rec.height.is_finite() && rec.width > 0.0 && rec.height > 0.0
+    })
+}
+
 fn resolve_window_bounds(cx: &mut App, saved: Option<WindowBoundsRecord>) -> WindowBounds {
-    if let Some(rec) = saved {
+    if let Some(rec) = restorable(saved) {
         let screens: Vec<ScreenRect> = cx
             .displays()
             .iter()
@@ -321,6 +334,37 @@ mod tests {
         assert!(
             code.contains("visible_bounds()"),
             "必须用 `visible_bounds`（排除任务栏），否则窗口会压到任务栏底下拖不出来"
+        );
+    }
+
+    /// 旧版本在窗口句柄失效时写下的 0×0 / 非有限记录，不该再被当成真几何恢复。
+    ///
+    /// 这类记录经过 `fitted_to` 会变成「720×480、居中」的最小小窗 —— 那正是
+    /// 用户报「窗口大小记忆没了」时每次启动看到的东西。
+    #[test]
+    fn corrupted_window_bounds_are_ignored_at_startup() {
+        use super::restorable;
+        use rustshell_core::window_bounds::WindowBoundsRecord;
+
+        let good = WindowBoundsRecord::new(120.0, 80.0, 1300.0, 860.0, true);
+        assert_eq!(restorable(Some(good)), Some(good), "正常记录要原样交出去");
+        assert_eq!(restorable(None), None);
+        for bad in [
+            WindowBoundsRecord::new(0.0, 0.0, 0.0, 0.0, false),
+            WindowBoundsRecord::new(-8.0, -8.0, -16.0, -32.0, false),
+            WindowBoundsRecord::new(0.0, 0.0, f32::NAN, 800.0, false),
+        ] {
+            assert_eq!(restorable(Some(bad)), None, "坏记录必须走默认窗口: {bad:?}");
+        }
+
+        // 接线护栏：切掉测试区，避免断言字符串自己匹配自己（假绿）。
+        let prod = include_str!("app.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or("");
+        assert!(
+            prod.contains("restorable(saved)"),
+            "启动恢复没过滤坏记录：旧的 0×0 会继续被钳成 720×480 小窗"
         );
     }
 }
