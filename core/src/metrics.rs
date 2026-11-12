@@ -134,6 +134,13 @@ pub fn format_bytes_short(bytes: u64) -> String {
 /// 舍入叠加反而更容易和用户手工执行 `df -h` 看到的数字对不上。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DfColumns {
+    /// `Filesystem` 列（`tmpfs` / `/dev/vda3`）。
+    ///
+    /// 2026-11-12 运行反馈「存储要按 `df -h` 完整显示」：卡片现在逐行列出
+    /// df 的**所有**文件系统（含 tmpfs / efivarfs），设备名必须跟着原样列走，
+    /// 否则四个 `tmpfs` 挂点长得一模一样，没法与终端逐行核对。
+    #[serde(default)]
+    pub filesystem: String,
     /// `Size` 列（`59G`）
     pub size: String,
     /// `Used` 列（`4.7G`）
@@ -242,7 +249,11 @@ pub struct SystemOverview {
     pub arch: String,
     /// 系统运行时长（秒）
     pub uptime_secs: u64,
-    /// 文件系统用量（已过滤伪文件系统，按总容量降序）
+    /// 文件系统用量。
+    ///
+    /// 远端会话按 `df -h` 的**原样行序**列出全部文件系统（含 tmpfs 等伪文件系统）；
+    /// 只有能从 `df -P -k` 对上号的真实磁盘才带精确字节，其余行 `total = 0`
+    /// 且只带 [`DfColumns`] 原样文本。本机 `sysinfo` 仍只有真实卷。
     pub disks: Vec<DiskInfo>,
     /// 最近一次刷新时刻（Unix 秒）
     pub timestamp: u64,
@@ -258,11 +269,17 @@ impl SystemOverview {
             && self.disks.is_empty()
     }
 
-    /// 全部文件系统的容量合计（已用, 总量）
+    /// 真实文件系统的容量合计（已用, 总量）。
+    ///
+    /// `df -h` 里的 tmpfs / efivarfs 等展示行没有精确字节（`total = 0`），
+    /// 跳过它们：AI 概况与告警阈值要的是磁盘容量，把内存盘算进来会凭空放大合计。
     pub fn disk_totals(&self) -> (u64, u64) {
-        self.disks.iter().fold((0u64, 0u64), |(u, t), d| {
-            (u.saturating_add(d.used), t.saturating_add(d.total))
-        })
+        self.disks
+            .iter()
+            .filter(|d| d.total > 0)
+            .fold((0u64, 0u64), |(u, t), d| {
+                (u.saturating_add(d.used), t.saturating_add(d.total))
+            })
     }
 }
 
@@ -796,6 +813,7 @@ mod tests {
             total: 59 * 1024 * 1024 * 1024,
             used: 4_700_000_000,
             df: Some(DfColumns {
+                filesystem: "/dev/vda1".into(),
                 size: "59G".into(),
                 used: "4.7G".into(),
                 avail: "51G".into(),
@@ -847,6 +865,38 @@ mod tests {
             },
         ];
         assert_eq!(o.disk_totals(), (50, 300));
+    }
+
+    /// 回归（2026-11-12「存储要按 `df -h` 完整显示」）：
+    /// 伪文件系统行只带原样文本、没有精确字节，展示要算一行，
+    /// 但磁盘容量合计 / 告警阈值不能被它们抬高。
+    #[test]
+    fn df_h_display_rows_do_not_inflate_disk_totals() {
+        let o = SystemOverview {
+            disks: vec![
+                DiskInfo {
+                    mount: "/".into(),
+                    total: 100,
+                    used: 40,
+                    ..Default::default()
+                },
+                DiskInfo {
+                    mount: "/dev/shm".into(),
+                    df: Some(DfColumns {
+                        filesystem: "tmpfs".into(),
+                        size: "983M".into(),
+                        used: "24K".into(),
+                        avail: "983M".into(),
+                        use_pct: "1%".into(),
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(o.disk_totals(), (40, 100));
+        assert_eq!(o.disks[1].used_over_total(), "24K/983M");
+        assert_eq!(o.disks[1].percent(), 1.0);
     }
 
     /// 概况经共享存储往返：写入即可被 UI 读到（跨线程的唯一契约）

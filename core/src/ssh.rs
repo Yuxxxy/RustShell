@@ -1420,8 +1420,10 @@ fn spawn_remote_metrics<H: russh::client::Handler + 'static>(
 /// 远端探测命令（Linux 服务器；一次 exec 拉全量）。
 /// 各段以 `__X__` 标记分隔，解析侧按标记切分：新增段不会影响既有段的位置。
 ///
-/// 磁盘取两遍：`__DF__` 的 `df -P -k` 给**精确字节**（合计、排序、阈值判断
-/// 都要它），`__DFH__` 的 `df -h -P` 给**原样展示文本**（见 [`parse_df_h`]）。
+/// 磁盘取两遍：`__DF__` 的 `df -P -k` 给**精确字节**（合计、阈值判断只用
+/// 真实磁盘），`__DFH__` 的 `df -h -P` 给**原样展示文本**（见 [`parse_df_h`]）。
+/// 2026-11-12 起存储卡以 `df -h` 的行序为准逐行展示**全部**文件系统
+/// （tmpfs / efivarfs 也在内），故 `-h` 那一段同时决定「显示哪些行、按什么顺序」。
 /// `df` 本身的耗时是毫秒级，多跑一遍远比重算/反解数字划算。
 ///
 /// `__LOADAVG__` 专供巡检的「负载/核」判定（见 `runner::inspect`）：
@@ -1474,18 +1476,35 @@ fn section<'a>(sections: &[(&'a str, &'a str)], marker: &str) -> &'a str {
 }
 
 /// 解析探测输出里的系统概况（主机名 / IP / 运行时长 / 磁盘用量）
+///
+/// 磁盘列表以 **`df -h -P` 的原样行序为准**：2026-11-12 运行反馈「存储要按
+/// `df -h` 完整显示」，终端有几行、卡片就摆几行（含 tmpfs / efivarfs /
+/// `/boot/efi`），顺序也不重排 —— 用户是拿终端逐行核对的。
+///
+/// `__DF__` 段只负责给「对得上挂载点」的行补精确字节（合计 / 告警阈值仍按
+/// 真实磁盘算）；`-k` 段里被过滤掉的伪文件系统在展示列表里 `total = 0`、
+/// 只带 [`DfColumns`] 原样文本。`disk_totals()` 会跳过这些行，巡检的
+/// `is_root_or_big` 也不会把它们当成大磁盘。
 pub fn parse_system_overview(text: &str) -> SystemOverview {
     let sections = probe_sections(text);
-    // 字节口径（`-k`）是主数据：合计 / 排序 / 阈值都按它算
-    let mut disks = parse_df(section(&sections, "__DF__"));
-    // 展示口径（`-h`）按挂载点贴到主数据上：两段来自同一台机器的相邻两次 df，
-    // 挂载点必然一致。缺 `df -h` 的机器（BSD 的 `-P` 组合差异等）只是没有原样文本，
-    // 渲染会退回按字节格式化，不会「整卡空白」。
+    // 精确字节（`-k`）：按挂载点索引，只保留真实文件系统
+    let mut byte_rows = parse_df(section(&sections, "__DF__"));
+    // 展示口径（`-h`）：决定行集合与行序
+    let mut disks = Vec::new();
     for (mount, cols) in parse_df_h(section(&sections, "__DFH__")) {
-        if let Some(d) = disks.iter_mut().find(|d| d.mount == mount) {
-            d.df = Some(cols);
-        }
+        let mut d = match byte_rows.iter().position(|x| x.mount == mount) {
+            Some(i) => byte_rows.remove(i),
+            // 伪文件系统 / `-k` 段里 total=0 的行：补齐挂载点，其余交给 df 原文
+            None => DiskInfo {
+                mount: mount.clone(),
+                ..Default::default()
+            },
+        };
+        d.df = Some(cols);
+        disks.push(d);
     }
+    // 老机器没有 `-h` 段，或两次 df 之间挂载点变了：剩余字节行兜底，不整卡空白
+    disks.extend(byte_rows);
     SystemOverview {
         hostname: section(&sections, "__HOST__").trim().to_string(),
         ip: parse_ip(section(&sections, "__IP__")),
@@ -1518,7 +1537,10 @@ fn parse_ip(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 伪文件系统（不该出现在「存储」卡里：容量没有意义或与真实磁盘重复计数）
+/// 伪文件系统（只用于**精确字节/容量合计**的分类，不用于展示过滤）。
+///
+/// 2026-11-12 起存储卡按 `df -h` 原样显示全部行，这几个名字仍要留着：
+/// `parse_df` 靠它们决定哪些行该带精确字节，免得 tmpfs 把磁盘合计抬高。
 const PSEUDO_FS: &[&str] = &[
     "tmpfs",
     "devtmpfs",
@@ -1561,7 +1583,7 @@ const PSEUDO_MOUNT_PREFIXES: &[&str] = &[
     "/boot/efi",
 ];
 
-/// 该 `df` 行是否值得展示
+/// 该 `df` 行是否值得纳入**容量统计**（不是「是否展示」）
 fn is_real_filesystem(device: &str, mount: &str) -> bool {
     if PSEUDO_FS.contains(&device) || device.is_empty() {
         return false;
@@ -1577,6 +1599,10 @@ fn is_real_filesystem(device: &str, mount: &str) -> bool {
 /// 解析 `df -P -k`：`Filesystem 1024-blocks Used Available Capacity Mounted on`。
 /// 用 `-k`（1024 字节块）而不是 `-h`：`-h` 的数值带单位、会四舍五入，
 /// 解析出来只能再猜回去；容量在 Rust 侧统一格式化成紧凑文案。
+///
+/// 这一段**不是展示列表**：伪文件系统仍在此过滤、结果仍按总容量降序，
+/// 供 `disk_totals()` / 巡检阈值使用。展示的行集合与顺序由 `parse_df_h` 决定，
+/// 见 [`parse_system_overview`]。
 pub fn parse_df(text: &str) -> Vec<DiskInfo> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -1611,12 +1637,17 @@ pub fn parse_df(text: &str) -> Vec<DiskInfo> {
 
 /// 解析 `df -h -P` 的展示列：`Filesystem Size Used Avail Use% Mounted on`。
 ///
-/// 返回「挂载点 -> 原样四列」，由 [`parse_system_overview`] 贴到 [`parse_df`]
-/// 出来的磁盘上。用 `-P`（POSIX 输出）保证「一个文件系统一行」——不带 `-P` 时
-/// 长设备名会折行，折行后的续行看起来像新的一行，会把挂载点解析错。
+/// 返回「挂载点 -> 原样列」，**顺序就是 df 的输出顺序**，由
+/// [`parse_system_overview`] 用作存储卡的展示列表。用 `-P`（POSIX 输出）保证
+/// 「一个文件系统一行」——不带 `-P` 时长设备名会折行，折行后的续行看起来像
+/// 新的一行，会把挂载点解析错。
 ///
 /// 这里只取文本、不反解字节：反解要在单位与四舍五入上再猜一次，猜错反而
 /// 让界面上的数字和用户手工 `df -h` 对不上（精确字节另有 `-k` 那一遍负责）。
+///
+/// 2026-11-12 运行反馈「存储要按 `df -h` 完整显示」：**不再过滤伪文件系统**，
+/// tmpfs / efivarfs / `/boot/efi` 等行一律保留；容量统计的过滤仍在 `parse_df`
+/// 里，两处职责分开。唯一跳过的仍是表头与列数不足的噪声行。
 pub fn parse_df_h(text: &str) -> Vec<(String, DfColumns)> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -1629,12 +1660,10 @@ pub fn parse_df_h(text: &str) -> Vec<(String, DfColumns)> {
         }
         // 挂载点可能含空格：从第 6 列起重新拼回
         let mount = cols[5..].join(" ");
-        if !is_real_filesystem(cols[0], &mount) {
-            continue;
-        }
         out.push((
             mount,
             DfColumns {
+                filesystem: cols[0].to_string(),
                 size: cols[1].to_string(),
                 used: cols[2].to_string(),
                 avail: cols[3].to_string(),
@@ -2085,7 +2114,7 @@ mod tests {
         );
     }
 
-    /// 远端概况段：主机名 / IP / 运行时长 / df（含伪文件系统过滤 + `df -h` 展示列）
+    /// 远端概况段：主机名 / IP / 运行时长 / df（`-k` 精确字节 + `-h` 原样展示列）
     const SNAPSHOT_FULL: &str = "cpu  100 0 100 700 0 0 0 0 0 0\n\
         MemTotal: 16000000 kB\n\
         MemAvailable: 6400000 kB\n\
@@ -2123,17 +2152,21 @@ mod tests {
         // 要过 `arch_label` 归一（`aarch64` 与 `arm64` 显示成同一个名字）
         assert_eq!(o.arch, "aarch64", "系统架构没有从 __ARCH__ 段读出来");
         assert_eq!(o.uptime_secs, 6829);
-        // tmpfs 与 /snap 下的 loop 设备都要被过滤掉
-        assert_eq!(o.disks.len(), 2, "disks={:?}", o.disks);
-        // 大容量在前
-        assert_eq!(o.disks[0].mount, "/data");
-        assert_eq!(o.disks[1].mount, "/");
-        // 字节口径仍来自 `df -P -k`（合计 / 排序 / 阈值都按它算）
-        assert_eq!(o.disks[1].total, 51_474_528 * 1024);
-        assert_eq!(o.disks[1].used, 8_123_456 * 1024);
+        // 2026-11-12「按 df -h 完整显示」：四行全在，且顺序逐字照抄 -h 段
+        assert_eq!(o.disks.len(), 4, "disks={:?}", o.disks);
+        let mounts: Vec<&str> = o.disks.iter().map(|d| d.mount.as_str()).collect();
+        assert_eq!(mounts, ["/", "/dev/shm", "/data", "/snap/core/1"]);
+        // 真实磁盘的字节口径仍来自 `df -P -k`（合计 / 阈值都按它算）
+        assert_eq!(o.disks[0].total, 51_474_528 * 1024);
+        assert_eq!(o.disks[0].used, 8_123_456 * 1024);
+        // 伪文件系统只带原样文本、不带字节：不能把内存盘算进磁盘合计
+        assert_eq!(o.disks[1].total, 0);
+        assert_eq!(o.disks[1].df.as_ref().unwrap().filesystem, "tmpfs");
+        assert_eq!(o.disks[1].used_over_total(), "0/7.8G");
+        assert_eq!(o.disk_totals().1, (51_474_528 + 1_030_812_480) * 1024);
         // 展示口径来自 `df -h`：容量与占用率都用 df 的原样文本
-        assert_eq!(o.disks[1].used_over_total(), "7.8G/49G");
-        assert_eq!(o.disks[1].avail_text().as_deref(), Some("39G"));
+        assert_eq!(o.disks[0].used_over_total(), "7.8G/49G");
+        assert_eq!(o.disks[0].avail_text().as_deref(), Some("39G"));
     }
 
     /// `df -h` 的 `Use%` 必须盖过 `used / total`。
@@ -2192,22 +2225,31 @@ mod tests {
         );
         assert_eq!(cols.len(), 1);
         assert_eq!(cols[0].0, "/mnt/my data");
+        assert_eq!(cols[0].1.filesystem, "/dev/sda1");
         assert_eq!(cols[0].1.size, "1.0T");
         assert_eq!(cols[0].1.used, "500G");
         assert_eq!(cols[0].1.avail, "500G");
         assert_eq!(cols[0].1.use_percent(), Some(50.0));
     }
 
-    /// `df -h` 里的伪文件系统同样要过滤（否则 tmpfs 会以「0% 的 7.8G」混进存储卡）
+    /// 回归（2026-11-12「存储要按 `df -h` 完整显示」）：伪文件系统**不再过滤**，
+    /// 且保持 df 原样行序与设备名 —— 卡片要能和终端逐行核对。
     #[test]
-    fn parse_df_h_filters_pseudo_filesystems() {
+    fn parse_df_h_keeps_every_filesystem_in_df_order() {
         let cols = parse_df_h(
             "Filesystem Size Used Avail Use% Mounted on\n\
              tmpfs 7.8G 0 7.8G 0% /dev/shm\n\
-             /dev/sda1 49G 7.8G 39G 17% /\n",
+             /dev/sda1 49G 7.8G 39G 17% /\n\
+             efivarfs 256K 21K 231K 9% /sys/firmware/efi/efivars\n",
         );
-        assert_eq!(cols.len(), 1);
-        assert_eq!(cols[0].0, "/");
+        assert_eq!(cols.len(), 3, "cols={:?}", cols);
+        assert_eq!(cols[0].0, "/dev/shm");
+        assert_eq!(cols[0].1.filesystem, "tmpfs");
+        assert_eq!(cols[0].1.use_pct, "0%");
+        assert_eq!(cols[1].0, "/");
+        assert_eq!(cols[1].1.filesystem, "/dev/sda1");
+        assert_eq!(cols[2].0, "/sys/firmware/efi/efivars");
+        assert_eq!(cols[2].1.size, "256K");
     }
 
     /// `Use%` 文本非法（本地化输出 / 空列）时不 panic：返回 None，调用方回退按字节算

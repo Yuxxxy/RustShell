@@ -99,6 +99,18 @@ fn info_row(
         .child(value_box)
 }
 
+/// 占用率展示文案：远端逐字沿用 `df -h` 的 `Use%` 列（`12%`），本机按字节算才保留两位小数。
+///
+/// 2026-11-12 运行反馈「存储展示的内容要和 df -h 一致」：`{pct:.2}%` 会把 df 的
+/// `12%` 写成 `12.00%`；数值虽然相同，用户逐字核对时仍是一处对不上。颜色分级
+/// 仍走 [`DiskInfo::percent`] 的数值，只有文案换成 df 原文。
+fn disk_percent_label(disk: &DiskInfo) -> String {
+    match disk.df.as_ref().map(|d| d.use_pct.trim()) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => format!("{:.2}%", disk.percent().clamp(0.0, 100.0)),
+    }
+}
+
 /// 存储明细一行，口径对齐 `df -h`：第一行「挂载点 + Use%」，第二行
 /// `Used / Size` 与 `Avail`。
 ///
@@ -106,6 +118,24 @@ fn info_row(
 /// 硬挤的结果是挂载点被省略号截断、四个数连成一片。拆开后第一行回答「哪个分区、
 /// 用了多少」，第二行才是 `df -h` 的容量三列 —— 数字与用户手工执行 `df -h` 一致
 /// （远端用 df 的原样文本，本机按字节格式化）。
+/// 明细行左侧标签：逐字沿用 `df -h` 的 `Filesystem` + `Mounted on` 两列。
+///
+/// 2026-11-12 运行反馈「存储要按 `df -h` 完整显示」：卡片现在把全部文件系统
+/// 列出来，其中好几行都是 `tmpfs`；只写挂载点虽然也能区分，但用户拿终端
+/// 逐行核对时看不到 `Filesystem` 这一列。本机（无 df 文本）回退到卷名。
+fn disk_label(disk: &DiskInfo) -> String {
+    let device = disk
+        .df
+        .as_ref()
+        .map(|d| d.filesystem.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(disk.name.as_str());
+    if device.is_empty() {
+        return disk.mount.clone();
+    }
+    format!("{device} {}", disk.mount)
+}
+
 fn disk_row(disk: &DiskInfo, t: &ThemeTokens) -> impl IntoElement {
     let pct = disk.percent().clamp(0.0, 100.0);
     let detail = match disk.avail_text() {
@@ -126,7 +156,7 @@ fn disk_row(disk: &DiskInfo, t: &ThemeTokens) -> impl IntoElement {
                         .text_size(px(11.))
                         .text_color(hex(t.fg_primary))
                         .text_ellipsis()
-                        .child(SharedString::from(disk.mount.clone())),
+                        .child(SharedString::from(disk_label(disk))),
                 )
                 .child(
                     div()
@@ -134,7 +164,7 @@ fn disk_row(disk: &DiskInfo, t: &ThemeTokens) -> impl IntoElement {
                         .text_size(px(10.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(level_color(pct, t))
-                        .child(SharedString::from(format!("{pct:.2}%"))),
+                        .child(SharedString::from(disk_percent_label(disk))),
                 ),
         )
         .child(
@@ -179,8 +209,36 @@ fn short_mount(mount: &str) -> String {
     format!("…{}", tail[start..].iter().collect::<String>())
 }
 
-/// 多盘合计文案：`120G/320G (38%)`
-fn disk_totals_label(o: &SystemOverview) -> String {
+/// 存储卡标题右侧的汇总文案。
+///
+/// 2026-11-12 运行反馈「存储展示的内容要和 df -h 一致」：原先这里按精确字节
+/// 重算 `used/total`（`5.5G/48.6G (11.25%)`），与手工 `df -h` 的
+/// `49G 5.5G 42G 12%` 三处都对不上 —— GNU `df -h` 的 `Size` 在数值 ≥10 时
+/// 舍入成整数，`Use%` 又按 `used/(used+avail)` 向上取整；而同一张卡下面的
+/// 明细行用的偏偏是 df 原样文本，于是卡片自己跟自己都矛盾。
+///
+/// 口径：**远端单卷时逐字复用** `df -h` 的 `Used/Size (Use%)`；多卷时 df 本身
+/// 没有「合计」这一行，任何加总都是二次舍入出来的数字 ⇒ 标题留白，由下面
+/// 每行的原样列承担；本机（sysinfo，无 df 文本）仍按字节格式化，那里没有 df 可对照。
+///
+/// 2026-11-12 运行反馈「去掉界面上的 df -h」：多卷分支原本标一个命令字样当口径，
+/// 但那是命令而不是数据，不该出现在界面上 ⇒ 返回空串。留白是刻意的，
+/// 绝不能为了填满标题把各卷的 -h 文本相加（二次舍入的假合计）。
+fn disk_header_label(o: &SystemOverview) -> String {
+    let all_have_df = !o.disks.is_empty() && o.disks.iter().all(|d| d.df.is_some());
+    if all_have_df {
+        return match o.disks.len() {
+            1 => {
+                let d = o.disks[0]
+                    .df
+                    .as_ref()
+                    .expect("刚确认过全部磁盘都有 df 文本");
+                format!("{}/{} ({})", d.used, d.size, d.use_pct)
+            }
+            // df -h 既没有合计行，也不该把命令名摆到界面上：标题留白。
+            _ => String::new(),
+        };
+    }
     let (used, total) = o.disk_totals();
     if total == 0 {
         return "—".to_string();
@@ -317,7 +375,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                     .text_color(muted)
                     .text_ellipsis()
                     .text_right()
-                    .child(SharedString::from(disk_totals_label(&overview))),
+                    .child(SharedString::from(disk_header_label(&overview))),
             ),
     );
     if overview.disks.is_empty() {
@@ -359,10 +417,31 @@ mod tests {
         assert_eq!(short_mount("/数据目录/备份资料/年度归档"), "…/年度归档");
     }
 
-    /// 合计文案：没有磁盘数据时给占位符，不显示 `0B/0B (0%)`
+    use rustshell_core::metrics::DfColumns;
+
+    /// 一条远端磁盘：精确字节故意与 `df -h` 的展示值不同（模拟 `-k` 那一遍
+    /// 拿到 48.6 GiB，而 `-h` 舍入成 49G），用来证明展示只认 df 原样列。
+    fn df_disk(mount: &str, size: &str, used: &str, avail: &str, pct: &str) -> DiskInfo {
+        DiskInfo {
+            name: "/dev/vda3".into(),
+            mount: mount.into(),
+            total: 48_600_000_000,
+            used: 5_500_000_000,
+            avail: 42_000_000_000,
+            df: Some(DfColumns {
+                filesystem: "/dev/vda3".into(),
+                size: size.into(),
+                used: used.into(),
+                avail: avail.into(),
+                use_pct: pct.into(),
+            }),
+        }
+    }
+
+    /// 本机 / 无数据：没有 df 可对照，仍按字节给出合计，空数据给占位符。
     #[test]
-    fn disk_totals_label_handles_missing_data() {
-        assert_eq!(disk_totals_label(&SystemOverview::default()), "—");
+    fn disk_header_label_handles_missing_data_and_local_volumes() {
+        assert_eq!(disk_header_label(&SystemOverview::default()), "—");
         let o = SystemOverview {
             disks: vec![DiskInfo {
                 total: 1000,
@@ -371,7 +450,172 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(disk_totals_label(&o), "250B/1000B (25.00%)");
+        assert_eq!(disk_header_label(&o), "250B/1000B (25.00%)");
+        assert_eq!(disk_percent_label(&o.disks[0]), "25.00%");
+    }
+
+    /// 回归（2026-11-12 运行反馈「存储展示的内容要和 df -h 一致」）：
+    /// 截图中远端 `df -h` 的 `/` 是 `49G 5.5G 42G 12%`，卡里四个位置都必须逐字对上，
+    /// 不许再冒出 `48.6G` / `11.25%` / `12.00%` 这三套自造口径。
+    #[test]
+    fn storage_card_numbers_are_df_h_verbatim() {
+        let o = SystemOverview {
+            disks: vec![df_disk("/", "49G", "5.5G", "42G", "12%")],
+            ..Default::default()
+        };
+        let d = &o.disks[0];
+        assert_eq!(disk_header_label(&o), "5.5G/49G (12%)");
+        assert_eq!(d.used_over_total(), "5.5G/49G");
+        assert_eq!(d.avail_text().as_deref(), Some("42G"));
+        assert_eq!(disk_percent_label(d), "12%");
+        assert_eq!(d.percent(), 12.0);
+    }
+
+    /// 多卷时 `df -h` 没有「合计」行：把各卷的 -h 文本相加只会二次舍入。
+    /// 2026-11-12 起连命令字样也不摆（用户要求界面上不出现 df 命令）⇒ 标题留白。
+    #[test]
+    fn disk_header_label_omits_invented_totals_for_multiple_volumes() {
+        let o = SystemOverview {
+            disks: vec![
+                df_disk("/", "49G", "5.5G", "42G", "12%"),
+                df_disk("/data", "200G", "20G", "180G", "10%"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(disk_header_label(&o), "");
+        // 明细行仍各自贴着 df 原文
+        assert_eq!(disk_percent_label(&o.disks[0]), "12%");
+        assert_eq!(disk_percent_label(&o.disks[1]), "10%");
+    }
+
+    /// 回归（2026-11-12「去掉界面上的 df -h」）：标题只放数据或留白，
+    /// 不许再显示任何命令字样 —— 采集用的命令属于实现细节，不是给用户看的文案。
+    #[test]
+    fn storage_header_shows_no_command_text() {
+        let code = production_source();
+        let head = region(&code, "fn disk_header_label(", "\n}\n");
+        assert!(
+            !head.contains("\"df -h\"") && !head.contains("\"df -P\""),
+            "存储卡标题又显示了命令字样：标题只放数据或留白"
+        );
+    }
+
+    /// 接线护栏：纯函数全绿不代表 render 真的用了它 ——
+    /// 明细行可能又写回 `{pct:.2}%`，标题也可能仍接旧的按字节合计。
+    #[test]
+    fn storage_card_is_wired_to_df_text() {
+        let code = production_source();
+        let row = region(&code, "fn disk_row(", "\n}\n");
+        assert!(
+            row.contains("disk_percent_label(disk)"),
+            "存储明细行没接上 df 原样占用率文案"
+        );
+        assert!(
+            !row.contains("{pct:.2}%"),
+            "存储明细行又把占用率写死成两位小数了"
+        );
+        assert!(
+            code.contains("disk_header_label(&overview)"),
+            "存储卡标题没接上 df 口径的汇总文案"
+        );
+        assert!(
+            !code.contains("disk_totals_label(&overview)"),
+            "存储卡标题仍在用按字节重算的旧合计"
+        );
+    }
+
+    /// 接线护栏（2026-11-12「存储要按 `df -h` 完整显示」）：
+    /// 解析器放开过滤还不够 —— 渲染层必须把 `overview.disks` **整列**画出来，
+    /// 不能在 UI 里又按伪文件系统 / 容量筛一遍，也不能只取第一行。
+    #[test]
+    fn storage_card_renders_every_df_row() {
+        let code = production_source();
+        assert!(
+            code.contains("for disk in &overview.disks"),
+            "存储卡没有遍历全部 df 行"
+        );
+        let start = code
+            .find("let mut disk_card = card(&t);")
+            .expect("找不到存储卡（结构锚点）");
+        let end = code
+            .find("root = root.child(disk_card);")
+            .expect("找不到存储卡结尾（结构锚点）");
+        assert!(end > start, "存储卡结构锚点顺序变了");
+        let card = &code[start..end];
+        assert!(
+            !card.contains(".filter(")
+                && !card.contains("is_real_filesystem")
+                && !card.contains(".take("),
+            "存储卡在渲染层又筛掉了一些文件系统：df -h 的每一行都要显示"
+        );
+        assert!(
+            code.contains("disk_label(disk)"),
+            "明细行没接上 Filesystem 列（多个 tmpfs 会让用户没法逐行核对）"
+        );
+    }
+
+    /// 端到端（2026-11-12 用户给的现场 `df -h`，腾讯云 VM-0-13-ubuntu）：
+    /// 把终端里 `df -P -k` / `df -h -P` 的原样输出喂进探测解析器，
+    /// 存储卡必须**逐行**、**逐字**复现终端的 7 行（含 tmpfs / efivarfs /
+    /// `/boot/efi`），顺序也不能重排。
+    #[test]
+    fn real_df_h_probe_renders_every_row_like_the_terminal() {
+        let probe = concat!(
+            "__DF__\n",
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n",
+            "tmpfs 201704 1100 200604 1% /run\n",
+            "efivarfs 256 21 231 9% /sys/firmware/efi/efivars\n",
+            "/dev/vda3 51342336 5767168 43500000 12% /\n",
+            "tmpfs 1006600 24 1006576 1% /dev/shm\n",
+            "tmpfs 5120 0 5120 0% /run/lock\n",
+            "/dev/vda1 549984 6348 543636 2% /boot/efi\n",
+            "tmpfs 201704 12 201692 1% /run/user/1000\n",
+            "__DFH__\n",
+            "Filesystem Size Used Avail Use% Mounted on\n",
+            "tmpfs 197M 1.1M 196M 1% /run\n",
+            "efivarfs 256K 21K 231K 9% /sys/firmware/efi/efivars\n",
+            "/dev/vda3 49G 5.5G 42G 12% /\n",
+            "tmpfs 983M 24K 983M 1% /dev/shm\n",
+            "tmpfs 5.0M 0 5.0M 0% /run/lock\n",
+            "/dev/vda1 537M 6.2M 531M 2% /boot/efi\n",
+            "tmpfs 197M 12K 197M 1% /run/user/1000\n",
+        );
+        let o = rustshell_core::ssh::parse_system_overview(probe);
+        // 用户终端里的 7 行：Filesystem / Size / Used / Avail / Use% / Mounted on
+        let expected = [
+            ("tmpfs", "197M", "1.1M", "196M", "1%", "/run"),
+            (
+                "efivarfs",
+                "256K",
+                "21K",
+                "231K",
+                "9%",
+                "/sys/firmware/efi/efivars",
+            ),
+            ("/dev/vda3", "49G", "5.5G", "42G", "12%", "/"),
+            ("tmpfs", "983M", "24K", "983M", "1%", "/dev/shm"),
+            ("tmpfs", "5.0M", "0", "5.0M", "0%", "/run/lock"),
+            ("/dev/vda1", "537M", "6.2M", "531M", "2%", "/boot/efi"),
+            ("tmpfs", "197M", "12K", "197M", "1%", "/run/user/1000"),
+        ];
+        assert_eq!(o.disks.len(), expected.len(), "disks={:?}", o.disks);
+        for (d, (fs, size, used, avail, pct, mount)) in o.disks.iter().zip(expected) {
+            let cols = d.df.as_ref().expect("每一行都要有 df -h 原样列");
+            assert_eq!(cols.filesystem, fs);
+            assert_eq!(cols.size, size);
+            assert_eq!(cols.used, used);
+            assert_eq!(cols.avail, avail);
+            assert_eq!(cols.use_pct, pct);
+            assert_eq!(d.mount, mount);
+            assert_eq!(disk_label(d), format!("{fs} {mount}"));
+            assert_eq!(d.used_over_total(), format!("{used}/{size}"));
+            assert_eq!(d.avail_text().as_deref(), Some(avail));
+            assert_eq!(disk_percent_label(d), pct);
+        }
+        // 多卷不编合计、也不显示命令字样，标题留白；
+        // 容量合计仍只算真实磁盘（按既有规则 `/boot/efi` 不进合计）
+        assert_eq!(disk_header_label(&o), "");
+        assert_eq!(o.disk_totals().1, 51_342_336 * 1024);
     }
 
     /// 回归（2026-09-18 运行反馈「概览，取消三个圆饼图」）：
