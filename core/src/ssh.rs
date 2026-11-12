@@ -797,42 +797,132 @@ pub async fn connect_only(
         )
         .await
         {
-            Ok(r) => r.map_err(|e| format!("认证错误: {e}"))?,
-            Err(_) => {
-                return Err(format!(
-                    "认证超时（{}s）：服务器无响应",
-                    step_timeout.as_secs()
-                ))
-            }
+            Ok(r) => r.map_err(|e| format!("认证错误: {e}"))?.success(),
+            Err(_) => return Err(auth_timeout_msg(step_timeout)),
         }
     } else if let Some(key_path) = &profile.key_path {
-        let key = russh::keys::load_secret_key(key_path, None)
-            .map_err(|e| format!("加载私钥 {key_path} 失败: {e}"))?;
-        match tokio::time::timeout(
-            step_timeout,
-            handle.authenticate_publickey(
-                &profile.username,
-                russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), None),
-            ),
-        )
-        .await
-        {
-            Ok(r) => r.map_err(|e| format!("认证错误: {e}"))?,
-            Err(_) => {
-                return Err(format!(
-                    "认证超时（{}s）：服务器无响应",
-                    step_timeout.as_secs()
-                ))
-            }
-        }
+        let key = Arc::new(
+            russh::keys::load_secret_key(key_path, None)
+                .map_err(|e| load_key_error(key_path, &e.to_string()))?,
+        );
+        authenticate_with_key(&mut handle, &profile.username, key, step_timeout).await?
     } else {
         return Err("未提供密码或私钥".into());
     };
-    if !authed.success() {
-        return Err(format!("{}@{} 认证失败", profile.username, profile.host));
+    if !authed {
+        return Err(auth_failure_msg(profile));
     }
 
     Ok(handle)
+}
+
+/// RSA 私钥认证时依次尝试的签名哈希算法（RFC 8332）。
+///
+/// ★ 这正是「绑定了私钥却登录不了」的根因（2026-11-11 实机定位）：
+/// `PrivateKeyWithHashAlg::new(key, None)` 里的 `None` **不是**「让 russh 自己协商」，
+/// 而是被明确映射成旧版 `ssh-rsa`（SHA-1）签名。OpenSSH 8.8+ 默认把 `ssh-rsa`
+/// 从 `PubkeyAcceptedAlgorithms` 里移除，于是握手成功、私钥也读得出来，服务端却在
+/// 验签时一律拒绝 —— 用户只看到一句「xxx@host 认证失败」，和「密钥不匹配」
+/// 长得一模一样。实测腾讯云 118.25.81.212 的 `server-sig-algs` 只含
+/// `rsa-sha2-512,rsa-sha2-256`，同一把 `.pem` 用系统 OpenSSH（`rsa-sha2-256`）
+/// 可以正常登录。
+///
+/// `best` 是 [`russh::client::Handle::best_supported_rsa_hash`] 的返回值，三种含义：
+/// - `Some(Some(alg))`：服务端通过 `server-sig-algs` 扩展（RFC 8308）声明了 alg ⇒ 只用它；
+/// - `Some(None)`：扩展在，但明确不含 `rsa-sha2-*` ⇒ 尊重服务端，退回 SHA-1；
+/// - `None`：服务端没发扩展 ⇒ 先试现代 `rsa-sha2-256`，被拒再退回 SHA-1。
+///   russh 文档对这种情况的建议原话是 "you may still attempt an authentication
+///   with `rsa-sha2-256` or `rsa-sha2-512` and hope for the best"。
+///
+/// 抽成纯函数是为了让「三种协商结果各自该试什么」可直接单测：这条链上一旦有人
+/// 把 `None` 写死回去，症状是**只有新型服务器连不上**，本机很难复现。
+fn rsa_hash_candidates(
+    best: Option<Option<russh::keys::HashAlg>>,
+) -> Vec<Option<russh::keys::HashAlg>> {
+    match best {
+        Some(Some(alg)) => vec![Some(alg)],
+        Some(None) => vec![None],
+        None => vec![Some(russh::keys::HashAlg::Sha256), None],
+    }
+}
+
+/// 用私钥完成认证；RSA 按服务端声明选签名算法，必要时逐级回退。
+///
+/// 所有步骤共用**一个** deadline（而不是每步各自计时）：`best_supported_rsa_hash`
+/// 最长会等 1 秒的 EXT_INFO，回退时又多一次认证往返，逐步计时会把用户配置的
+/// 连接超时悄悄放大两三倍。
+async fn authenticate_with_key<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
+    username: &str,
+    key: Arc<russh::keys::PrivateKey>,
+    step_timeout: Duration,
+) -> Result<bool, String> {
+    let deadline = tokio::time::Instant::now() + step_timeout;
+    let timeout_msg = || format!("认证超时（{}s）：服务器无响应", step_timeout.as_secs());
+
+    let candidates = if matches!(key.algorithm(), russh::keys::Algorithm::Rsa { .. }) {
+        let best = tokio::time::timeout_at(deadline, handle.best_supported_rsa_hash())
+            .await
+            .map_err(|_| timeout_msg())?
+            .map_err(|e| format!("读取服务端签名算法失败: {e}"))?;
+        rsa_hash_candidates(best)
+    } else {
+        // Ed25519 / ECDSA 没有「签名哈希算法」这一维，`PrivateKeyWithHashAlg::new`
+        // 也会把传入的 alg 强行置 None —— 不必白等一次 EXT_INFO。
+        vec![None]
+    };
+
+    for alg in candidates {
+        let res = tokio::time::timeout_at(
+            deadline,
+            handle.authenticate_publickey(
+                username,
+                russh::keys::PrivateKeyWithHashAlg::new(key.clone(), alg),
+            ),
+        )
+        .await;
+        match res {
+            Ok(Ok(r)) if r.success() => return Ok(true),
+            // 被拒：换下一种算法再试。russh 在 USERAUTH_FAILURE 后会清空
+            // `auth_method`，只要服务端仍允许 publickey 就能继续尝试。
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("认证错误: {e}")),
+            Err(_) => return Err(timeout_msg()),
+        }
+    }
+    // 候选表恒非空；走到这里 = 所有算法都被服务端拒绝
+    Ok(false)
+}
+
+/// 认证超时的统一文案（密码与私钥两条分支共用）。
+fn auth_timeout_msg(step_timeout: Duration) -> String {
+    format!("认证超时（{}s）：服务器无响应", step_timeout.as_secs())
+}
+
+/// 私钥加载失败的可读文案：把「私钥带口令」这一常见成因直接说给用户。
+///
+/// `load_secret_key` 的口令参数恒为 `None`（本客户端目前不收私钥口令），
+/// 遇到加密私钥时 russh 只回一句 `key is encrypted`，用户会误以为是格式坏了。
+fn load_key_error(path: &str, err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    let hint = if lower.contains("encrypted") || lower.contains("passphrase") {
+        "；该私钥可能带口令，RustShell 目前只支持未加密的私钥（可用 `ssh-keygen -p` 去掉口令或另存一份）"
+    } else {
+        ""
+    };
+    format!("加载私钥 {path} 失败: {err}{hint}")
+}
+
+/// 认证失败的最终文案。
+///
+/// 前缀「认证失败」必须保留：UI 的断连条与告警分流按它识别这类失败。
+/// 后半句补上可执行的排查方向 —— 只剩一句「认证失败」时，用户无法区分
+/// 「用户名填错」「公钥没进 authorized_keys」和「签名算法被服务端拒」。
+fn auth_failure_msg(profile: &ConnectionProfile) -> String {
+    format!(
+        "{}@{} 认证失败：请确认用户名正确、且凭据有效（私钥认证时，公钥需已写入服务器 ~/.ssh/authorized_keys）",
+        profile.username, profile.host
+    )
 }
 
 /// 建连相位（只为超时文案分流）。
@@ -2379,6 +2469,84 @@ mod tests {
             "旧记录必须被**替换**而不是追加并存（否则永远先命中旧行）：{after}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RSA 签名算法协商（2026-11-11 实机回归）：三种服务端声明各自该试什么。
+    ///
+    /// 用户报「绑定了私钥但登录不了腾讯云」：私钥是腾讯云下发的 PKCS#1
+    /// `RSA PRIVATE KEY`，russh 读得出来，但 `None` 被映射成 SHA-1 的 `ssh-rsa`，
+    /// 而服务端 `server-sig-algs` 只有 `rsa-sha2-512/256`。这组断言钉住协商口径。
+    #[test]
+    fn rsa_hash_candidates_follow_server_sig_algs() {
+        use russh::keys::HashAlg;
+
+        // 服务端明确支持 rsa-sha2-* ⇒ 只试它，不做多余的失败往返
+        assert_eq!(
+            rsa_hash_candidates(Some(Some(HashAlg::Sha512))),
+            vec![Some(HashAlg::Sha512)]
+        );
+        assert_eq!(
+            rsa_hash_candidates(Some(Some(HashAlg::Sha256))),
+            vec![Some(HashAlg::Sha256)]
+        );
+
+        // 扩展在、但明确只支持旧 ssh-rsa ⇒ 尊重服务端，退回 SHA-1
+        assert_eq!(rsa_hash_candidates(Some(None)), vec![None]);
+
+        // 没发扩展 ⇒ 现代优先、SHA-1 兜底，顺序不能反
+        assert_eq!(rsa_hash_candidates(None), vec![Some(HashAlg::Sha256), None]);
+    }
+
+    /// 接线护栏：光有 `rsa_hash_candidates` 的语义还不够，`connect_only` 必须真的
+    /// 走协商函数 —— 漏接的症状是「单测全绿、真机新型 sshd 一律认证失败」。
+    #[test]
+    fn private_key_auth_is_wired_to_signature_negotiation() {
+        let src = include_str!("ssh.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let at = prod
+            .find("pub async fn connect_only")
+            .expect("connect_only 必须存在");
+        let end = prod[at..]
+            .find("Ok(handle)")
+            .map(|i| at + i)
+            .unwrap_or(prod.len());
+        let body = &prod[at..end];
+
+        assert!(
+            body.contains("authenticate_with_key("),
+            "connect_only 没走签名算法协商：RSA 私钥会被 SHA-1 签名，新型 sshd 一律拒绝"
+        );
+        assert!(
+            !body.contains("PrivateKeyWithHashAlg::new"),
+            "不要在 connect_only 里直接构造 PrivateKeyWithHashAlg（会绕过协商）"
+        );
+        assert!(
+            prod.contains("best_supported_rsa_hash()"),
+            "必须读取服务端的 server-sig-algs 扩展"
+        );
+        assert!(
+            prod.contains("rsa_hash_candidates("),
+            "协商结果必须过候选表，不能原样传 None"
+        );
+    }
+
+    /// 认证失败 / 私钥加载失败的文案要给得出下一步动作，且保留 UI 按以分流的标记。
+    #[test]
+    fn key_auth_error_messages_are_actionable() {
+        let encrypted = load_key_error("/tmp/id_rsa", "key is encrypted");
+        assert!(encrypted.contains("加载私钥 /tmp/id_rsa 失败: key is encrypted"));
+        assert!(encrypted.contains("带口令"), "{encrypted}");
+        let plain = load_key_error("/tmp/id_rsa", "Could not read key");
+        assert!(plain.contains("Could not read key"));
+        assert!(!plain.contains("带口令"), "{plain}");
+
+        let p = ConnectionProfile::new("tc", "118.25.81.212", "ubuntu");
+        let msg = auth_failure_msg(&p);
+        assert!(
+            msg.contains("ubuntu@118.25.81.212 认证失败"),
+            "断连条与告警分流按「认证失败」识别：{msg}"
+        );
+        assert!(msg.contains("authorized_keys"), "{msg}");
     }
 
     /// 主机密钥类失败必须能区分「变了」与「没见过」，且不能把无关的 key 错误算进来。
