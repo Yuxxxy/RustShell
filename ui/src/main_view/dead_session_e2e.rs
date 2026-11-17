@@ -383,8 +383,16 @@ mod e2e {
             bool,
         );
         let mut outcome: Option<Outcome> = None;
-        for _ in 0..100 {
+        // ⚠️ 2026-11-17：原来是 100 × 50ms（5 秒）硬预算。单跑必过，但**全量并发跑**
+        // 时（CI 的 2 核 runner 上 438 个用例抢 CPU，本机也跑着 clippy/索引）会踩线
+        // 报「结果没有任何落点」—— 那是假红，不是功能坏了。
+        // 现在：10 秒预算 + 每轮先 `run_until_parked()` 把执行器推一步（后台任务的
+        // 完成回调要靠它落地），超时也不再只说「空的」，而是把现场一并打出来。
+        let mut waited = std::time::Duration::ZERO;
+        for _ in 0..200 {
+            vcx.run_until_parked();
             std::thread::sleep(std::time::Duration::from_millis(50));
+            waited += std::time::Duration::from_millis(50);
             let r = vcx.update(|_w, cx| {
                 main.update(cx, |m, cx| {
                     m.poll(cx);
@@ -398,10 +406,28 @@ mod e2e {
             }
         }
 
-        let (tab_err, notices, still_dead) = outcome.expect(
-            "重连失败后 `tabs[0].connect_error` 仍是空的：\
-             后台的失败结果没有任何落点（用户看到的就是「无任何失败提示」）",
-        );
+        let Some((tab_err, notices, still_dead)) = outcome else {
+            // 失败时给现场：光说「connect_error 是空的」没法判断是线程没起来、
+            // 还是被在途守卫挡了、还是连接还在挂着。
+            let diag = vcx.update(|_w, cx| {
+                main.update(cx, |m, _| {
+                    let tab = &m.tabs_state.tabs[0];
+                    format!(
+                        "state={:?} connecting={} dead={} 在途守卫={} connect_started={:?}",
+                        tab.session.state,
+                        tab.is_connecting(),
+                        tab.is_dead(),
+                        m.conn_ui.connecting_profiles.contains("p-e2e"),
+                        tab.connect_started.map(|s| s.elapsed()),
+                    )
+                })
+            });
+            panic!(
+                "重连失败的结果在 {waited:?} 内没有落到 `connect_error`：\
+                 后台的失败结果没有任何落点（用户看到的就是「无任何失败提示」）。\
+                 现场：{diag}"
+            );
+        };
         let err = tab_err.expect("上面已保证非空");
         assert!(
             !err.trim().is_empty(),
