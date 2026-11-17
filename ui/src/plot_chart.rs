@@ -1,6 +1,6 @@
 //! 带「数值文案格式」的走势图。
 //!
-//! 为什么不直接用官方的 [`gpui_component::chart::AreaChart`]：
+//! 为什么不直接用官方的 [`gpui_kit::component::chart::AreaChart`]：
 //! 它的 hover 行是 `format!("{}", value)` **硬编码**（`chart/area_chart.rs`
 //! 的 `Chart::tooltip`），既不接受格式化闭包也没有导出可覆盖的钩子。于是：
 //!
@@ -24,23 +24,23 @@ use gpui::{
     point, px, AnyElement, App, Bounds, ElementId, Hsla, IntoElement, Pixels, SharedString,
     TextAlign, Window,
 };
-use gpui_component::plot::{
+use gpui_kit::component::plot::{
     scale::{Scale, ScaleLinear, ScalePoint},
     shape::Area,
     tooltip::{CrossLine, Dot, Tooltip, TooltipState},
     AxisText, Grid, IntoPlot, Plot, PlotAxis,
 };
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
 
 /// x 轴刻度区占掉的底部高度（px）。
 ///
 /// 0.7.0 起 `plot::AXIS_GAP`（常量 18.）被**弃用**，官方口径改为
 /// `plot::axis_gutter(刻度字号)` = `字号 + TEXT_GAP × 4` —— 留白由标签字号算出来，
 /// 图表若画更大的刻度就传自己的字号，否则刻度会被裁掉。
-/// 本组件的刻度走默认字号（[`gpui_component::plot::label::TEXT_SIZE`]，10px：
+/// 本组件的刻度走默认字号（[`gpui_kit::component::plot::label::TEXT_SIZE`]，10px：
 /// 10 + 2×4 = 18），与旧常量取值完全相同，所以这次替换不改变任何一个像素。
 fn axis_gutter() -> f32 {
-    gpui_component::plot::axis_gutter(px(gpui_component::plot::label::TEXT_SIZE))
+    gpui_kit::component::plot::axis_gutter(px(gpui_kit::component::plot::label::TEXT_SIZE))
 }
 
 /// 一条序列：怎么取值、怎么配色、hover 里叫什么、**数值怎么写成文案**。

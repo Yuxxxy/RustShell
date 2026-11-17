@@ -9,9 +9,23 @@ license.workspace = true
 description = "RustShell 自有终端引擎：alacritty_terminal 解析 + GPUI 渲染"
 publish = false
 
+# 文档示例（doctest）不参与编译 —— 文档正文照旧保留，只是不再编译那 23 个例子。
+#
+# 为什么（2026-11-16 升 gpui-kit 0.9.1 实测）：这些例子派生自上游 gpui-terminal，
+# 而 gpui-kit 门面把 **gpui-pre（默认后端，非可选依赖）** 也拉进了本 crate 的依赖图。
+# doctest 编译时要加载这条链上的全部元数据，Windows 上稳定撞：
+#   error[E0462]: found staticlib `windows_interface` instead of rlib or dylib
+#   error[E0460]: found possibly newer version of crate `accesskit_windows` / `rustix` / …
+# 对照实验：只依赖 `gpui-fast` 的最小 crate 的 doctest 能正常跑过 ⇒ 不是工具链坏了，
+# 是「门面把 gpui-pre 也算进本 crate」这件事本身。CI 不进这条（ci.yml 只跑 `--lib`），
+# 这里关掉只为让 `cargo test --workspace` 在本地也全绿。
+[lib]
+doctest = false
+
 [dependencies]
-# gpui-pre 0.3.x 快照线，以 gpui 别名引入，源码 `use gpui::..` 路径不变
-gpui = { workspace = true }
+# GPUI 门面（gpui-kit 0.9.1）。源码仍写 `use gpui::..`：crate 根有
+# `extern crate gpui_kit as gpui;`（derive 宏展开的路径是字面量 `gpui::`）。
+gpui-kit = { workspace = true }
 alacritty_terminal = { workspace = true }
 # VTE `Handler` 转发层要用到 `CursorIcon`（vte 只私有再导出它，见工作区 Cargo.toml 注释）
 cursor-icon = { workspace = true }

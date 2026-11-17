@@ -4,7 +4,7 @@ use gpui::{
     point, px, size, App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowKind,
     WindowOptions,
 };
-use gpui_component::TitleBar;
+use gpui_kit::component::TitleBar;
 use rustshell_core::window_bounds::{pick_screen, ScreenRect, WindowBoundsRecord};
 
 use rustshell_ui::main_view::{
@@ -54,7 +54,7 @@ fn keybindings(cx: &gpui::App) -> Vec<KeyBinding> {
             bindings.push(b);
         }
     }
-    // Tab/Shift+Tab 终端补全：cx.bind_keys 在 gpui_component::init 之后调用，
+    // Tab/Shift+Tab 终端补全：cx.bind_keys 在 gpui_kit::component::init 之后调用，
     // 同深度后注册胜出（key_dispatch.rs），覆盖 Root 的焦点遍历绑定；
     // 处理器内判断焦点，终端持焦时写 PTY 并阻断，否则放行给默认焦点遍历。
     bindings.push(KeyBinding::new("tab", TermTab, None));
@@ -174,10 +174,10 @@ pub fn run() {
         }
     };
 
-    gpui_platform::application()
+    gpui_kit::application()
         .with_assets(AppAssets)
         .run(|cx: &mut App| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             // 启动参数通道要在开窗之前装好：首轮 `poll` 才看得到它。
             rustshell_ui::main_view::ui_install_launch_requests(cx, requests);
             // 主题由用户设置驱动（：settings.theme_mode）
@@ -226,11 +226,11 @@ pub fn run() {
                 // 那次兜底调用撞上它会直接返回，不会发两次请求。
                 view.update(cx, |v, cx| v.update_auto_check(cx));
                 // 外壳视图负责挂载官方 Dialog / Sheet 层。
-                //`gpui_component::Root::render`并不挂这两层，必须由业务视图挂；
+                //`gpui_kit::component::Root::render`并不挂这两层，必须由业务视图挂；
                 // 且不能在 MainView 自身 render 里挂（render_dialog_layer 会同步执行
                 // 对话框构建闭包，进而 update MainView 到 重入 panic）。
                 let shell = cx.new(|_| AppShell::new(view));
-                cx.new(|cx| gpui_component::Root::new(shell, window, cx))
+                cx.new(|cx| gpui_kit::component::Root::new(shell, window, cx))
             });
 
             // 退出前把 AI 会话落盘（2026-09-23「AI对话需要保存」）。

@@ -12,7 +12,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dialog::{Dialog, DialogButtonProps},
     h_flex,
@@ -296,9 +296,9 @@ impl MainView {
                         .gap_2()
                         .py_1()
                         .child(
-                            gpui_component::checkbox::Checkbox::new(SharedString::from(format!(
-                                "openssh-row-{ix}"
-                            )))
+                            gpui_kit::component::checkbox::Checkbox::new(SharedString::from(
+                                format!("openssh-row-{ix}"),
+                            ))
                             .xsmall()
                             .checked(checked)
                             .disabled(!is_new)
@@ -560,7 +560,7 @@ impl MainView {
         // 不用 `RadioGroup`：它是受控组，要额外维护下标状态；而这里只有两支，
         // 选中值就是 `dlg_auth` 本身（本文件既有的 `radio_row` 也是这个理由）。
         let auth_radio = |id: &'static str, label: &'static str, mode: AuthMode| {
-            gpui_component::radio::Radio::new(id)
+            gpui_kit::component::radio::Radio::new(id)
                 .xsmall()
                 .label(rustshell_core::i18n::t(label))
                 .checked(auth == mode)
@@ -1778,7 +1778,8 @@ impl MainView {
                         )
                         // `Textarea` 没有 `small()`（尺寸全由高度决定）。
                         .child(
-                            gpui_component::input::Textarea::new(&self.io.dlg_task_prompt).w_full(),
+                            gpui_kit::component::input::Textarea::new(&self.io.dlg_task_prompt)
+                                .w_full(),
                         ),
                 )
             })
@@ -2177,7 +2178,7 @@ impl MainView {
                     .items_center()
                     .gap_2()
                     .child(
-                        gpui_component::checkbox::Checkbox::new("qc-dlg-newline")
+                        gpui_kit::component::checkbox::Checkbox::new("qc-dlg-newline")
                             .xsmall()
                             .checked(self.io.dlg_qc_newline)
                             .on_click(cx.listener(|m, checked: &bool, _w, cx| {
@@ -3413,7 +3414,7 @@ fn pick_row(
         // 给固定选择器，用例据此确认列表真的渲染出了行、勾选状态也对。
         .debug_selector(move || format!("task-pick-{kind}-{}", if on { "on" } else { "off" }))
         .child(
-            gpui_component::checkbox::Checkbox::new(SharedString::from(format!(
+            gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!(
                 "task-pick-box-{kind}-{id}"
             )))
             .xsmall()
@@ -3533,10 +3534,11 @@ fn radio_row(
     use crate::theme::to_hsla as hex;
     // 局部引入：本文件的其它渲染函数同样这么做（`gap_1` / `text_size` 来自 `Styled`）
     use gpui::Styled as _;
-    let boxed = gpui_component::checkbox::Checkbox::new(SharedString::from(format!("{id}-box")))
-        .xsmall()
-        .checked(on)
-        .into_any_element();
+    let boxed =
+        gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!("{id}-box")))
+            .xsmall()
+            .checked(on)
+            .into_any_element();
     let text = div()
         .text_size(px(11.))
         .text_color(hex(if on { t.fg_primary } else { t.fg_secondary }))
@@ -3676,7 +3678,7 @@ pub(in crate::main_view) mod tests {
     ) -> (Entity<MainView>, &mut gpui::VisualTestContext) {
         use gpui::AppContext as _;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: Rc<RefCell<Option<Entity<MainView>>>> = Rc::new(RefCell::new(None));
@@ -3686,7 +3688,7 @@ pub(in crate::main_view) mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| super::super::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -3705,7 +3707,7 @@ pub(in crate::main_view) mod tests {
     /// 反过来，若把窗口级监听挪回 render，这里会立刻红。
     #[gpui::test]
     fn settings_dialog_renders_without_paint_phase_panic(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         // 打开设置面板：panic 发生在紧随其后的那一帧（对话层渲染里跑构建闭包）
@@ -3731,7 +3733,7 @@ pub(in crate::main_view) mod tests {
     /// 的渲染路径，未知 id 也画得出来。
     #[gpui::test]
     fn connect_dialog_renders_without_the_group_field(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         main.update_in(vcx, |m, window, cx| {
@@ -3832,7 +3834,7 @@ pub(in crate::main_view) mod tests {
     /// 变异验证：把页签栏或高级页加回 `render_dialog`，② 会红。
     #[gpui::test]
     fn the_connect_dialog_is_a_single_simple_form(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         main.update_in(vcx, |m, window, cx| {
@@ -3885,7 +3887,7 @@ pub(in crate::main_view) mod tests {
     /// 只有真渲染一次才知道那一支到底进没进树。
     #[gpui::test]
     fn auth_mode_swaps_the_credential_field(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         main.update_in(vcx, |m, window, cx| m.open_connect_dialog(None, window, cx));
@@ -3986,7 +3988,7 @@ pub(in crate::main_view) mod tests {
     /// 120s，用户什么也看不到。判据是几何：信任框的 body 量得到。
     #[gpui::test]
     fn the_trust_dialog_stacks_on_top_of_the_connect_dialog(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         // 业务层：新建连接对话框（测试连接就在它里面）
@@ -4102,7 +4104,7 @@ pub(in crate::main_view) mod tests {
     /// 回归：新建分组对话框开框即聚焦名称输入框（用户不必先点一下输入框）。
     #[gpui::test]
     fn new_group_dialog_focuses_name_input(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         main.update_in(vcx, |m, window, cx| {
@@ -4165,7 +4167,7 @@ pub(in crate::main_view) mod tests {
     /// 拿着上一条连接的密文当自己的来源。
     #[gpui::test]
     fn the_new_dialog_wipes_the_proxy_draft_and_edit_restores_it(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         use rustshell_core::proxy::{ProxyKind, ProxyMode};
 
         let (main, vcx) = build_main(cx);
@@ -4528,7 +4530,7 @@ pub(in crate::main_view) mod tests {
     /// 「载入的是对的那条」。
     #[gpui::test]
     fn task_edit_dialog_opens_for_the_clicked_task(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
 
         let now = rustshell_core::connections::unix_now_secs();
@@ -5142,7 +5144,7 @@ pub(in crate::main_view) mod tests {
     /// 过滤重排都不许再把焦点抢走（此前修过的回归）。
     #[gpui::test]
     fn settings_search_keeps_focus_only_after_the_user_focuses_it(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
         main.update_in(vcx, |m, window, cx| {
             m.present_dialog(DialogMode::Settings, window, cx);
@@ -5206,7 +5208,7 @@ pub(in crate::main_view) mod tests {
         );
         vcx.update(|w, cx| {
             w.push_notification(
-                gpui_component::notification::Notification::info("probe"),
+                gpui_kit::component::notification::Notification::info("probe"),
                 cx,
             );
         });
@@ -5236,7 +5238,7 @@ pub(in crate::main_view) mod tests {
     /// 不许把焦点从对话框里拽走；请求要留到框关掉之后再兑现。
     #[gpui::test]
     fn pending_focus_waits_until_the_dialog_closes(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = build_main(cx);
         main.update_in(vcx, |m, window, cx| {
             m.present_dialog(DialogMode::Settings, window, cx);

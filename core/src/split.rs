@@ -80,6 +80,35 @@ pub enum SplitFix {
     Unsplit,
 }
 
+/// 「把这个标签放到下/右那一格」：返回 `(primary, secondary)`。
+///
+/// 2026-11-17 运行反馈定下的语义：「向下拆分，如果是当前下方已经有了，**替换下方**，
+/// 往右拆分同理」+ 同一轮补充的「点上方那枚时要**对调**」。
+///
+/// 版面口径：`primary` 是第一格（左右分屏的左、上下分屏的上），`secondary` 是第二格
+/// （右 / 下）。三条：
+/// * `target` 不在分屏里：它**替换副格**，`primary` 不动；
+/// * `target` 已经是副格那枚：幂等（方向由调用方改）；
+/// * `target` 是主格那枚：两格**对调** —— 同一枚标签不能同时占两格，而用户按的是
+///   「把这枚拆到下面」，所以它必须离开主格，原来副格那枚升上来。
+///
+/// ⟹ 一句话：**除了「点中的已经在副格」这一种，副格永远变成点中的那枚**。
+///
+/// 「还没分屏」这一支不归这里管（那是「拆出第一刀」，由 UI 层挑搭档），见
+/// `MainView::split_pane_from`。
+pub fn anchor_split(primary: &str, secondary: &str, target: &str) -> (String, String) {
+    if target == secondary {
+        // 已经在副格：槽位不动，只换方向（幂等）
+        return (primary.to_string(), secondary.to_string());
+    }
+    if target == primary {
+        // 在主格：对调 —— 它去副格，原来副格那枚升上来
+        return (secondary.to_string(), primary.to_string());
+    }
+    // 分屏之外的标签：替换副格（下/右），主格留着
+    (primary.to_string(), target.to_string())
+}
+
 /// 依据当前池子修正分屏态的不变量：
 /// 两个槽位都必须存在且互不相同；某个槽位不合法时优先用池中其它标签补位，
 /// 补不上就取消分屏 —— 绝不留「窗格指向已关闭标签」的半残状态。
@@ -236,5 +265,36 @@ mod tests {
             }
         );
         assert_eq!(fix_split("gone", "b", &pool(&["b"])), SplitFix::Unsplit);
+    }
+
+    /// 2026-11-17 运行反馈：「下方已经有了就**替换下方**」+「点上方那枚时要**对调**」。
+    ///
+    /// 不变量：**除了「点中的已经在副格」这一种，副格永远变成点中的那枚**。
+    #[test]
+    fn anchor_puts_the_target_in_the_second_pane() {
+        // 分屏之外的标签：替换副格，主格不动（「下方已经有了就替换下方」）
+        assert_eq!(
+            anchor_split("a", "b", "c"),
+            ("a".to_string(), "c".to_string())
+        );
+        // 点的是副格那枚：幂等（只换方向）
+        assert_eq!(
+            anchor_split("a", "b", "b"),
+            ("a".to_string(), "b".to_string())
+        );
+        // 点的是主格那枚：对调 —— 它必须离开主格才能落到副格，原来副格那枚升上来
+        assert_eq!(
+            anchor_split("a", "b", "a"),
+            ("b".to_string(), "a".to_string())
+        );
+        // 恒等式：副格 = 点中的标签（唯一例外：它本来就在副格，等价于不变）
+        for target in ["a", "b", "c", "zzz"] {
+            let (_p, s) = anchor_split("a", "b", target);
+            assert_eq!(s, target, "副格必须是点中的标签（target={target}）");
+        }
+        // 主格只在「点中的是主格那枚」时被换掉（让位给原来副格那枚）
+        assert_eq!(anchor_split("a", "b", "a").0, "b");
+        assert_eq!(anchor_split("a", "b", "c").0, "a");
+        assert_eq!(anchor_split("a", "b", "b").0, "a");
     }
 }

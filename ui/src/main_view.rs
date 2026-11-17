@@ -114,7 +114,7 @@ pub use domain::{AgentRun, AiChat, TransferState};
 pub use tab_model::{
     classify_session_end, DeadBarRetry, PaneSide, RetryLedger, SessionEnd, SplitPane, TabEntry,
 };
-pub(crate) use tab_model::{display_tab_title, take_due_retries};
+pub(crate) use tab_model::{display_tab_title, take_due_retries, TAB_TITLE_MAX_CHARS};
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -124,7 +124,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     h_flex,
     input::{EditorState, InputEvent, InputState, TextareaState},
     list::ListState,
@@ -180,7 +180,7 @@ pub struct SwitchTab {
 /// 自定义标题栏高度（px）。
 ///
 /// 2026-09-18 运行反馈「最上面标题栏稍微降一点高度」：官方
-/// `gpui_component::TitleBar` 默认 `TITLE_BAR_HEIGHT = 34px`（那是为「标题 +
+/// `gpui_kit::component::TitleBar` 默认 `TITLE_BAR_HEIGHT = 34px`（那是为「标题 +
 /// 系统按钮」留的余量，本应用标题栏里只有一行品牌名与版本号，显得空）。压到
 /// 30px，2026-09-21 又收到 **28px**（Windows 三枚 35px 宽系统按钮的可点高度下限）。
 ///
@@ -206,7 +206,7 @@ const TITLE_BAR_BRAND_SIZE: f32 = 13.;
 /// **只画一枚图标**（2026-11-04 用户要求）：shell-rs 标题栏那枚 `update-available`
 /// 也是纯图标 —— `CatalogIcon::CircleArrowUp`（圆圈上箭头）+ success/warning 着色，
 /// 版本与状态文字只挂在 hover 提示里，标题栏不常驻任何更新文字。这里直接取同一枚
-/// 图标（`gpui_kit_assets::IconName::CircleArrowUp`），配色也照它：正常绿、异常橙。
+/// 图标（`gpui_kit::assets::IconName::CircleArrowUp`），配色也照它：正常绿、异常橙。
 ///
 /// **只在「有新版 / 已就绪 / 失败」三种状态下出现**，其余时候不画任何东西 ——
 /// 标题栏不该常驻一枚「检查更新」，那是「设置 › 关于」的事。这条分工抄的也是
@@ -246,10 +246,10 @@ fn update_badge_entry(m: &MainView, cx: &mut Context<MainView>) -> gpui::AnyElem
         .cursor_pointer()
         .hover(|s| s.bg(hex(t.bg_overlay)))
         // 文字只在 hover 时出现，且不在标题栏里占位置（与 shell-rs 的 tooltip 同口径）。
-        .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
+        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
         .on_click(cx.listener(|m, _e, w, cx| m.on_update_badge_click(w, cx)))
         .child(
-            Icon::new(gpui_kit_assets::IconName::CircleArrowUp)
+            Icon::new(gpui_kit::assets::IconName::CircleArrowUp)
                 .small()
                 .text_color(hex(color)),
         )
@@ -1272,7 +1272,7 @@ impl MainView {
         // ── 4. AI 面板的输入框与滚动状态（`AiUiState` 的 `ai_*`）。
         //    `MessageScroller` 的行数**必须**用恢复回来的条数，从 0 起会让
         let ai_scroller = cx.new(|cx| {
-            gpui_component::message_scroller::MessageScrollerState::new(
+            gpui_kit::component::message_scroller::MessageScrollerState::new(
                 ai_history.current_msgs_len(),
                 cx,
             )
@@ -1556,7 +1556,7 @@ impl MainView {
         // 高度交给组件按内容自适应（2–10 行）：用户明确不要拖拽手柄那份实现。
         // 注意别在渲染处再给固定高度 —— 两者会打架。
         let dlg_task_prompt = cx.new(|cx| {
-            gpui_component::input::TextareaState::new(window, cx)
+            gpui_kit::component::input::TextareaState::new(window, cx)
                 .auto_grow(2, 10)
                 .placeholder(rustshell_core::i18n::t("用一句话说明要巡检什么"))
         });
@@ -1612,17 +1612,17 @@ impl MainView {
         // 连接树官方状态实体：展开/折叠事件回流到 expanded_groups（供持久化与重建）。
         // 事件携带的是**节点 id**（`grp:<分组 id>`），而集合存的是裸分组 id，
         // 故必须先过 `group_id_of_node` 换算，理由见该函数注释。
-        let tree_state = cx.new(|cx| gpui_component::tree::TreeState::new(cx));
+        let tree_state = cx.new(|cx| gpui_kit::component::tree::TreeState::new(cx));
         cx.subscribe(
             &tree_state,
-            |m: &mut Self, _ts, ev: &gpui_component::tree::TreeEvent, cx| {
+            |m: &mut Self, _ts, ev: &gpui_kit::component::tree::TreeEvent, cx| {
                 match ev {
-                    gpui_component::tree::TreeEvent::Expanded(id) => {
+                    gpui_kit::component::tree::TreeEvent::Expanded(id) => {
                         if let Some(gid) = group_id_of_node(id) {
                             m.conn_ui.expanded_groups.insert(gid.to_string());
                         }
                     }
-                    gpui_component::tree::TreeEvent::Collapsed(id) => {
+                    gpui_kit::component::tree::TreeEvent::Collapsed(id) => {
                         if let Some(gid) = group_id_of_node(id) {
                             m.conn_ui.expanded_groups.remove(gid);
                         }
@@ -2837,7 +2837,7 @@ impl Render for MainView {
         // 接管，等于一个没有实际作用的仿制品；腾出来的中间正好让标题行清爽。
         // 命令面板本身仍有 Ctrl+Shift+P，功能一点没少。
         root = root.child(
-            gpui_component::TitleBar::new()
+            gpui_kit::component::TitleBar::new()
                 .h(px(TITLE_BAR_HEIGHT))
                 // 隐藏标题栏下边框（2026-10-09 用户要求「隐藏标题栏的下方的线」）。
                 //
@@ -3029,7 +3029,7 @@ impl Render for MainView {
             //   （详见 `main_split_id` 的推导）。
             let panel_key = self.panel_ui.panel.key();
             let split_id = main_split_id(self.panel_ui.panel, sidebar_visible, ai_visible);
-            let mut group = gpui_component::resizable::h_resizable(split_id)
+            let mut group = gpui_kit::component::resizable::h_resizable(split_id)
                 // 分隔线**不画**（2026-09-21 用户要求「隐藏终端界面与左右两侧相间的
                 // 线条」）。三条竖边界（侧栏|终端、终端|AI 对话）走的就是这套手柄。
                 //
@@ -3048,7 +3048,7 @@ impl Render for MainView {
             if sidebar_visible {
                 let (pl, pr) = pad(0);
                 group = group.child(
-                    gpui_component::resizable::resizable_panel()
+                    gpui_kit::component::resizable::resizable_panel()
                         .size(w_px)
                         .size_range(min_w..max_w)
                         .flex_none()
@@ -3066,7 +3066,7 @@ impl Render for MainView {
             {
                 let (pl, pr) = pad(lead);
                 group = group.child(
-                    gpui_component::resizable::resizable_panel()
+                    gpui_kit::component::resizable::resizable_panel()
                         // 主区（终端列）必须**显式**声明「吃掉剩余空间 + 可以被压到
                         // 任意窄」：定宽面板（侧栏 / AI）都写了 `.flex_none()`，这块
                         // 什么都不写时宽度会退化成「按内容撑」，一旦内容里有
@@ -3088,7 +3088,7 @@ impl Render for MainView {
             if ai_visible {
                 let (pl, pr) = pad(lead + 1);
                 group = group.child(
-                    gpui_component::resizable::resizable_panel()
+                    gpui_kit::component::resizable::resizable_panel()
                         .size(ai_w_px)
                         .size_range(ai_min_w..ai_max_w)
                         .flex_none()
@@ -3269,7 +3269,7 @@ mod tests {
         let code = prod(include_str!("main_view.rs"));
         let chain = crate::test_support::region(
             &code,
-            "gpui_component::TitleBar::new()",
+            "gpui_kit::component::TitleBar::new()",
             r#".child("RustShell")"#,
         );
         assert!(
@@ -3333,7 +3333,7 @@ mod tests {
         ];
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -3344,7 +3344,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -3627,7 +3627,7 @@ mod tests {
         use super::{AppShell, MainView, PanelKind};
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -3643,7 +3643,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -3756,7 +3756,7 @@ mod tests {
         use super::{AppShell, MainView};
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -3767,7 +3767,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -4073,7 +4073,7 @@ mod tests {
         use super::{AppShell, MainView, TermShiftTab, TermTab};
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
             // 与 `shell/src/app.rs` 同口径注册键位：不注册的话这条用例测的是一张空
             // 键位表，「按键没反应」恒真 —— 那就成了一个永远会通过（或永远会失败）
@@ -4100,7 +4100,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -4569,7 +4569,7 @@ mod tests {
     #[gpui::test]
     fn connection_search_blurs_when_clicking_outside(cx: &mut gpui::TestAppContext) {
         use gpui::Focusable as _;
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
         vcx.update(|w, cx| w.draw(cx).clear(cx));
         let search_box = vcx
@@ -4603,7 +4603,7 @@ mod tests {
     #[gpui::test]
     fn task_search_blurs_when_clicking_outside(cx: &mut gpui::TestAppContext) {
         use gpui::Focusable as _;
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
         main.update_in(vcx, |m, _w, cx| {
             m.panel_ui.panel = crate::main_view::PanelKind::Tasks;
@@ -4645,7 +4645,7 @@ mod tests {
     /// 这条用例走真实事件分发，覆盖 `default_prevented` 这条路。
     #[gpui::test]
     fn settings_search_blurs_when_clicking_outside(cx: &mut gpui::TestAppContext) {
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
         main.update_in(vcx, |m, w, cx| {
             m.present_dialog(crate::main_view::DialogMode::Settings, w, cx);
@@ -4954,7 +4954,7 @@ mod tests {
             div, point, AppContext as _, InteractiveElement as _, IntoElement, ParentElement as _,
             Render, Styled as _, Window,
         };
-        use gpui_component::{
+        use gpui_kit::component::{
             list::ListItem,
             tree::{Tree as TreeView, TreeEvent, TreeItem, TreeState},
         };
@@ -4993,7 +4993,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -5397,7 +5397,7 @@ mod tests {
         use std::rc::Rc;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -5435,7 +5435,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();

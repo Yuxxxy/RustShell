@@ -270,6 +270,30 @@ pub(crate) fn take_due_retries(tabs: &mut [TabEntry], now: std::time::Instant) -
     due
 }
 
+/// 标签名的最长**字符**数（中文一个字算一个，不按字节算）。
+///
+/// 2026-11-16 运行反馈「tab 的名称过长不要隐藏，按照名称长度展示 tab 长度。
+/// 限制 tab 名称长度」：以前是**布局**把标题挤成省略号（`TabBar::max_width(220)`），
+/// 名字被「隐藏」了，用户看不出这条是哪个会话。现在反过来 —— 标签宽度跟着名字走，
+/// 长度的上限改由这里给：超过就在**文案**上截断并补 `…`，布局不再做二次省略。
+///
+/// 这是唯一需要调的口子：改大 = 单标签更宽；改小 = 更早截断。
+/// 只截**名字本身**，`display_tab_title` 后面追加的「（SFTP）」「（重连中 1/3）」
+/// 等类型/状态后缀始终完整保留。
+pub(crate) const TAB_TITLE_MAX_CHARS: usize = 24;
+
+/// 按字符截断标题（不切半个字符、不切半个 emoji），超长时补 `…`。
+fn cap_tab_title(title: &str) -> String {
+    let mut chars = title.chars();
+    let head: String = chars.by_ref().take(TAB_TITLE_MAX_CHARS).collect();
+    // 取满上限后还有剩 ⇒ 真的超了，才补省略号（正好等于上限时不补）
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 /// 标签**展示**用的标题：快照里指向的连接配置已删除时，就地补一句说明。
 ///
 /// 为什么只在渲染时加、绝不写回 `session.title`：`session.title` 是下次快照的
@@ -280,7 +304,8 @@ pub(crate) fn take_due_retries(tabs: &mut [TabEntry], now: std::time::Instant) -
 /// 已连上的标签不加后缀：那一刻配置是存在的，人已在这台机器上干活，标题突然
 /// 多个「已删除」只会让人以为连接断了。
 pub(crate) fn display_tab_title(tab: &TabEntry, conn_store: &ConnectionStore) -> String {
-    let base = tab.session.title.clone();
+    // 名字先按 [`TAB_TITLE_MAX_CHARS`] 截断，再拼后缀 —— 后缀不能被名字挤掉。
+    let base = cap_tab_title(&tab.session.title);
     // 外部链接的临时连接本来就不在库里 —— 不能因此说它「配置已删除」。
     let external = tab
         .session
@@ -380,6 +405,68 @@ mod tests {
         assert!(
             !plain.contains("SFTP"),
             "终端标签不该带 SFTP 标记（SSH 是默认形态）：{plain}"
+        );
+    }
+
+    /// 2026-11-16 运行反馈「tab 的名称过长不要隐藏，按照名称长度展示 tab 长度。
+    /// 限制 tab 名称长度」——截断必须发生在**文案层**，这样标签栏才能按名字给宽度
+    /// （布局层的省略号等于把名字藏起来，正是这条反馈要取消的东西）。
+    #[test]
+    fn long_titles_are_capped_at_the_character_limit() {
+        // 短名原样返回
+        assert_eq!(cap_tab_title("prod-db-01"), "prod-db-01");
+
+        // 正好等于上限：不补省略号（上限是「保留」的字数，不是「截断点」）
+        let exact = "字".repeat(TAB_TITLE_MAX_CHARS);
+        assert_eq!(cap_tab_title(&exact), exact);
+
+        // 超一个字：截到上限 + 一个省略号
+        let over = "字".repeat(TAB_TITLE_MAX_CHARS + 1);
+        let capped = cap_tab_title(&over);
+        assert_eq!(capped.chars().count(), TAB_TITLE_MAX_CHARS + 1);
+        assert!(capped.ends_with('…'), "超长标题必须补省略号：{capped}");
+
+        // 按**字符**算不按字节：中文一个字算一个（按字节算会把 24 个中文砍成 8 个）
+        let cjk = "腾讯云-香港-生产环境-主库-只读副本-编号-000001";
+        assert!(
+            cjk.chars().count() > TAB_TITLE_MAX_CHARS,
+            "这条用例的前提：样例名字要真的超长（现在 {} 字）",
+            cjk.chars().count()
+        );
+        assert_eq!(
+            cap_tab_title(cjk).chars().count(),
+            TAB_TITLE_MAX_CHARS + 1,
+            "中文必须按字符截断，不能按字节"
+        );
+
+        // 多字节的 emoji 不能被切成半个（`&str` 切片会 panic，按 chars 就不会）
+        let emoji = "🚀".repeat(TAB_TITLE_MAX_CHARS + 3);
+        assert_eq!(
+            cap_tab_title(&emoji).chars().count(),
+            TAB_TITLE_MAX_CHARS + 1
+        );
+    }
+
+    /// 后缀不能被长名字挤掉：先截名字、再拼「（SFTP）」，两件事的顺序写死在
+    /// `display_tab_title` 里。
+    #[test]
+    fn a_long_title_still_keeps_its_type_suffix() {
+        let store = rustshell_core::connections::ConnectionStore::default();
+        let long = "很长的连接名字".repeat(6);
+        let shown = display_tab_title(&tab(&long, true), &store);
+        // 名字部分必须是**截断后**的那一段（字段前缀完全相等，不是「包含」）
+        let capped_base = cap_tab_title(&long);
+        assert!(
+            shown.starts_with(&capped_base),
+            "展示标题必须以截断后的名字开头：{shown}"
+        );
+        assert!(
+            shown.chars().count() > capped_base.chars().count(),
+            "类型后缀不该被长名字挤掉：{shown}"
+        );
+        assert!(
+            shown.ends_with("（SFTP）") || shown.ends_with(" (SFTP)"),
+            "SFTP 标记必须留在结尾：{shown}"
         );
     }
 }

@@ -9,6 +9,9 @@ fn main() {
 
     println!("cargo:rerun-if-changed=assets/rustshell.rc");
     println!("cargo:rerun-if-changed=assets/rustshell.ico");
+    // 清单由 rustshell.rc 的 `RT_MANIFEST` 行引用（gpui-kit 0.9.1 起不再由 gpui 嵌）。
+    // 单独列一条：rc 文件没变、只改清单时也要重跑，否则改了 DPI 设置却看不出来。
+    println!("cargo:rerun-if-changed=assets/rustshell.manifest.xml");
 
     // 路径相对 crate 根（rc.exe 的工作目录即 Cargo 传入的 manifest dir），
     // 与 gpui-pre 自身`resources/windows/gpui.rc`的写法一致。

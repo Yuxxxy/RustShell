@@ -701,7 +701,7 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::component::init);
 
         let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
         let slot2 = slot.clone();
@@ -709,7 +709,7 @@ mod tests {
             let main = cx.new(|cx| MainView::new(window, cx));
             *slot2.borrow_mut() = Some(main.clone());
             let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-            gpui_component::Root::new(shell, window, cx)
+            gpui_kit::component::Root::new(shell, window, cx)
         });
         let out = slot.borrow().clone().expect("MainView 实体没拿到");
         out

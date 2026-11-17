@@ -634,7 +634,7 @@ mod tests {
 
         // 读端是真线程（投喂句柄每场景一套）⇒ 必然跨线程唤醒调度器
         allow_real_io(cx);
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::component::init);
 
         // 建一块 80×`rows` 的屏（窗口态 / 全屏态的实测行数就落在这个量级）
         let build = |cx: &mut gpui::TestAppContext,

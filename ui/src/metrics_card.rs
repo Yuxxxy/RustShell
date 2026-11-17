@@ -12,7 +12,7 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, AnyElement, IntoElement, ParentElement as _,
     SharedString, Styled as _,
 };
-use gpui_component::{h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use rustshell_core::i18n::{t as tr, ts};
 use rustshell_core::metrics::{time_label, MetricsStore, Sample};
 use std::sync::Arc;

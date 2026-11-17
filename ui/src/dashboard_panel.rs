@@ -15,8 +15,8 @@ use gpui::{
     div, px, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     Styled as _,
 };
-use gpui_base::SelectableText;
-use gpui_component::{h_flex, scroll::ScrollableElement as _, v_flex};
+use gpui_kit::base::SelectableText;
+use gpui_kit::component::{h_flex, scroll::ScrollableElement as _, v_flex};
 use rustshell_core::i18n::t as tr;
 use rustshell_core::metrics::{
     format_bytes_short, format_uptime, DiskInfo, MetricsStore, SystemOverview,
@@ -720,7 +720,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         // Root 的 Ctrl+C 靠窗口内焦点派发：真实应用里焦点总在某个控件上，
@@ -729,7 +729,7 @@ mod tests {
         let (_, vcx) = cx.add_window_view(|window, cx| {
             let focus = focus.clone();
             let probe = cx.new(move |_| Probe { focus });
-            gpui_component::Root::new(probe, window, cx)
+            gpui_kit::component::Root::new(probe, window, cx)
         });
         vcx.update(|window, cx| window.focus(&focus, cx));
         vcx.run_until_parked();
@@ -765,7 +765,7 @@ mod tests {
         vcx.simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::default());
         vcx.simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::default());
 
-        let selected = vcx.update(gpui_base::TextSelection::selected_text);
+        let selected = vcx.update(gpui_kit::base::TextSelection::selected_text);
         assert_eq!(
             selected.trim(),
             "web-01",

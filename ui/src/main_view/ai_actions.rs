@@ -1179,7 +1179,7 @@ mod tests {
     fn a_finished_run_becomes_exactly_one_chat(cx: &mut gpui::TestAppContext) {
         use gpui::{AppContext as _, Entity};
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<super::MainView>>>> =
@@ -1190,7 +1190,7 @@ mod tests {
                 let main = cx.new(|cx| super::MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -1298,7 +1298,7 @@ mod tests {
         use super::super::{MainView, TabEntry};
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: Rc<RefCell<Option<Entity<MainView>>>> = Rc::new(RefCell::new(None));
@@ -1308,7 +1308,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -1428,7 +1428,7 @@ mod tests {
     fn the_ai_column_records_its_open_state(cx: &mut gpui::TestAppContext) {
         use gpui::{AppContext as _, Entity};
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<super::MainView>>>> =
@@ -1439,7 +1439,7 @@ mod tests {
                 let main = cx.new(|cx| super::MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();

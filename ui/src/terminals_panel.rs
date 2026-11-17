@@ -4,14 +4,14 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, ClickEvent, Context, InteractiveElement as _,
     IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     scroll::ScrollableElement as _,
     v_flex, Icon, IconName, Sizable as _,
 };
-use rustshell_core::session::{SessionKind, SessionState};
+use rustshell_core::session::SessionKind;
 
 use super::main_view::MainView;
 
@@ -56,7 +56,11 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
             (
                 t.session.id.clone(),
                 t.session.title.clone(),
-                t.session.state == SessionState::Connected,
+                // 判据与标签栏**同一份**（`TabEntry::is_healthy` = 终端活着 **或** SFTP
+                // 通道活着）：两处显示的是同一件事，口径分叉就会「标签栏绿、侧栏红」。
+                // 2026-11-16 之前这里是 `session.state == Connected` —— 它认不出死掉的
+                // 会话（画面还在、state 已是 Closed 的中间态）与 SFTP 单通道。
+                t.is_healthy(),
                 m.tabs_state.active.as_deref() == Some(&t.session.id.clone()),
                 t.session.kind,
                 // 2026-10-30：SFTP 标签（无终端 + 已连上 + 有通道）在这一列里也
@@ -78,6 +82,8 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         };
         let id_click = id.clone();
         let id_menu = id.clone();
+        // 圆点的调试选择器（几何/布线类用例用它定位；release 下是空转）
+        let dot_id = id.clone();
         root = root.child(
             div()
                 .id(SharedString::from(format!("term-{id}")))
@@ -122,22 +128,31 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                         ),
                     )
                 })
-                .child(if connected {
+                // 状态圆点：与标签栏**同一套语言** —— 只有红、绿两种**实心**点。
+                // 已连接 = 绿；不连接（连接中 / 掉线 / 未连）= 红。
+                //
+                // 2026-11-16 运行反馈「不连接就是红点，侧栏会话列表要一致」：
+                // 原来「未连接」画的是**空心灰点**（`border_1` + `border_color(fg_muted)`），
+                // 与标签栏刚收敛的「只保留红绿实心」不是一套。这里改成实心红：
+                // 侧栏是会话清单、不是状态台，不会区分「连接中 / 掉线」——
+                // 「红 = 这条会话现在不在线」已经是最有用的信息量。
+                //
+                // 刻意**不做呼吸动画**：这一行的元素直接建在 `MainView` 里，动画的
+                // `cx.notify` 会打在整个 MainView 上（整窗 20fps 重建，事故见
+                // `tab_bar::TabStatusDot` 的说明）。颜色足够表达，不动就是对。
+                .child(
                     div()
+                        .debug_selector(|| format!("term-dot-{dot_id}"))
                         .w(px(6.))
                         .h(px(6.))
                         .flex_shrink_0()
                         .rounded_full()
-                        .bg(hex(t.success))
-                } else {
-                    div()
-                        .w(px(6.))
-                        .h(px(6.))
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(hex(t.fg_muted))
-                })
+                        .bg(if connected {
+                            hex(t.success)
+                        } else {
+                            hex(t.danger)
+                        }),
+                )
                 .child(
                     Icon::new(IconName::SquareTerminal)
                         .small()
@@ -224,6 +239,38 @@ mod tests {
         assert!(
             !code.contains("tabs_state.tabs.len()"),
             "标题行又统计会话数了：用户要求不显示数量。"
+        );
+    }
+
+    /// 2026-11-16 运行反馈「不连接就是红点，侧栏会话列表要一致」。
+    ///
+    /// 两条一起守：
+    /// 1. **判据与标签栏同一份**（`TabEntry::is_healthy`）—— 用 `SessionState::Connected`
+    ///    会认不出死掉的会话与 SFTP 单通道，两处就会「标签栏绿、侧栏红」；
+    /// 2. **只有红绿实心**：绿的 `success` 在、红的 `danger` 在，而空心点的画法
+    ///    （描边 + 不填底）必须彻底消失 —— 空心灰点的指纹就是 `.border_1()`。
+    #[test]
+    fn the_session_dot_is_a_solid_red_or_green_one() {
+        let code = prod(include_str!("terminals_panel.rs"));
+        assert!(
+            code.contains("t.is_healthy()"),
+            "侧栏圆点没有用 `TabEntry::is_healthy()` 判定：与标签栏/分屏标题栏的判据必须同一份。"
+        );
+        assert!(
+            !code.contains("SessionState::Connected"),
+            "侧栏圆点又回到 `session.state == Connected` 了：它认不出断连态（画面还在但会话已死）与 SFTP 单通道，判据必须与标签栏同一份。"
+        );
+        assert!(
+            code.contains("hex(t.success)") && code.contains("hex(t.danger)"),
+            "侧栏圆点必须是「绿 = 已连接 / 红 = 不连接」两种实心色。"
+        );
+        assert!(
+            !code.contains(".border_1()"),
+            "侧栏圆点又画成空心（描边不填底）了：空心红 / 空心灰已按运行反馈取消，只保留红绿实心。"
+        );
+        assert!(
+            code.contains("term-dot-"),
+            "侧栏圆点缺调试选择器（`term-dot-<id>`）：几何类用例没法量它的位置。"
         );
     }
 }

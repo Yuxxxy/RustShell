@@ -8,9 +8,9 @@ license.workspace = true
 rustshell-core.workspace = true
 rustshell-platform.workspace = true
 rustshell-ui.workspace = true
-gpui.workspace = true
-gpui-platform.workspace = true
-gpui-component.workspace = true
+# GPUI 门面（gpui-kit 0.9.1）：引擎 / 平台后端 / 组件库一条依赖，见根 Cargo.toml 的说明。
+# 平台入口 `gpui_platform::application()` 现在是 `gpui_kit::application()`（见 src/app.rs）。
+gpui-kit.workspace = true
 anyhow.workspace = true
 log.workspace = true
 rust-embed = "8"
@@ -19,4 +19,4 @@ rust-embed = "8"
 # 键位回归测试要在 App 上下文里装配绑定：gpui-kit 0.9.0 起动态键位只能走
 # `KeyBinding::load(.., cx)`（`KeyBinding::new` 收紧为 `&'static str`），
 # 所以要一个 TestAppContext 喂给 `keybindings(cx)`。与 ui 的同名 dev-dep 一致。
-gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }

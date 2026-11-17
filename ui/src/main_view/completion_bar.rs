@@ -818,7 +818,7 @@ mod tests {
         use gpui::AppContext as _;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 

@@ -35,7 +35,7 @@ use gpui::{
     div, px, App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, Styled as _, WeakEntity, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dialog::{Dialog, DialogButtonProps},
     h_flex,
@@ -992,22 +992,43 @@ mod tests {
     ///
     /// 另一条用例 `the_list_is_height_capped_and_really_scrolls` 为了绕开同一问题，
     /// 只比「内容相对盒子」的位移；有了本函数，绝对坐标也可用了。
+    ///
+    /// ★ 2026-11-16（升 gpui-kit 0.9.1 / gpui-fast 0.1.15 后这条用例开始红）：光比
+    /// 「连续两帧读数相同」**不够了**。0.1.14 起引擎会**复用没被 notify 的视图的上一帧**
+    /// ——复用出来的那一帧的 `debug_bounds` 与上一帧一模一样，于是位置看着「稳了」，
+    /// 其实动画还在走。实测：t=50ms 与 t=75ms 都读到 y=206.5 就返回，可下一次真实重排
+    /// 是 y=222.5（差 16px = 一行行高），点击正好落空。
+    ///
+    /// 判据因此加一条**时间下限**：必须先把虚拟时钟推过 `ENTRANCE_SETTLE_MS`
+    /// （进场动画 250ms + 余量），之后读数相同才算稳定 —— 动画停了以后位置不会再变，
+    /// 复用的帧也就是「正确的那一帧」。
     fn settled_after_entrance(
         vcx: &mut gpui::VisualTestContext,
         sel: &'static str,
     ) -> gpui::Bounds<gpui::Pixels> {
+        /// 每帧推进的虚拟时钟。
+        const STEP_MS: u64 = 25;
+        /// 先走完进场动画再判稳定（官方 `Dialog` 的 `ANIMATION_DURATION` = 250ms）。
+        const ENTRANCE_SETTLE_MS: u64 = 400;
+
         let mut prev = None;
+        let mut elapsed = 0;
         for _ in 0..80 {
             vcx.executor()
-                .advance_clock(std::time::Duration::from_millis(25));
+                .advance_clock(std::time::Duration::from_millis(STEP_MS));
+            elapsed += STEP_MS;
             vcx.update(|window, cx| {
+                // 先**标脏**再出一帧：0.1.14 起引擎复用「没被 notify 的视图的上一帧」，
+                // 复用帧里的几何是旧的（2026-11-16 实测差 66px = 4 行，正好点空）。
+                // `Window::refresh` 只在非绘制期生效，所以必须放在 `draw` 之前。
+                window.refresh();
                 window.draw(cx).clear(cx);
             });
             vcx.run_until_parked();
             let now = vcx
                 .debug_bounds(sel)
                 .unwrap_or_else(|| panic!("`{sel}` 没渲染出来"));
-            if prev == Some(now.origin) {
+            if elapsed >= ENTRANCE_SETTLE_MS && prev == Some(now.origin) {
                 return now;
             }
             prev = Some(now.origin);

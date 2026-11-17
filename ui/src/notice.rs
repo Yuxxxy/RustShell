@@ -16,7 +16,7 @@
 //! 外部无从断言；拆成两张表后「级别 到 变体 / 级别 到 图标」各自只有一处。
 
 use gpui::{px, ElementId, SharedString, Styled as _, Window};
-use gpui_component::{
+use gpui_kit::component::{
     alert::{Alert, AlertVariant},
     notification::Notification,
     IconName, Sizable as _, WindowExt as _,
@@ -196,7 +196,7 @@ mod tests {
     /// 取到实际的 SVG 资源路径来比较。
     #[test]
     fn four_kinds_map_to_four_distinct_icons() {
-        use gpui_component::IconNamed as _;
+        use gpui_kit::component::IconNamed as _;
 
         let paths: Vec<SharedString> = ALL.iter().map(|k| k.icon().path()).collect();
         for p in &paths {

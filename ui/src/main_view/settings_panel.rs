@@ -14,7 +14,7 @@ use gpui::{
     div, px, AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -1445,7 +1445,7 @@ impl MainView {
                 // 页图标：设置侧栏里每页都有一枚（终端/AI/Agent/快捷键/连接/通知），
                 // 窗口页此前是唯一的例外 —— 侧栏里独它一行没有图标，看着像少画了什么。
                 //
-                // 取的是全量目录 `gpui_kit_assets::IconName`（`gpui_component::IconName`
+                // 取的是全量目录 `gpui_kit::assets::IconName`（`gpui_kit::component::IconName`
                 // 只是「默认组件图标」那个子集，里面没有窗口类图标）。
                 //
                 // 必须是**本仓 `shell/assets/icons/` 里真有的**那一枚：本仓的
@@ -1453,7 +1453,7 @@ impl MainView {
                 // 但 svg 不在目录里就静默留白（`test_support::every_icon_the_ui_asks_for_is_shipped`
                 // 正是为这一课立的）。`app-window.svg` 本仓没有，所以取
                 // `window-restore`（一个带框的窗口，本仓已随包）。
-                .icon(gpui_kit_assets::IconName::WindowRestore)
+                .icon(gpui_kit::assets::IconName::WindowRestore)
                 .description(t("启动程序时的行为。"))
                 // 启动动作（2026-09-28 新增参数 + 面板控件）。
                 //
@@ -1740,7 +1740,7 @@ fn color_cell(
                 .border_color(hex(border))
                 .flex_shrink_0()
                 .tooltip(move |_w, cx| {
-                    gpui_component::tooltip::Tooltip::new(tip_for.clone()).build(_w, cx)
+                    gpui_kit::component::tooltip::Tooltip::new(tip_for.clone()).build(_w, cx)
                 })
                 .on_click(move |_e, _w, cx: &mut App| {
                     me_c.update(cx, |m, cx| m.cycle_custom_color(target, cx));

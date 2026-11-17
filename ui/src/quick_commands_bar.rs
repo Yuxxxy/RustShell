@@ -4,7 +4,7 @@ use gpui::{
     div, px, AnyElement, AppContext as _, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -593,7 +593,9 @@ fn command_pill(
         .flex()
         .items_center()
         .gap_1()
-        .tooltip(move |_w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(_w, cx))
+        .tooltip(move |_w, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(_w, cx)
+        })
         // 命令按钮不再带图标（用户要求「命令按钮取消图标」）
         .child(
             div()

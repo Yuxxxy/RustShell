@@ -28,3 +28,16 @@ BEGIN
     VALUE "Translation", 0x804, 1200
   END
 END
+
+// ⚠️ 这里**不要**再嵌应用清单（RT_MANIFEST），会与 gpui-pre 的那份**重复**：
+// LINK 阶段直接报
+//     CVTRES : fatal error CVT1100: 资源重复。类型: MANIFEST，名称: 1
+//     LINK : fatal error LNK1123: 转换到 COFF 期间失败
+// 原因：gpui-kit 0.9.1 的门面里 `gpui-pre` 仍是**非可选**依赖（默认后端），它的
+// build.rs 会照旧嵌自己的清单（PerMonitorV2 + comctl32 v6 + SegmentHeap），而
+// gpui-fast 因为门面打开了 `windows-manifest-provided-by-host` 反而**不嵌**。
+// 于是「清单由宿主提供」这条在门面下等于**由 gpui-pre 提供**，我们一嵌就撞车。
+// 清单内容（以备 gpui-pre 将来不再随门面分发时自己补一份）见同目录
+// rustshell.manifest.xml —— 届时把下面两行注释放开即可：
+//   #define RT_MANIFEST 24
+//   1 RT_MANIFEST "assets/rustshell.manifest.xml"

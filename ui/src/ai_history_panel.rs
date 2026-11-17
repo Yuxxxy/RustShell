@@ -15,16 +15,16 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
     v_flex, Disableable as _, Icon, Sizable as _,
 };
 
-/// 全量 Lucide 目录（`gpui_component::IconName` 只是组件默认子集，
+/// 全量 Lucide 目录（`gpui_kit::component::IconName` 只是组件默认子集，
 /// 不含 `Trash` / `MessageSquare`；详见 `ai_panel.rs` 同一别名的说明）。
-use gpui_kit_assets::IconName as LucideIcon;
+use gpui_kit::assets::IconName as LucideIcon;
 
 use super::main_view::MainView;
 
@@ -219,7 +219,7 @@ mod tests {
         use gpui::AppContext as _;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -230,7 +230,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();

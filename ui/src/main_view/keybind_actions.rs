@@ -13,8 +13,8 @@ use gpui::{
     IntoElement as _, MouseButton, ParentElement as _, Window,
 };
 
-use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_component::h_flex;
+use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::h_flex;
 
 use rustshell_platform::paths;
 
@@ -634,15 +634,15 @@ mod tests {
 
     /// 在真窗口里造一个 `MainView`，并把它的实体交出来（`MainView::new` 要 Window）。
     ///
-    /// ⚠️ `gpui_component::init` **必须在建窗口之前**跑：`MainView::new` 与
+    /// ⚠️ `gpui_kit::component::init` **必须在建窗口之前**跑：`MainView::new` 与
     /// `Root::new` 在构造期就取 `theme::Theme` 全局态（`cx.theme::<Theme>()`），
-    /// 晚一步就 panic「no state of type gpui_component::theme::Theme exists」。
+    /// 晚一步就 panic「no state of type gpui_kit::component::theme::Theme exists」。
     fn main_view_entity(cx: &mut gpui::TestAppContext) -> gpui::Entity<MainView> {
         use gpui::AppContext as _;
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::component::init);
 
         let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
         let slot2 = slot.clone();
@@ -650,7 +650,7 @@ mod tests {
             let main = cx.new(|cx| MainView::new(window, cx));
             *slot2.borrow_mut() = Some(main.clone());
             let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-            gpui_component::Root::new(shell, window, cx)
+            gpui_kit::component::Root::new(shell, window, cx)
         });
         let out = slot.borrow().clone().expect("MainView 实体没拿到");
         out

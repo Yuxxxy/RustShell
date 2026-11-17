@@ -11,7 +11,7 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -20,8 +20,8 @@ use gpui_component::{
     v_flex, Icon, Sizable as _,
 };
 
-/// 全量 Lucide 目录（`gpui_component::IconName` 只是组件默认子集）。
-use gpui_kit_assets::IconName as LucideIcon;
+/// 全量 Lucide 目录（`gpui_kit::component::IconName` 只是组件默认子集）。
+use gpui_kit::assets::IconName as LucideIcon;
 
 use rustshell_core::tasks::{RunRecord, RunStatus, TaskAction, TaskTarget};
 
@@ -400,7 +400,7 @@ fn task_row(
                 // 只看这里。用开关而不是图标按钮：按钮只能表达一个动作，
                 // 开关能一眼看出「现在是开还是关」。
                 .child(
-                    gpui_component::switch::Switch::new(SharedString::from(format!(
+                    gpui_kit::component::switch::Switch::new(SharedString::from(format!(
                         "task-switch-{task_id}"
                     )))
                     .xsmall()
@@ -788,7 +788,7 @@ mod tests {
         use gpui::AppContext as _;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -800,7 +800,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();

@@ -1,3 +1,9 @@
+// GPUI 门面别名（**必需**，别删）：唯一依赖是 `gpui-kit`（见根 Cargo.toml），但 gpui 的
+// derive 宏（`Render` / `IntoElement` / `VisualContext` …）展开出来的路径是字面量
+// `gpui::...`，只有这个名字才解析得到；`#[gpui::test]` 也靠它解析到门面的 `test` 宏。
+// gpui-kit 官方文档把这当作受支持用法（“applications can alias the Kit as `gpui`”）。
+extern crate gpui_kit as gpui;
+
 pub mod activity_bar;
 pub mod ai_history_panel;
 pub mod ai_panel;

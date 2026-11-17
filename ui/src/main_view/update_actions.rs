@@ -491,7 +491,7 @@ mod tests {
     fn the_update_badge_hangs_in_the_title_bar() {
         let code = prod(include_str!("../main_view.rs"));
         let bar = code
-            .find("gpui_component::TitleBar::new()")
+            .find("gpui_kit::component::TitleBar::new()")
             .expect("找不到标题栏构造");
         let badge = code
             .find("update_badge_entry(self, cx)")

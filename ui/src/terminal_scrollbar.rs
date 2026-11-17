@@ -12,7 +12,7 @@ use gpui::{
     div, px, AnyElement, Bounds, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     Pixels, Point, Size, Styled as _,
 };
-use gpui_component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode};
 use rustshell_terminal::{TermScrollMetrics, TerminalView};
 
 /// 终端滚动句柄：把「像素偏移」与「终端 display_offset」双向换算。
@@ -302,7 +302,7 @@ mod tests {
         // 滚动条取色要读全局主题（`theme::scrollbar_thumb`）；不装主题会在
         // prepaint 里 `no state of type ... Theme exists` 直接 panic。
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let (_, cx) = cx.add_window_view(move |_, _| OverlayProbe {

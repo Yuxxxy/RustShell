@@ -41,7 +41,7 @@ fn view_with_spy(
     protect_lines: Option<u32>,
 ) -> gpui::Entity<rustshell_terminal::TerminalView> {
     use gpui::AppContext as _;
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
     let sink = sink.clone();
     cx.update(|cx| {
         cx.new(|cx| {
@@ -208,7 +208,7 @@ fn dead_session_drops_the_pending_paste(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn confirmed_paste_still_goes_through_bracketed_wrapping(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext as _;
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
     crate::dead_session::allow_real_io(cx);
 
     let sink = SpySink::default();

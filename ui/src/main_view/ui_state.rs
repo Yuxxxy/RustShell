@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use gpui::{Entity, FocusHandle};
-use gpui_component::{
+use gpui_kit::component::{
     command::CommandState,
     input::{EditorState, InputState, TextareaState},
     list::ListState,
@@ -115,7 +115,7 @@ pub struct ConnUiState {
     pub sftp_only_profiles: HashSet<String>,
 
     /// 连接树官方状态实体（gpui-component Tree：展开/选中/键盘导航由组件持有）
-    pub tree_state: gpui::Entity<gpui_component::tree::TreeState>,
+    pub tree_state: gpui::Entity<gpui_kit::component::tree::TreeState>,
 
     /// 上次推送给 `tree_state` 的连接树输入指纹（见 `connections_panel::conn_tree_key`）。
     ///
@@ -388,7 +388,7 @@ pub struct AiUiState {
     pub ai_chat_panel: gpui::Entity<AiChatPanelView>,
 
     /// 官方`MessageScroller`的滚动状态（row 数 / 尾部跟随 / 重测）。
-    pub ai_scroller: Entity<gpui_component::message_scroller::MessageScrollerState>,
+    pub ai_scroller: Entity<gpui_kit::component::message_scroller::MessageScrollerState>,
 
     pub ai_busy: bool,
 
@@ -900,7 +900,7 @@ pub struct DialogIoState {
     pub dlg_task_profiles_sel: Vec<String>,
 
     /// 「AI 要求」（**多行** textarea，2–10 行随内容自适应高度）。
-    pub dlg_task_prompt: Entity<gpui_component::input::TextareaState>,
+    pub dlg_task_prompt: Entity<gpui_kit::component::input::TextareaState>,
 
     /// 草稿通知策略的勾选（异常 / 失败 / 每次运行后）。
     pub dlg_task_notify: (bool, bool, bool),

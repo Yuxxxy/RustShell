@@ -16,7 +16,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     bubble::{Bubble, BubbleContent, BubbleVariant},
     button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _},
     h_flex,
@@ -33,13 +33,13 @@ use gpui_component::{
 
 /// 全量 Lucide 图标目录。
 ///
-/// `gpui_component::IconName` 只是**组件默认子集**（约 90 个，清单见
+/// `gpui_kit::component::IconName` 只是**组件默认子集**（约 90 个，清单见
 /// gpui-kit-assets 的 `default-icons.txt`）—— `Trash` / `Brain` / `MessageSquare`
 /// 根本不在那个枚举里，写 `IconName::Trash` 是**编译错误**而不是「图标空白」。
 /// 全量枚举与 `IconNamed` 实现由 gpui-kit-assets 提供（见根 Cargo.toml 该依赖的
 /// 注释）；用到的 `brain.svg` / `trash.svg` 已随 `shell/assets/icons` 打进
 /// `AppAssets`，路径 `icons/brain.svg` 能解析到。
-use gpui_kit_assets::IconName as LucideIcon;
+use gpui_kit::assets::IconName as LucideIcon;
 
 /// 纯文本、可拖选的文本段（窗口级选区的一员）。
 ///
@@ -53,11 +53,11 @@ use gpui_kit_assets::IconName as LucideIcon;
 /// 行首当列表符号、`__x__` 当强调 —— 那是**渲染出错**，不是「格式更漂亮」。
 ///
 /// 它注册进的 `TextSelection` 是**窗口级**的：挂载（`TextSelectionLayer`）与
-/// `Ctrl+C` / 右键复制都由 `gpui_component::Root` 全窗提供（本应用的外壳就是
+/// `Ctrl+C` / 右键复制都由 `gpui_kit::component::Root` 全窗提供（本应用的外壳就是
 /// `Root::new(AppShell)`，见 `shell/src/app.rs`），应用侧不需要额外装配 ——
 /// 也因此它与消息正文的选区**是同一个**，拖选可以跨「正文 → 展开内容」。
 /// 代价是版本线必须与 gpui-component 一致，见本文件末尾的编译期护栏。
-use gpui_base::SelectableText;
+use gpui_kit::base::SelectableText;
 
 use rustshell_core::ai::{ChatMessage, MsgState, Risk};
 
@@ -138,9 +138,9 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         .h_full()
         .child(header(m, cx))
         .child(
-            gpui_component::resizable::v_resizable("ai-composer-split")
+            gpui_kit::component::resizable::v_resizable("ai-composer-split")
                 .child(
-                    gpui_component::resizable::resizable_panel().child(
+                    gpui_kit::component::resizable::resizable_panel().child(
                         // 上块：消息区（空列表不渲染 row，四态由应用侧组合）
                         // + 生成中 / 失败提示（UI-04：放在消息区之外，
                         // 既不随滚动漂走，也不占用虚拟行）
@@ -152,7 +152,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
                     ),
                 )
                 .child(
-                    gpui_component::resizable::resizable_panel()
+                    gpui_kit::component::resizable::resizable_panel()
                         .size(px(m.ai_ui.ai_composer_h))
                         .size_range(px(AI_COMPOSER_MIN_H)..px(AI_COMPOSER_MAX_H))
                         .flex_none()
@@ -1364,8 +1364,8 @@ fn strip_context_wrapper(content: &str) -> String {
 /// 条目下。
 #[allow(dead_code)]
 fn gpui_base_version_matches_the_one_gpui_component_uses(
-    selection_format: gpui_base::text::SelectionFormat,
-) -> gpui_component::text::SelectionFormat {
+    selection_format: gpui_kit::base::text::SelectionFormat,
+) -> gpui_kit::component::text::SelectionFormat {
     selection_format
 }
 
@@ -1537,7 +1537,7 @@ mod tests {
         use rustshell_core::ai::{AiCommandCard, ChatMessage, Risk};
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -1548,7 +1548,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -1629,7 +1629,7 @@ mod tests {
         use rustshell_core::ai::ChatMessage;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: Rc<RefCell<Option<Entity<MainView>>>> = Rc::new(RefCell::new(None));
@@ -1639,7 +1639,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -1855,7 +1855,7 @@ mod tests {
     ///
     /// 需求：agent 工具（`run_command` 之类）的**展开内容**要能鼠标拖选，且**本地
     /// 终端**一路同样成立。实现是把三处「展开出来的正文」都注册进**窗口级选区**
-    /// —— `gpui_base::SelectableText` 挂在 `gpui_component::Root` 已有的
+    /// —— `gpui_kit::base::SelectableText` 挂在 `gpui_kit::component::Root` 已有的
     /// `TextSelectionLayer` 上（选区全局在 `gpui-base`，读它的 `Root` 在
     /// `gpui-component`），应用侧因此**零装配**：Ctrl+C 与右键复制自动可用。
     ///
@@ -1898,7 +1898,7 @@ mod tests {
     #[gpui::test]
     fn scroller_item_count_follows_message_mutations(cx: &mut gpui::TestAppContext) {
         use gpui::AppContext as _;
-        use gpui_component::message_scroller::MessageScrollerState;
+        use gpui_kit::component::message_scroller::MessageScrollerState;
 
         cx.update(|cx| {
             let state = cx.new(|cx| MessageScrollerState::new(0, cx));
@@ -2061,7 +2061,7 @@ mod tests {
         use gpui::AppContext as _;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -2072,7 +2072,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -2193,7 +2193,7 @@ mod tests {
         const DETAIL: &str = "total 12 alpha bravo charlie";
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: Rc<RefCell<Option<Entity<MainView>>>> = Rc::new(RefCell::new(None));
@@ -2203,7 +2203,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| crate::main_view::AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -2269,7 +2269,7 @@ mod tests {
         );
 
         // ② 再看选没选中、选中了什么
-        let selected = vcx.update(gpui_base::TextSelection::selected_text);
+        let selected = vcx.update(gpui_kit::base::TextSelection::selected_text);
         let picked = selected.trim();
         assert!(
             !picked.is_empty(),

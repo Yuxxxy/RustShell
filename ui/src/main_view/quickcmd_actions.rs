@@ -6,7 +6,7 @@
 //! `core/src/ai.rs` 的 `Risk` / `assess_command` 仍由 AI 面板使用，勿动。
 
 use gpui::{Context, Focusable as _, SharedString, Window};
-use gpui_component::{button::ButtonVariant, dialog::DialogButtonProps, WindowExt as _};
+use gpui_kit::component::{button::ButtonVariant, dialog::DialogButtonProps, WindowExt as _};
 
 use super::MainView;
 use crate::main_view::terminal_actions::SendOutcome;

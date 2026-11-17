@@ -7,15 +7,11 @@ license.workspace = true
 [dependencies]
 rustshell-core.workspace = true
 rustshell-platform.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
-# 纯文本可拖选元素（`SelectableText`）：AI 面板的工具展开明细 / 思考正文走它
-# （为什么不走 `TextView::markdown`、版本线为什么必须与 gpui-component 一致，
-# 见根 Cargo.toml 该条目下的说明）
-gpui-base.workspace = true
-# 全量 Lucide 图标枚举（`gpui_component::IconName` 只是组件默认子集，
-# Trash / Brain 等不在其中 —— 见根 Cargo.toml 该条目下的说明）
-gpui-kit-assets.workspace = true
+# GPUI 门面（gpui-kit 0.9.1）：gpui / 组件库 / gpui-base / 图标全量目录全在这一条里，
+# 源码里的 `gpui::` 由 crate 根的 `extern crate gpui_kit as gpui;` 接住（derive 宏要用）。
+# 具体用途：`gpui_kit::base::SelectableText`（AI 面板明细的纯文本可拖选）、
+# `gpui_kit::assets::IconName`（全量 Lucide 枚举，`gpui::component::IconName` 只是子集）。
+gpui-kit.workspace = true
 rustshell-terminal.workspace = true
 portable-pty.workspace = true
 anyhow.workspace = true
@@ -28,4 +24,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 # 主题装配回归测试需要 gpui 的 TestAppContext（见 ui/src/theme.rs::tests）
-gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }

@@ -6,7 +6,7 @@
 //! 「任务到底跑没跑」这种问题上极难自查。
 
 use gpui::{Context, Window};
-use gpui_component::WindowExt as _;
+use gpui_kit::component::WindowExt as _;
 
 use rustshell_core::alerts::{LogChannel, Notifier, SmtpChannel};
 use rustshell_core::connections::unix_now_secs;
@@ -24,7 +24,7 @@ use super::{DialogMode, MainView};
 /// 单独抽出来是因为「写空串」与「不写」在 `InputState` 上是两种行为：
 /// 同一个输入框被多个任务复用，不写空串就会把上一个任务的值带过来。
 fn set_input(
-    input: &gpui::Entity<gpui_component::input::InputState>,
+    input: &gpui::Entity<gpui_kit::component::input::InputState>,
     value: String,
     window: &mut Window,
     cx: &mut Context<MainView>,
@@ -39,7 +39,7 @@ fn set_input(
 /// 与 `InputState` 分开写而不是泛型化：两者的 `set_value` 是**各自**的方法，
 /// 泛型化要靠 trait 或宏，而这里只有两处调用 —— 抄一遍更省事也更好读。
 fn set_textarea(
-    input: &gpui::Entity<gpui_component::input::TextareaState>,
+    input: &gpui::Entity<gpui_kit::component::input::TextareaState>,
     value: String,
     window: &mut Window,
     cx: &mut Context<MainView>,

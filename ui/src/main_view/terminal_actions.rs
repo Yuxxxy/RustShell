@@ -6,7 +6,7 @@ use gpui::{
     div, px, Context, Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _,
     Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     input::Input,
     Sizable as _,

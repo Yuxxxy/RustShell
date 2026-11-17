@@ -1,7 +1,7 @@
 //! UI 主题装配：将 core 层 Token写入 gpui-component`Theme`全局。
 
 use gpui::{px, rgb, App};
-use gpui_component::theme::{
+use gpui_kit::component::theme::{
     Theme, ThemeMode as ComponentThemeMode, ThemeTokens as ComponentThemeTokens,
 };
 use rustshell_core::theme::{ThemeMode, ThemeTokens};
@@ -253,11 +253,11 @@ pub fn apply_cursor_blink(cx: &mut App, blinking: bool, interval_ms: u64) {
     let policy = if blinking {
         // 夹到 1ms：`blinking(ZERO)` 在组件库里等价于 steady，但用户写 0 的语义是
         // 「想闪、只是没填数字」，不该被解释成「常亮」。
-        gpui_base::input::CursorBlink::blinking(std::time::Duration::from_millis(
+        gpui_kit::base::input::CursorBlink::blinking(std::time::Duration::from_millis(
             interval_ms.max(1),
         ))
     } else {
-        gpui_base::input::CursorBlink::steady()
+        gpui_kit::base::input::CursorBlink::steady()
     };
     Theme::global_mut(cx).cursor_blink = policy;
 }
@@ -273,8 +273,8 @@ pub fn apply_cursor_blink(cx: &mut App, blinking: bool, interval_ms: u64) {
 /// 第三态（按下）**与悬停同色**：2026-09-17 第五轮运行反馈「点按的时候取消变色」。
 /// 上一版按下会把滑块染成 accent，于是「按住拖动」的整段时间里滚动条忽然变蓝，用户
 /// 读到的是「我点到别的东西了」。按下的反馈由滑块自身变宽承担（官方 active 档
-/// 6px → 8px，见 `gpui_base::scrollbar`），不靠换颜色 —— 官方主题投影同样是
-/// 「active 取 hover 色」（`gpui_component::theme` 的 `thumb_active`），这里只是跟回去。
+/// 6px → 8px，见 `gpui_kit::base::scrollbar`），不靠换颜色 —— 官方主题投影同样是
+/// 「active 取 hover 色」（`gpui_kit::component::theme` 的 `thumb_active`），这里只是跟回去。
 pub fn scrollbar_thumb(cx: &App) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla) {
     let base = to_hsla(current(cx).fg_muted);
     let hover = base.opacity(0.85);
@@ -338,7 +338,7 @@ mod tests {
     fn cursor_blink_follows_the_terminal_preference(cx: &mut gpui::TestAppContext) {
         use std::time::Duration;
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             apply_theme_mode(cx, ThemeMode::Dark);
 
             // 终端光标常亮 ⇒ 输入框光标也常亮
@@ -378,7 +378,7 @@ mod tests {
     #[gpui::test]
     fn dark_theme_does_not_leak_light_preset_tokens(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             apply_theme_mode(cx, ThemeMode::Dark);
 
             let theme = Theme::global(cx);
@@ -415,7 +415,7 @@ mod tests {
     #[gpui::test]
     fn active_tab_is_distinguishable_from_the_tab_bar(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for (mode, token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
                 (ThemeMode::Light, ThemeTokens::light()),
@@ -443,7 +443,7 @@ mod tests {
     #[gpui::test]
     fn segmented_track_differs_from_the_indicator_pill(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for (mode, _token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
                 (ThemeMode::Light, ThemeTokens::light()),
@@ -463,7 +463,7 @@ mod tests {
     #[gpui::test]
     fn light_theme_uses_light_tokens_and_on_accent_foreground(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             apply_theme_mode(cx, ThemeMode::Light);
 
             let theme = Theme::global(cx);
@@ -487,7 +487,7 @@ mod tests {
     #[gpui::test]
     fn alert_variant_colors_follow_app_tokens(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for (mode, token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
                 (ThemeMode::Light, ThemeTokens::light()),
@@ -516,7 +516,7 @@ mod tests {
     #[gpui::test]
     fn scrollbar_thumb_press_keeps_the_hover_color(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for mode in [ThemeMode::Dark, ThemeMode::Light] {
                 apply_theme_mode(cx, mode);
                 let (rest, hover, pressed) = scrollbar_thumb(cx);
@@ -541,7 +541,7 @@ mod tests {
     #[gpui::test]
     fn input_token_is_a_visible_border_not_the_background(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for (mode, token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
                 (ThemeMode::Light, ThemeTokens::light()),
@@ -567,7 +567,7 @@ mod tests {
     #[gpui::test]
     fn primary_button_token_follows_accent(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
 
             for (mode, token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
@@ -609,7 +609,7 @@ mod tests {
     #[gpui::test]
     fn global_font_scale_is_one_step_smaller(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for mode in [ThemeMode::Dark, ThemeMode::Light] {
                 apply_theme_mode(cx, mode);
                 let theme = Theme::global(cx);
@@ -640,7 +640,7 @@ mod tests {
     #[gpui::test]
     fn list_hover_is_lighter_than_the_selection_tint(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for (mode, token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
                 (ThemeMode::Light, ThemeTokens::light()),
@@ -686,7 +686,7 @@ mod tests {
     fn title_bar_text_scale_is_pinned() {
         let code = crate::test_support::prod(include_str!("main_view.rs"));
         let bar = code
-            .find("gpui_component::TitleBar::new()")
+            .find("gpui_kit::component::TitleBar::new()")
             .expect("找不到标题栏（结构锚点）");
         let brand = code
             .find(r#".child("RustShell")"#)
@@ -712,7 +712,7 @@ mod tests {
     #[gpui::test]
     fn window_control_hover_is_visible_on_the_title_bar(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             for (mode, token) in [
                 (ThemeMode::Dark, ThemeTokens::dark()),
                 (ThemeMode::Light, ThemeTokens::light()),

@@ -81,7 +81,7 @@ impl std::io::Write for SpySink {
 fn spy_view(
     cx: &mut gpui::TestAppContext,
 ) -> (gpui::Entity<rustshell_terminal::TerminalView>, SpySink) {
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
 
     let sink = SpySink::default();
     let (reader, _feed) = feed_reader();

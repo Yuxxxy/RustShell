@@ -6,7 +6,7 @@ use gpui::{
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
@@ -95,14 +95,99 @@ impl MainView {
 
     /// 拆分当前焦点标签到另一侧（向右 / 向下）。
     /// 决策交给 `split::plan_split` 纯函数，这里只负责把决策落到会话上。
+    ///
+    /// 快捷键（`Ctrl+Alt+R/D`）与「再按一次收起」类入口走这里：**已在分屏时只切方向**
+    /// —— 按快捷键的意图就是「换个方向」，不该顺手挪动两格的标签。
     pub fn split_pane(&mut self, axis: SplitAxis, _w: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.tabs_state.active.clone();
+        self.apply_split_plan(focused, axis, cx);
+    }
+
+    /// 以标签栏右键菜单里**点中的那枚标签**为准拆分到另一侧。
+    ///
+    /// 版面口径（`render_workspace` 里定的，别搞反）：`primary` 是第一格 —— 左右分屏的
+    /// **左**、上下分屏的**上**；`secondary` 是第二格 —— **右 / 下**。
+    ///
+    /// **已分屏时：副格永远变成点中的那枚**（2026-11-17 运行反馈「下方已经有了就替换下方」
+    /// + 「点上方那枚时要对调」）：
+    /// * 点中的标签不在分屏里 ⇒ 它**替换副格**（原来占副格的标签回标签栏，不关会话），主格不动；
+    /// * 点中的就是副格那枚 ⇒ 幂等，只切方向；
+    /// * 点中的是主格那枚 ⇒ 两格**对调** —— 同一枚标签不能占两格，用户按的是
+    ///   「把这枚拆到下面」，它必须离开主格，原来副格那枚升上来。
+    ///
+    /// **未分屏时**（拆出第一刀）：
+    /// * 池里还有别的标签 ⇒ 点中的标签进副格，搭档去主格。搭档优先取「拆分前的焦点
+    ///   标签」（正在看的那格不挪位），否则取池里第一个不是它的标签；
+    /// * 池里只剩它自己 ⇒ 它留主格，新开一个同类型会话进副格（这时「往下拆」只能是
+    ///   在它**下面**开一格，没有第二个标签可以挪）。
+    pub fn split_pane_from(&mut self, target: &str, axis: SplitAxis, cx: &mut Context<Self>) {
         let pool: Vec<String> = self
             .tabs_state
             .tabs
             .iter()
             .map(|t| t.session.id.clone())
             .collect();
-        let focused = self.tabs_state.active.clone();
+        if !pool.iter().any(|id| id == target) {
+            // 标签在这一帧之前被关掉了（菜单是渲染期快照）：说清楚，别静默
+            self.set_info(
+                rustshell_core::i18n::t("没有可拆分的会话").to_string(),
+                false,
+            );
+            cx.notify();
+            return;
+        }
+
+        // 已分屏：主格不动，只替换副格（规则见 `core::split::anchor_split`）
+        if let Some(sp) = self.tabs_state.split.as_mut() {
+            let (primary, secondary) =
+                rustshell_core::split::anchor_split(&sp.primary, &sp.secondary, target);
+            sp.primary = primary;
+            sp.secondary = secondary;
+            sp.axis = axis;
+            self.tabs_state.active = Some(target.to_string());
+            self.tabs_state.pending_focus = true;
+            cx.notify();
+            return;
+        }
+
+        // 未分屏：先找搭档 —— 优先「拆分前的焦点标签」（正在看的那格不挪位），
+        // 其次池里第一个不是它的标签。点中的标签自己当焦点时也要走这条，
+        // 否则「A、B 两个标签、当前在 B、右键 B 向下拆」会把 B 留在上面。
+        let partner = self
+            .tabs_state
+            .active
+            .clone()
+            .filter(|id| id != target && pool.iter().any(|p| p == id))
+            .or_else(|| pool.iter().find(|id| *id != target).cloned());
+        if let Some(primary) = partner {
+            self.tabs_state.split = Some(SplitPane {
+                axis,
+                primary,
+                secondary: target.to_string(),
+            });
+            self.tabs_state.active = Some(target.to_string());
+            self.tabs_state.pending_focus = true;
+            cx.notify();
+            return;
+        }
+
+        // 池里只有它自己：它留主格，新开会话进副格
+        self.apply_split_plan(Some(target.to_string()), axis, cx);
+    }
+
+    /// `plan_split` 的落地：未分屏时挑搭档 / 新开会话；已分屏时只切方向。
+    fn apply_split_plan(
+        &mut self,
+        focused: Option<String>,
+        axis: SplitAxis,
+        cx: &mut Context<Self>,
+    ) {
+        let pool: Vec<String> = self
+            .tabs_state
+            .tabs
+            .iter()
+            .map(|t| t.session.id.clone())
+            .collect();
         // 已在分屏中：本次拆分只切方向（池中标签一个都不动）
         let in_split = self.tabs_state.split.is_some();
 
@@ -440,43 +525,42 @@ impl MainView {
         };
 
         let focused_side = self.focused_side();
-        // 焦点窗格标记：`render_pane_header` 里再加两道强信号（顶部 accent 横条 +
-        // 标题条底色提亮）。这里只做布局，不加边框 —— 边框会吃掉 1px 内容宽度，
-        // 触发终端列数重算（PTY resize），切换焦点时画面会抖。
+        // 2026-11-16 用户反馈「双层标题栏」：分屏时**不再**给每格画标题条。
+        // 那条 24px 的条上只有四样东西 —— 标题、状态点、取消分屏按钮、焦点标记，
+        // 前两样标签栏本来就有一份（同一个 `display_tab_title`、同一枚状态点），
+        // 第三样挪回窗格右键菜单，只剩焦点标记是它独有的，改用**顶部 2px accent 横条**
+        // 表达（`absolute` 叠在内容上方：不占行高，也不像边框那样吃掉 1px 内容宽度
+        // 触发 PTY resize、切焦点时画面抖）。
+        let accent = hex(crate::theme::current(cx).accent);
         let primary = {
-            let header = self.render_pane_header(PaneSide::Primary, &sp.primary, focused_side, cx);
             let body = self.render_term_pane(&sp.primary, cx);
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .child(header)
-                .child(body)
-                .into_any_element()
+            split_pane_shell(
+                body,
+                PaneSide::Primary,
+                focused_side == PaneSide::Primary,
+                accent,
+            )
         };
         let secondary = {
-            let header =
-                self.render_pane_header(PaneSide::Secondary, &sp.secondary, focused_side, cx);
             let body = self.render_term_pane(&sp.secondary, cx);
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .child(header)
-                .child(body)
-                .into_any_element()
+            split_pane_shell(
+                body,
+                PaneSide::Secondary,
+                focused_side == PaneSide::Secondary,
+                accent,
+            )
         };
 
         // 两个面板都不给初始尺寸，各自 flex_grow_1，初始各占一半；
         // 拖拽由官方`ResizableState`接管并记住比例。两侧共用同一 id，
         // 切换方向时尺寸状态随之复用，不会被重置回 50/50。
         let group = match sp.axis {
-            SplitAxis::Vertical => gpui_component::resizable::h_resizable("term-split"),
-            SplitAxis::Horizontal => gpui_component::resizable::v_resizable("term-split"),
+            SplitAxis::Vertical => gpui_kit::component::resizable::h_resizable("term-split"),
+            SplitAxis::Horizontal => gpui_kit::component::resizable::v_resizable("term-split"),
         };
         group
-            .child(gpui_component::resizable::resizable_panel().child(primary))
-            .child(gpui_component::resizable::resizable_panel().child(secondary))
+            .child(gpui_kit::component::resizable::resizable_panel().child(primary))
+            .child(gpui_kit::component::resizable::resizable_panel().child(secondary))
             .into_any_element()
     }
 
@@ -661,7 +745,12 @@ impl MainView {
                 });
         }
 
-        pane.context_menu(|menu: PopupMenu, _w, _cx| pane_context_menu(menu))
+        // 「取消分屏」现在**只有**这里和标签右键菜单两个入口 —— 2026-11-16 按用户反馈
+        // 删掉了每格顶部那条 24px 的窗格标题条（双层标题栏），原本挂在上面的按钮
+        // 随之消失，于是把这一项放回窗格右键菜单（2026-09-22 曾撤过，那时有标题条按钮
+        // 顶着；现在没有按钮了，右键是最近的位置）。未分屏时置灰。
+        let in_split = self.tabs_state.split.is_some();
+        pane.context_menu(move |menu: PopupMenu, _w, _cx| pane_context_menu(menu, in_split))
             .into_any_element()
     }
 
@@ -737,117 +826,6 @@ impl MainView {
             )
             .child(h_flex().w_full().justify_end().child(actions))
             .into_any_element()
-    }
-
-    /// 分屏时每个窗格顶部的标题条：状态点 + 标题 +（副窗格）取消分屏。
-    fn render_pane_header(
-        &mut self,
-        side: PaneSide,
-        id: &str,
-        focused_side: PaneSide,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let tok = crate::theme::current(cx);
-        let (title, status_color) = match self.tabs_state.tabs.iter().find(|t| t.session.id == id) {
-            Some(tab) => {
-                // 取**展示标题**，与标签栏同一份：`display_tab_title` 会补上「（SFTP）」
-                // 类型标记、「（连接配置已删除）」与「（重连中 n/m）」。
-                //
-                // 2026-10-30 用户反馈「拆分的标签名称和 sftp 标签名称对不上」：这里
-                // 原来直接读 `session.title`，于是同一个标签在标签栏叫「test（SFTP）」、
-                // 在分屏窗格标题条上叫「test」—— 两处指同一个东西却叫两个名字。
-                let shown = super::display_tab_title(tab, &self.conn_store);
-                let title = if shown.trim().is_empty() {
-                    rustshell_core::i18n::t("终端").to_string()
-                } else {
-                    shown
-                };
-                // 断连态必须是**红点**而不是绿点：终端视图在断连时刻意留着，
-                // 用 `terminal.is_some()` 判会把一个已死的会话画成健康状态。
-                // 判定与断连条、标签栏状态点共用 `TabEntry` 的三个谓词。
-                // 与标签栏同一个判据（`is_healthy` = 终端可用 **或** SFTP 标签可用）：
-                // 2026-10-30 用户反馈「sftp 拆分栏的小绿灯和 tab 不一致」—— 这里原来
-                // 只问 `is_live()`（要有终端），SFTP 标签就被画成灰点。
-                let color = if tab.is_healthy() {
-                    hex(tok.success)
-                } else if tab.is_dead() {
-                    hex(tok.danger)
-                } else if tab.is_connecting() {
-                    hex(tok.warning)
-                } else {
-                    hex(tok.fg_muted)
-                };
-                (title, color)
-            }
-            None => (String::new(), hex(tok.fg_muted)),
-        };
-        // 焦点窗格：底部一根 accent 横条 + 标题条底色提亮。
-        // 2026-09-17 运行反馈：先去掉「主窗格 / 副窗格」字样（老气），
-        // 焦点态就只剩「底色提亮 + 底部 2px 横条」这两处硬标记；
-        // 横条只占 2px 高度，不引起终端列数变化。
-        let focused = side == focused_side;
-        // 底色：主题纯色（alpha=1.0）
-        let focused_bg = crate::theme::surface(1.0, tok.bg_elevated);
-        let unfocused_bg = crate::theme::surface(1.0, tok.bg_overlay);
-
-        let mut bar = h_flex()
-            .relative()
-            .h(px(24.))
-            .px_2()
-            .gap_2()
-            .flex_shrink_0()
-            .items_center()
-            .when(focused, |d| d.bg(focused_bg))
-            .when(!focused, |d| d.bg(unfocused_bg))
-            .border_b_1()
-            .border_color(hex(tok.border_subtle))
-            .child(
-                div()
-                    .w(px(6.))
-                    .h(px(6.))
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .bg(status_color),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(11.5))
-                    .text_color(if focused {
-                        hex(tok.fg_primary)
-                    } else {
-                        hex(tok.fg_muted)
-                    })
-                    .text_ellipsis()
-                    .child(SharedString::from(title)),
-            );
-
-        if side == PaneSide::Secondary {
-            bar = bar.child(
-                Button::new("unsplit-pane")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::PanelRightClose)
-                    .tooltip(rustshell_core::i18n::t("取消分屏"))
-                    .on_click(cx.listener(|m, _e, _w, cx| m.unsplit(cx))),
-            );
-        }
-        if focused {
-            bar = bar.child(
-                // 进度的「底部 accent 横条」占满整条标题，与标签栏的选中标记同一语言。
-                // 排在最后 到 画在内容之上；不参与布局（absolute），不会挤动标题与按钮。
-                div()
-                    .debug_selector(|| "pane-focus-bar".to_string())
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .h(px(2.))
-                    .bg(hex(tok.accent)),
-            );
-        }
-        bar.into_any_element()
     }
 
     /// 无任何会话时的空态。
@@ -1110,7 +1088,50 @@ fn hint_keycap(label: String, tok: rustshell_core::theme::ThemeTokens) -> AnyEle
 /// 2026-09-22 运行反馈：撤掉「向右拆分 / 向下拆分 / 取消分屏 / 新建本地终端」四项。
 /// 前三个仍有键盘快捷键（mod-alt-r / mod-alt-d）与 Tab 栏右键菜单、副窗格标题条按钮；
 /// 新建本地终端仍有 mod-t、命令面板与终端面板按钮 —— 这里只是不再重复挂一份。
-fn pane_context_menu(menu: PopupMenu) -> PopupMenu {
+/// 分屏时的一格：内容 + （焦点时）顶部 2px accent 横条。
+///
+/// 2026-11-16 用户反馈「双层标题栏」之后，窗格不再有自己的标题条 —— 标题与状态点
+/// 标签栏里已经有同一份（同一个 `display_tab_title`、同一枚点），再画一遍只是白占
+/// 24px 行高。这里只补那条**真正独有的**信息：这一格是不是焦点。
+///
+/// 横条用 `absolute` 叠在内容上：不占行高，也不像边框那样吃掉 1px 内容宽度
+/// （那会触发终端列数重算 = PTY resize，切焦点时画面会抖）。
+fn split_pane_shell(
+    body: AnyElement,
+    side: PaneSide,
+    focused: bool,
+    accent: gpui::Hsla,
+) -> AnyElement {
+    let shell = v_flex()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        // 几何类用例用它量「哪一格在上面 / 左边」。用**固定名字**（按槽位，不按会话
+        // id）：`VisualTestContext::debug_bounds` 只收 `&'static str`。
+        .debug_selector(move || match side {
+            PaneSide::Primary => "pane-body-primary".to_string(),
+            PaneSide::Secondary => "pane-body-secondary".to_string(),
+        })
+        .child(body);
+    if !focused {
+        return shell.into_any_element();
+    }
+    shell
+        .child(
+            div()
+                .debug_selector(|| "pane-focus-bar".to_string())
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(2.))
+                .bg(accent),
+        )
+        .into_any_element()
+}
+
+fn pane_context_menu(menu: PopupMenu, in_split: bool) -> PopupMenu {
     use super::{ui_call_disconnect_active, UiHub};
 
     menu.item(
@@ -1202,6 +1223,17 @@ fn pane_context_menu(menu: PopupMenu) -> PopupMenu {
     )
     .separator()
     .item(
+        PopupMenuItem::new(rustshell_core::i18n::t("取消分屏"))
+            .disabled(!in_split)
+            .on_click(|_, _w, cx| {
+                let Some(hub) = cx.try_global::<UiHub>() else {
+                    return;
+                };
+                let main = hub.main.clone();
+                let _ = main.update(cx, |m, cx| m.unsplit(cx));
+            }),
+    )
+    .item(
         PopupMenuItem::new(rustshell_core::i18n::t("关闭当前标签")).on_click(|_, _w, cx| {
             ui_call_disconnect_active(cx);
         }),
@@ -1236,13 +1268,33 @@ mod tests {
     #[test]
     fn the_pane_menu_drops_the_four_items() {
         let menu = pane_menu();
-        for gone in ["向右拆分", "向下拆分", "取消分屏", "新建本地终端"] {
+        // 2026-11-16：「取消分屏」**回到了**这个菜单（见下一条用例）。删掉每格顶部
+        // 那条窗格标题条之后，原本挂在它上面的按钮没有了，右键是最近的位置。
+        for gone in ["向右拆分", "向下拆分", "新建本地终端"] {
             assert!(
                 !menu.contains(&format!("\"{gone}")),
                 "终端右键菜单里又出现了「{gone}」—— 该项已按运行反馈撤掉，\
                  真入口在 Tab 栏右键菜单 / 快捷键 / 命令面板，这里不再重复挂一份。"
             );
         }
+    }
+
+    /// 2026-11-16 删掉窗格标题条之后，「取消分屏」的唯一按钮入口没了 ⇒ 必须回到
+    /// 窗格右键菜单，否则用户只能去标签右键菜单里找（或是蒙快捷键）。
+    ///
+    /// 两条一起守：菜单里有这一项，且它按分屏态置灰（未分屏时点了没意义）。
+    #[test]
+    fn the_pane_menu_brings_unsplit_back() {
+        let menu = pane_menu();
+        assert!(
+            menu.contains("\"取消分屏\""),
+            "窗格右键菜单少了「取消分屏」：标题条按钮已随「双层标题栏」一起删掉，\n\
+             这里是最近的替代入口。"
+        );
+        assert!(
+            menu.contains(".disabled(!in_split)"),
+            "「取消分屏」必须按分屏态置灰（`disabled(!in_split)`），否则未分屏时是一个死按钮。"
+        );
     }
 
     /// 没撤的项一个都不能少：菜单是「右键才看得见」的地方，删错了没人会发现。
@@ -1259,7 +1311,7 @@ mod tests {
         // 接线：菜单必须真的挂到窗格上（`context_menu` 的构建回调走本函数）
         let code = prod(include_str!("split_actions.rs"));
         assert!(
-            code.contains("pane_context_menu(menu)"),
+            code.contains("pane_context_menu(menu"),
             "`pane_context_menu` 没有挂到窗格上（`context_menu` 回调），改了等于没改。"
         );
     }
@@ -1308,44 +1360,27 @@ mod tests {
         );
     }
 
-    /// 2026-10-30 用户反馈「拆分的标签名称和 sftp 标签名称对不上」。
+    /// 2026-10-30 「拆分的标签名称 / 状态点与标签栏对不上」那一类问题的**根治**。
     ///
-    /// 分屏窗格顶部那条标题原来直接读 `session.title`，而标签栏用的是
-    /// `display_tab_title`（会补「（SFTP）」/「（连接配置已删除）」/「（重连中 n/m）」）——
-    /// 于是同一个标签在两处叫两个名字。两处必须取同一份派生。
+    /// 当时的做法是让窗格标题条也走 `display_tab_title` + `is_healthy`，与标签栏同一份。
+    /// 2026-11-16 用户反馈「双层标题栏」之后，窗格不再有标题条 —— **重复的那一份没了**，
+    /// 「两处叫法不一致 / 两点颜色不一致」这一整类 bug 也就无从发生。
+    ///
+    /// 所以这里不再钉具体函数，改为钉**结构**：分屏窗格只留内容，不得再长出
+    /// 自己的标题条（否则那句话又会被说第二遍）。
     #[test]
-    fn the_pane_header_shows_the_same_title_as_the_tab_bar() {
+    fn split_panes_carry_no_second_title_bar() {
         let code = prod(include_str!("split_actions.rs"));
-        let at = code
-            .find("fn render_pane_header(")
-            .expect("找不到分屏窗格的标题条");
-        let body = &code[at..];
-        let end = body.find("\n    fn ").unwrap_or(body.len());
-        let body = &body[..end];
         assert!(
-            body.contains("display_tab_title(tab, &self.conn_store)"),
-            "窗格标题必须走 `display_tab_title`：直接读 `session.title` 会漏掉「（SFTP）」等后缀，\n\
-             与标签栏对不上。"
+            !code.contains("render_pane_header"),
+            "分屏窗格又长出了自己的标题条（`render_pane_header`）：标题与状态点标签栏里\n\
+             已经有同一份，再画一遍就是用户报的「双层标题栏」。\n\
+             焦点请用 `split_pane_shell` 的顶部 2px accent 横条表达。"
         );
-    }
-
-    /// 2026-10-30 用户反馈「sftp 拆分栏的小绿灯和 tab 不一致」。
-    ///
-    /// 窗格标题条原来只问 `is_live()`（要有终端），SFTP 标签没有终端 ⇒ 同一张标签
-    /// 在标签栏是绿点、在窗格标题上是灰点。两处必须用同一个判据 `is_healthy`。
-    #[test]
-    fn the_pane_dot_uses_the_same_predicate_as_the_tab_bar() {
-        let code = prod(include_str!("split_actions.rs"));
-        let at = code
-            .find("fn render_pane_header(")
-            .expect("找不到分屏窗格的标题条");
-        let body = &code[at..];
-        let end = body.find("\n    fn ").unwrap_or(body.len());
-        let body = &body[..end];
+        // 焦点标记必须还在（删标题条时最容易顺手把它一起删掉）
         assert!(
-            body.contains("tab.is_healthy()"),
-            "窗格状态点必须用 `is_healthy`（终端可用 **或** SFTP 标签可用），\n\
-             只问 `is_live()` 会把 SFTP 标签画成灰点。"
+            code.contains("\"pane-focus-bar\""),
+            "窗格失去了焦点标记：删标题条可以，但「哪一格是焦点」必须还有别的方式表达。"
         );
     }
 
@@ -1403,6 +1438,208 @@ mod tests {
             msg,
             format!("{} · 网络中断", rustshell_core::i18n::t("连接已断开")),
             "干断着的标签不该出现重连字样"
+        );
+    }
+
+    /// 2026-11-16 两轮运行反馈（「往下拆分 / 往右拆分」= **右键的这枚标签挪到下面 /
+    /// 右面那一格**）——接线层。
+    ///
+    /// 纯决策（槽位怎么排）由 `core::split::anchor_split` 的用例钉；这里钉的是
+    /// 「UI 把点中的 id 喂对了、且它落到正确的格」。四条一次跑完（同一条时间线演进）：
+    /// ① 未分屏点 gamma（当前焦点是 alpha）→ alpha 留主格、gamma 进副格；
+    /// ② 已分屏点第三个标签 beta → beta 进副格、主格不动；
+    /// ③ 已分屏点主格里那枚 alpha → 两格**对调**（它去下格，原下格那枚升上来）；
+    /// ④ 未分屏点**当前焦点**自己 → 它留主格、池里挑搭档进副格（「拆自己」）。
+    ///
+    /// 标签是 `SessionHandle::pending` 造的占位会话（不碰 PTY）。
+    #[gpui::test]
+    fn split_from_puts_the_clicked_tab_in_the_second_pane(cx: &mut gpui::TestAppContext) {
+        use crate::main_view::dialogs::tests::build_main;
+        use crate::main_view::TabEntry;
+        use rustshell_core::session::{SessionHandle, SessionKind};
+        use rustshell_core::split::SplitAxis;
+
+        let (main, vcx) = build_main(cx);
+        main.update_in(&mut vcx.clone(), |m, _w, cx| {
+            let mut ids = Vec::new();
+            for title in ["alpha", "beta", "gamma"] {
+                let session = SessionHandle::pending(
+                    rustshell_core::connections::uuid_like(),
+                    SessionKind::Local,
+                    title.to_string(),
+                    None,
+                );
+                ids.push(session.id.clone());
+                m.tabs_state.tabs.push(TabEntry {
+                    session,
+                    terminal: None,
+                    scroll: None,
+                    connect_error: None,
+                    connect_started: None,
+                    dead: None,
+                    retry: None,
+                });
+            }
+            m.tabs_state.active = Some(ids[0].clone());
+
+            // ① 未分屏 + 点的是别的标签：它去下格，当前在看的那格留下
+            m.split_pane_from(&ids[2], SplitAxis::Horizontal, cx);
+            let sp = m.tabs_state.split.as_ref().expect("应当开了分屏");
+            assert_eq!(sp.primary, ids[0], "当前在看的那格不该被换走");
+            assert_eq!(sp.secondary, ids[2], "点中的标签必须落在下/右那一格");
+            assert_eq!(sp.axis, SplitAxis::Horizontal, "方向必须是本次点的那一个");
+
+            // ② 已分屏 + 点分屏之外的标签：进副格，主格不动
+            m.split_pane_from(&ids[1], SplitAxis::Vertical, cx);
+            let sp = m.tabs_state.split.as_ref().expect("分屏态不该被取消");
+            assert_eq!(sp.primary, ids[0], "主格（正在看的那格）不该动");
+            assert_eq!(sp.secondary, ids[1], "第三个标签必须进副格");
+            assert_eq!(sp.axis, SplitAxis::Vertical);
+
+            // ③ 已分屏 + 点主格里那枚标签：两格**对调** —— 它必须离开主格才能落到副格，
+            //    原来副格那枚升上来（2026-11-17 用户明确要求「点上方那枚要对调」）
+            m.split_pane_from(&ids[0], SplitAxis::Horizontal, cx);
+            let sp = m.tabs_state.split.as_ref().expect("分屏态不该被取消");
+            assert_eq!(sp.secondary, ids[0], "点主格那枚必须把它送到副格（下/右）");
+            assert_eq!(sp.primary, ids[1], "原来副格那枚升到主格");
+            assert_eq!(sp.axis, SplitAxis::Horizontal);
+
+            // ④ 未分屏 + 点的是当前焦点自己：**照样**进副格（这条就是 A/B 两标签的场景，
+            //    上一版在这里把它留在了主格 —— 用户报的「B 应该到下面」正是这条）
+            m.unsplit(cx);
+            m.tabs_state.active = Some(ids[2].clone());
+            m.split_pane_from(&ids[2], SplitAxis::Horizontal, cx);
+            let sp = m.tabs_state.split.as_ref().expect("点自己也要开分屏");
+            assert_eq!(
+                sp.secondary, ids[2],
+                "点中的标签永远在副格（下/右），点自己也不例外"
+            );
+            assert_eq!(sp.primary, ids[0], "搭档取池里第一个别的标签，留在主格");
+        });
+    }
+
+    /// 用户报告的最小复现（2026-11-16 第三轮）：
+    /// 「同时存在 A B 两个 tab，我在 tab B 上右键选择向下拆分，则 **tab B 拆分到下方**」。
+    ///
+    /// 上一版对「右键的就是当前焦点」留了特例（自己留主格），于是 B 留在上面、A 被换走下去
+    /// —— 两个标签时这个特例几乎每次都会命中。这里把「焦点就在 B」这个最坏情形钉死。
+    #[gpui::test]
+    fn splitting_down_a_two_tab_set_puts_the_clicked_tab_below(cx: &mut gpui::TestAppContext) {
+        use crate::main_view::TabEntry;
+        use rustshell_core::session::{SessionHandle, SessionKind};
+        use rustshell_core::split::SplitAxis;
+
+        let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
+        let mut ids = Vec::new();
+        main.update_in(&mut vcx.clone(), |m, _w, cx| {
+            for title in ["A", "B"] {
+                let session = SessionHandle::pending(
+                    rustshell_core::connections::uuid_like(),
+                    SessionKind::Local,
+                    title.to_string(),
+                    None,
+                );
+                ids.push(session.id.clone());
+                m.tabs_state.tabs.push(TabEntry {
+                    session,
+                    terminal: None,
+                    scroll: None,
+                    connect_error: None,
+                    connect_started: None,
+                    dead: None,
+                    retry: None,
+                });
+            }
+            // 最坏情形：当前焦点就在 B（被右键的那枚）
+            m.tabs_state.active = Some(ids[1].clone());
+
+            m.split_pane_from(&ids[1], SplitAxis::Horizontal, cx);
+
+            let sp = m.tabs_state.split.as_ref().expect("应当开了分屏");
+            assert_eq!(sp.primary, ids[0], "A 必须留在上方");
+            assert_eq!(sp.secondary, ids[1], "右键的 B 必须落到下方");
+            assert_eq!(sp.axis, SplitAxis::Horizontal);
+        });
+    }
+
+    /// 版面口径的**几何事实**：`primary` 是第一格 —— 上下分屏在上、左右分屏在左。
+    ///
+    /// 这是「右键拆分往哪一侧走」的地基：上一条用例断言的是**槽位**，槽位到屏幕的
+    /// 映射只写在这里。两者若搞反，症状就是用户报的「选了往下拆分，它却跑到上面」。
+    #[gpui::test]
+    fn the_primary_pane_is_the_top_and_left_one(cx: &mut gpui::TestAppContext) {
+        use crate::main_view::TabEntry;
+        use rustshell_core::session::{SessionHandle, SessionKind};
+        use rustshell_core::split::SplitAxis;
+
+        let (main, vcx) = crate::main_view::dialogs::tests::build_main(cx);
+        let mut ids = Vec::new();
+        main.update_in(&mut vcx.clone(), |m, _w, cx| {
+            for title in ["alpha", "beta"] {
+                let session = SessionHandle::pending(
+                    rustshell_core::connections::uuid_like(),
+                    SessionKind::Local,
+                    title.to_string(),
+                    None,
+                );
+                ids.push(session.id.clone());
+                m.tabs_state.tabs.push(TabEntry {
+                    session,
+                    terminal: None,
+                    scroll: None,
+                    connect_error: None,
+                    connect_started: None,
+                    dead: None,
+                    retry: None,
+                });
+            }
+            m.tabs_state.active = Some(ids[0].clone());
+            // 点 beta 往下拆 → alpha 留主格、beta 落副格
+            m.split_pane_from(&ids[1], SplitAxis::Horizontal, cx);
+        });
+
+        // 先标脏再出帧：复用帧里的 `debug_bounds` 是旧几何（见项目记忆里的复用帧坑）
+        let (primary, secondary) = {
+            vcx.run_until_parked();
+            vcx.update(|w, cx| {
+                w.refresh();
+                w.draw(cx).clear(cx);
+            });
+            let p = vcx
+                .debug_bounds("pane-body-primary")
+                .expect("主窗格内容区没渲染出来");
+            let s = vcx
+                .debug_bounds("pane-body-secondary")
+                .expect("副窗格内容区没渲染出来");
+            (p, s)
+        };
+        assert!(
+            primary.origin.y < secondary.origin.y,
+            "上下分屏时 primary 必须在上（primary.y={:?} / secondary.y={:?}）",
+            primary.origin.y,
+            secondary.origin.y
+        );
+
+        // 再点主格那枚 alpha 选「向右拆分」：对调 + 换方向 → beta 去左、alpha 去右
+        main.update_in(&mut vcx.clone(), |m, _w, cx| {
+            m.split_pane_from(&ids[0], SplitAxis::Vertical, cx);
+        });
+        vcx.run_until_parked();
+        vcx.update(|w, cx| {
+            w.refresh();
+            w.draw(cx).clear(cx);
+        });
+        let primary = vcx
+            .debug_bounds("pane-body-primary")
+            .expect("主窗格内容区没渲染出来");
+        let secondary = vcx
+            .debug_bounds("pane-body-secondary")
+            .expect("副窗格内容区没渲染出来");
+        assert!(
+            primary.origin.x < secondary.origin.x,
+            "左右分屏时 primary 必须在左（primary.x={:?} / secondary.x={:?}）",
+            primary.origin.x,
+            secondary.origin.x
         );
     }
 }

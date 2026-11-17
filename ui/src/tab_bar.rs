@@ -53,6 +53,14 @@
 //! 到终端上也照样收到 —— 换位恰恰需要这个。
 //! 两者的优先级天然正确：gpui 的鼠标事件先跑最内层（bubble 阶段按注册反序），按下点在
 //! 标签上时标签先建立 `active_drag` 并 `stop_propagation`，标签栏那一层就不会跟着起拖。
+//!
+//! 2026-11-16 运行反馈「只保留红色和绿色圆的，取消红色空心圆和灰色空心圆」：
+//! 状态圆点从「四态四样（绿实心 / 黄实心 / 红空心 / 灰空心）」收敛成**只亮起两种颜色**——
+//! 已连接 = 绿实心（呼吸）、连接中 = 红实心（呼吸）、掉线 = 红实心（**静止**）、
+//! 未连接 = 红实心（静止）。同日第二轮反馈「连接失败这类也是实心红点，不要出现无实心点
+//! 的事情」把最后那个「未连接不画点」的例外也删掉了：**每个标签恒有一枚点**，
+//! 只有「红/绿」与「动/静」两个维度。判据见 [`TabStatus::dot`]，
+//! 护栏见 `every_tab_state_draws_a_solid_red_or_green_dot`。
 
 use gpui::{
     div, point, px, Animation, AnimationExt as _, AnyElement, AppContext as _, BoxShadow,
@@ -60,7 +68,7 @@ use gpui::{
     MouseButton, ParentElement as _, Pixels, Render, ScrollEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
@@ -76,11 +84,19 @@ use super::main_view::MainView;
 /// N8：样式取色统一走主题工具函数（删除就地 hex 定义）
 use crate::theme::to_hsla as hex;
 
-/// 单个 Tab 的最大宽度（`render_tab_bar`的`max_width`）。
-const TAB_MAX_WIDTH: f32 = 220.;
+/// 单个 Tab 的**最宽估算**（px）：`TAB_TITLE_MAX_CHARS` 个全角字（每字约 14px）
+/// + 状态圆点 / 关闭按钮 / 两侧内缩的余量。
+///
+/// 2026-11-16 运行反馈「tab 的名称过长不要隐藏，按照名称长度展示 tab 长度。
+/// 限制 tab 名称长度」：原来这里挂着 `TabBar::max_width(220)`，一旦标题超宽就被
+/// **布局**挤成省略号 —— 名字等于被藏起来，用户看不出这条是哪个会话。
+/// 现在改成「**宽度跟着名字走**」，长度上限挪到文案层：`display_tab_title` 会先按
+/// `TAB_TITLE_MAX_CHARS` 截断再拼类型/状态后缀，所以这个估算值就是「任何标签的宽度上界」，
+/// 留给右击菜单覆盖层算外扩量用（覆盖层会被 Tab 的 `overflow_hidden` 裁掉，宁可估大）。
+const TAB_WIDEST_ESTIMATE: f32 = crate::main_view::TAB_TITLE_MAX_CHARS as f32 * 14. + 80.;
 
 /// 右击菜单覆盖层相对 suffix 包装层的外扩量（px）。
-const TAB_MENU_OVERHANG: f32 = TAB_MAX_WIDTH + 100.;
+const TAB_MENU_OVERHANG: f32 = TAB_WIDEST_ESTIMATE;
 
 /// 连接状态圆点直径（px）。与终端面板、分屏标题栏的状态点同规格。
 const TAB_STATUS_DOT: f32 = 6.;
@@ -231,7 +247,7 @@ fn dot_pulse(phase: f32) -> DotPulse {
 const TAB_ROW_HEIGHT: f32 = 32.;
 
 /// 标签尺寸。与 `TAB_ROW_HEIGHT` 必须成对修改：高度由它决定，字号/内边距也随之走一档。
-const TAB_SIZE: gpui_component::Size = gpui_component::Size::Medium;
+const TAB_SIZE: gpui_kit::component::Size = gpui_kit::component::Size::Medium;
 
 /// 标签栏外壳总高（px）：轨道 32（`TAB_ROW_HEIGHT`）+ 上下各 4px（`py_1`）。
 ///
@@ -279,20 +295,42 @@ fn tab_strip_prefix() -> gpui::Div {
 /// 外扩光环让出位置（光环峰值每边外扩 `TAB_DOT_HALO_SPREAD`，4px 时会被胶囊裁掉）。
 const TAB_EDGE_INSET: f32 = 6.;
 
-/// 标签的连接状态（决定标签前缀那枚 6px 圆点的外观）。
+/// 标签的连接状态（决定标签前缀那枚 6px 圆点的颜色与是否呼吸）。
 ///
-/// 画法与终端面板、分屏标题栏的状态点一致：已连接 = 实心绿点，连接中 = 实心黄点，
-/// 未连接 = 空心灰点。判定收口在 [`TabStatus::of`]（纯函数，可单测）。
+/// 2026-11-16 运行反馈「只保留红色和绿色圆，取消红色空心圆和灰色空心圆」+ 同日第二轮
+/// 「连接失败这类也是实心红点，**不要出现无实心点的事情**」：
+/// 圆点只剩「绿 / 红」两种实心色，而且**每个状态都有点**——
+/// 已连接 = 绿实心（呼吸）、连接中 = 红实心（呼吸）、掉线 / 未连接 = 红实心（静态）。
+/// 判定收口在 [`TabStatus::of`]（纯函数，可单测）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabStatus {
     Connected,
+    /// 连接中：实心**红**点（呼吸）。
+    ///
+    /// 以前是黄点（`warning`）。用户要求「只保留红色和绿色圆」之后，未连上的两种状态
+    /// 都归到红：连接中**在呼吸**（还在努力），掉线/未连**静止**（不再动）——
+    /// 动与不动是这两种「红」之间唯一、也是最直观的区分。
     Connecting,
-    /// 意外断连（画面还在，但会话已死）：空心红点。
+    /// 意外断连（画面还在，但会话已死）：静态实心红点。
     ///
     /// 与 `Idle` 分开是为了让「掉线了」在标签栏就能被看见 —— 用户可能正在
     /// 别的标签里干活，红点是他回来找现场的唯一线索。
     Dead,
+    /// 未连接（含**首次连接就失败**、占位会话、SFTP 通道已断）：静态实心红点。
+    ///
+    /// 2026-11-16 第二轮：这里曾经**不画点**（连槽位都不占），用户明确否掉——
+    /// 「连接失败这类也是实心红点，不要出现无实心点的事情」。红、静止，
+    /// 与 `Dead` 视觉一致；两者仍分开只是为了让 [`TabStatus::of`] 的推导可读、可测。
     Idle,
+}
+
+/// 一枚状态圆点的外观（[`TabStatus::dot`] 的返回值）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DotSpec {
+    /// 圆点颜色（主题色）
+    color: Hsla,
+    /// 是否挂呼吸动画。`false` = 静态实心点（掉线 / 未连接用它：不动才是「没连上」）。
+    breathing: bool,
 }
 
 impl TabStatus {
@@ -313,13 +351,25 @@ impl TabStatus {
         }
     }
 
-    /// 圆点取色 + 是否实心（空心 = 未连接，只描一圈）。
-    fn dot(&self, t: &rustshell_core::theme::ThemeTokens) -> (Hsla, bool) {
+    /// 圆点外观。**每个状态都有圆点**（返回值不再可空）：
+    /// 绿 = 连上了，红 = 没连上；呼吸 = 还在动（连接中），静止 = 不动（掉线 / 没连）。
+    ///
+    /// 2026-11-16 两轮反馈合起来就是这句话：先删掉空心（红空心 / 灰空心），
+    /// 再删掉「不画点」这条路径 —— 标签栏那枚点的语义从此只有「红绿 + 动静」两个维度。
+    fn dot(&self, t: &rustshell_core::theme::ThemeTokens) -> DotSpec {
         match self {
-            Self::Connected => (hex(t.success), true),
-            Self::Connecting => (hex(t.warning), true),
-            Self::Dead => (hex(t.danger), false),
-            Self::Idle => (hex(t.fg_muted), false),
+            Self::Connected => DotSpec {
+                color: hex(t.success),
+                breathing: true,
+            },
+            Self::Connecting => DotSpec {
+                color: hex(t.danger),
+                breathing: true,
+            },
+            Self::Dead | Self::Idle => DotSpec {
+                color: hex(t.danger),
+                breathing: false,
+            },
         }
     }
 }
@@ -381,28 +431,33 @@ impl TabStatus {
 pub struct TabStatusDot {
     /// 圆点颜色（主题色；主题变化时由父视图每帧写入，`Hsla` 是 `Copy`）
     color: Hsla,
-    /// 是否绘制「实心 + 呼吸」。false = 未连接的空心静态点。
-    filled: bool,
+    /// 是否挂呼吸动画。`false` = 静态实心点（掉线态）。
+    ///
+    /// 2026-11-16 起**没有「空心点」这条路径了**：未连接的标签根本不画点
+    /// （见 [`TabStatus::dot`] 返回 `None`），所以这里只剩「静态实心 / 呼吸实心」两种。
+    breathing: bool,
 }
 
 impl TabStatusDot {
-    /// `filled = true` 时渲染呼吸实心点，否则渲染空心静态点。
-    fn new(filled: bool, color: Hsla, cx: &mut Context<Self>) -> Self {
-        // 圆点自身不需要订阅任何东西：颜色/填充态由父视图在渲染时同步进来。
+    fn new(spec: DotSpec, cx: &mut Context<Self>) -> Self {
+        // 圆点自身不需要订阅任何东西：颜色/呼吸态由父视图在渲染时同步进来。
         let _ = cx;
-        Self { color, filled }
+        Self {
+            color: spec.color,
+            breathing: spec.breathing,
+        }
     }
 
     /// 父视图每帧同步外观（`copy` 语义，无分配）。
-    fn sync(&mut self, filled: bool, color: Hsla) {
-        self.filled = filled;
-        self.color = color;
+    fn sync(&mut self, spec: DotSpec) {
+        self.breathing = spec.breathing;
+        self.color = spec.color;
     }
 }
 
 impl Render for TabStatusDot {
     fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        render_status_dot(self.filled, self.color)
+        render_status_dot(self.breathing, self.color)
     }
 }
 
@@ -416,8 +471,13 @@ fn dot_slot() -> gpui::Div {
         .h(px(TAB_STATUS_DOT))
 }
 
-/// 静态空心点（未连接）：没有会呼吸的东西，也就没有动画开销。
-fn static_hollow_dot(color: Hsla) -> AnyElement {
+/// 静态实心点（掉线态）：颜色照给 —— 红；没有会呼吸的东西，也就没有动画开销。
+///
+/// 2026-11-16 之前这里画的是「空心点」（`border_1` + `border_color`，不填底色），
+/// 与「红空心 / 灰空心」一起被运行反馈取消：现在只有「实心」一种点，靠**红绿**分
+/// 连接与否、靠**动与不动**分连接中与掉线。刻意**不加**柔光与外环 —— 那两个是
+/// 「活着」的信号，给一个已经死掉的会话配发光会读成「正在重连」。
+fn static_solid_dot(color: Hsla) -> AnyElement {
     dot_slot()
         .child(
             div()
@@ -426,8 +486,7 @@ fn static_hollow_dot(color: Hsla) -> AnyElement {
                 .h(px(TAB_STATUS_DOT))
                 .flex_shrink_0()
                 .rounded_full()
-                .border_1()
-                .border_color(color),
+                .bg(color),
         )
         .into_any_element()
 }
@@ -491,9 +550,11 @@ fn paint_status_dot(slot: gpui::Div, phase: f32, dot_color: Hsla) -> gpui::Div {
 }
 
 /// 把「某个相位」包成一次性呼吸动画（相位与外观都取自 [`paint_status_dot`]）。
-fn render_status_dot(filled: bool, dot_color: Hsla) -> AnyElement {
-    if !filled {
-        return static_hollow_dot(dot_color);
+///
+/// `breathing = false` 走 [`static_solid_dot`]：掉线态的红点**静止**，没有动画开销。
+fn render_status_dot(breathing: bool, dot_color: Hsla) -> AnyElement {
+    if !breathing {
+        return static_solid_dot(dot_color);
     }
     dot_slot()
         .with_animation(
@@ -568,6 +629,7 @@ fn nearest_slot(ranges: &[(f32, f32)], x: f32) -> Option<usize> {
 fn build_tab_item(
     i: usize,
     ctx: TabMenuCtx,
+    // 状态圆点。**每个标签都有**（2026-11-16 第二轮：`Option` 那条「不画点」的路径已删）
     dot: AnyElement,
     on_close: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> Tab {
@@ -743,9 +805,14 @@ fn tab_context_menu(menu: PopupMenu, ctx: &TabMenuCtx) -> PopupMenu {
             }),
     );
 
-    // 分屏：把「本标签」当作主窗格，按方向开启/切换分屏。
-    // 未分屏 → 开启分屏（副窗格自动取池中下一个标签，池中只有它一个新开同类型会话）；
-    // 已分屏 → 只切换分屏方向，不动任何标签。
+    // 分屏：**把点中的这枚标签放到下 / 右那一格**（`primary` 是上/左、`secondary`
+    // 是下/右，见 `render_workspace`）。
+    // 未分屏 → 它进副格，搭档（优先拆分前的焦点标签，否则池里第一个别的）留主格；
+    //          池里只有它自己时才自己留主格、新开会话进副格 —— 规则见 `split_pane_from`。
+    // 已分屏 → **副格永远变成点中的那枚**（2026-11-17「下方已经有了就替换下方」）：
+    //          点分屏外的标签 = 替换副格；点副格那枚 = 幂等只换方向；
+    //          点主格那枚 = 两格对调（它必须离开主格才能下去）。
+    //          规则收在 `core::split::anchor_split`。
     menu = menu.separator().item(
         PopupMenuItem::new(rustshell_core::i18n::ts(
             format!("向右拆分 ({})", crate::keybinds::display_spec("mod-alt-r")),
@@ -759,9 +826,12 @@ fn tab_context_menu(menu: PopupMenu, ctx: &TabMenuCtx) -> PopupMenu {
             let id = id_split_r.clone();
             super::main_view::ui_call(
                 "",
-                move |m, _id, w, cx| {
-                    m.activate_session(&id, cx);
-                    m.split_pane(SplitAxis::Vertical, w, cx);
+                // ⚠️ 这里**不要**先 `activate_session(&id)`：那会把 `tabs_state.active`
+                // 改成被右键的这枚标签，`split_pane_from` 里「搭档优先取拆分前的焦点标签」
+                // 就永远取不到你真正在看的那格（2026-11-16 实测：上一版因此每次都被判成
+                // 「拆自己」）。焦点由 `split_pane_from` 自己收口。
+                move |m, _id, _w, cx| {
+                    m.split_pane_from(&id, SplitAxis::Vertical, cx);
                 },
                 w,
                 cx,
@@ -781,9 +851,10 @@ fn tab_context_menu(menu: PopupMenu, ctx: &TabMenuCtx) -> PopupMenu {
             let id = id_split_d.clone();
             super::main_view::ui_call(
                 "",
-                move |m, _id, w, cx| {
-                    m.activate_session(&id, cx);
-                    m.split_pane(SplitAxis::Horizontal, w, cx);
+                // 同「向右拆分」：不先改 `active`，让 `split_pane_from` 用真正的
+                // 拆分前焦点去挑搭档（见上一条注释）。
+                move |m, _id, _w, cx| {
+                    m.split_pane_from(&id, SplitAxis::Horizontal, cx);
                 },
                 w,
                 cx,
@@ -866,38 +937,45 @@ impl MainView {
         // gpui 每 1/TAB_DOT_BREATH_FPS 秒 `notify(window.current_view())` =
         // notify(MainView) ⇒ 只要有一个已连接标签，整棵窗口树就永远以 20fps 重建。
         //
+        // 圆点计划：`None` = 该标签**不画点**（未连接 / 本地无会话，2026-11-16 起）。
+        //
         // 先把「创建视图所需的数据」收集成不借用 self 的 Vec：随后的循环要同时
         // 可变借用 `self.tabs_state.tab_dots`（插入实体），不能在借用 `self.tabs_state.tabs` 的迭代器里做。
-        let plan: Vec<(String, TabStatus, Hsla, bool)> = self
+        // 圆点计划：**每个标签一枚**（`dot()` 不再可空 —— 2026-11-16 第二轮反馈
+        // 「不要出现无实心点的事情」）。
+        //
+        // 先把「创建视图所需的数据」收集成不借用 self 的 Vec：随后的循环要同时
+        // 可变借用 `self.tabs_state.tab_dots`（插入实体），不能在借用 `self.tabs_state.tabs` 的迭代器里做。
+        let plan: Vec<(String, DotSpec)> = self
             .tabs_state
             .tabs
             .iter()
             .map(|tab| {
                 let status = TabStatus::of(tab.is_healthy(), tab.is_connecting(), tab.is_dead());
-                let (color, filled) = status.dot(&t);
-                (tab.session.id.clone(), status, color, filled)
+                (tab.session.id.clone(), status.dot(&t))
             })
             .collect();
         let mut dots: Vec<gpui::Entity<TabStatusDot>> = Vec::with_capacity(plan.len());
-        for (sid, _status, color, filled) in &plan {
+        for (sid, spec) in &plan {
             let entity = match self.tabs_state.tab_dots.get(sid) {
                 Some(e) => e.clone(),
                 None => {
-                    let (filled, color) = (*filled, *color);
-                    let e = cx.new(move |cx| TabStatusDot::new(filled, color, cx));
+                    let spec = *spec;
+                    let e = cx.new(move |cx| TabStatusDot::new(spec, cx));
                     self.tabs_state.tab_dots.insert(sid.clone(), e.clone());
                     e
                 }
             };
-            // 外观（主题色 / 连接状态）每帧同步进子视图；实体内部不订阅父视图，
+            // 外观（主题色 / 是否呼吸）每帧同步进子视图；实体内部不订阅父视图，
             // 因此父视图的重绘不会反向把圆点标脏。
-            entity.update(cx, |d, _| d.sync(*filled, *color));
+            entity.update(cx, |d, _| d.sync(*spec));
             dots.push(entity);
         }
         // 已关闭标签的圆点实体必须回收：否则反复关开标签会持续累积视图与动画定时器
+        // （每个都是一个常驻唤醒源）。
         self.tabs_state
             .tab_dots
-            .retain(|id, _| plan.iter().any(|(sid, ..)| sid == id));
+            .retain(|id, _| plan.iter().any(|(sid, _)| sid == id));
 
         // Tab 项：官方 Tab（状态圆点 + 类型图标 + 标题 + 关闭按钮 + 右击菜单覆盖层）
         let tabs: Vec<Tab> = self
@@ -963,7 +1041,10 @@ impl MainView {
             // 普通滚轮的纵向 delta 不会被换算成横向，没有这枚按钮，被挤出视口的标签
             // 在鼠标下就没有任何入口。
             .menu(true)
-            .max_width(px(TAB_MAX_WIDTH))
+            // 刻意**不设** `max_width`（2026-11-16 运行反馈「不要隐藏名称，按名称长度
+            // 展示 tab 长度」）：官方 `TabBar::max_width` 的作用是「超宽就把标题挤成
+            // 省略号」，与这条反馈正好相反。宽度交给内容决定；上限由文案层的
+            // `TAB_TITLE_MAX_CHARS` 截断保证 —— 见 `TAB_WIDEST_ESTIMATE` 的说明。
             // 溢出横向滚动：官方把滚动放在内层`tabs-inner`（`overflow_x_scroll`），
             // 这里把句柄接上，才能在「标签多到放不下」时用触摸板 / 横向滚轮移动，
             // 也才能在被激活的标签滚出视口时把它带回可见区（见下方`scroll_to_item`）。
@@ -1401,7 +1482,7 @@ mod tests {
         MouseDownEvent, ParentElement as _, Pixels, Quad, Render, SharedString, Styled as _,
         Window,
     };
-    use gpui_component::{
+    use gpui_kit::component::{
         tab::{Tab, TabBar, TabVariant},
         Sizable as _,
     };
@@ -1409,6 +1490,36 @@ mod tests {
     /// 生产代码正文（剥注释 + 切测试模块，见 `crate::test_support`）。
     fn production_source() -> String {
         prod(include_str!("tab_bar.rs"))
+    }
+
+    /// 2026-11-16 运行反馈「tab 右键中的往下拆分，指的是**当前这个 tab** 往下拆分，
+    /// 往右拆分同理」。
+    ///
+    /// 菜单项必须以**点中的那枚标签**为准（`split_pane_from(&id, ..)`）。走 `split_pane`
+    /// 是按「当前焦点标签」算的，而它已分屏时只切方向 —— 于是右键第三个标签等于什么都没
+    /// 发生，右键副窗格那枚标签时被拆的也不是它。这条只能靠源码断言钉住：
+    /// 「点哪个标签」在无头测试里要真点右键菜单才能复现，成本远高于一句断言。
+    #[test]
+    fn the_tab_menu_splits_the_clicked_tab() {
+        let code = production_source();
+        assert!(
+            code.contains("split_pane_from(&id,"),
+            "标签右键菜单的分屏项必须把**点中的标签 id** 交给 `split_pane_from`，\n\
+             不要用 `split_pane`（按当前焦点算，已分屏时只切方向）。"
+        );
+        assert!(
+            !code.contains("m.split_pane("),
+            "标签栏里不该再调 `split_pane`：分屏入口一律走 `split_pane_from(&id, ..)`，\n\
+             否则「拆的是哪个标签」又变成隐式的。"
+        );
+        // 2026-11-16 第三轮：菜单**不能**先 `activate_session(&id)` —— 那会让
+        // `split_pane_from` 看到的 `active` 恒等于被点的那枚，上一版「点自己就留在主格」
+        // 的特例因此每次命中（A/B 两个标签时 B 被留在上面）。
+        assert!(
+            !code.contains("activate_session"),
+            "标签栏（含右键菜单）不该再出现 `activate_session`：分屏前改 active 会把\n\
+             「拆分前的焦点」弄丢，搭档只能退化成池里第一个标签。"
+        );
     }
 
     /// 回归（2026-09-17 / 2026-10-21 两次运行反馈）：标签栏右侧只留「终端全屏」。
@@ -1596,15 +1707,18 @@ mod tests {
                     // 覆盖层的命中范围与标签边界是否吻合也就验不出来了。
                     .with_variant(TabVariant::Segmented)
                     .with_size(super::TAB_SIZE)
-                    .max_width(px(super::TAB_MAX_WIDTH))
+                    // 与生产一致：不设 `max_width`（宽度跟着标题走）
                     .on_click(move |ix, _w, _cx| clicked.borrow_mut().push(*ix))
                     .child(
                         super::build_tab_item(
                             0,
                             ctx,
-                            super::static_hollow_dot(crate::theme::to_hsla(
+                            // 探针只量布局（覆盖层），圆点用静态实心点即可 ——
+                            // 空心点 2026-11-16 已删除，生产路径恒画实心点。
+                            super::static_solid_dot(crate::theme::to_hsla(
                                 crate::theme::current(cx).fg_muted,
-                            )),
+                            ))
+                            .into_any_element(),
                             move |_e, _w, _cx| *closed.borrow_mut() += 1,
                         )
                         .debug_selector(|| "probe-tab".to_string()),
@@ -1613,7 +1727,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         // 每点用一个全新窗口：避免上一轮菜单未关闭造成的状态污染，
@@ -1710,8 +1824,8 @@ mod tests {
                 .with_size(super::TAB_SIZE)
                 // 生产代码给轨道补的左内缩，探针必须一起带上 —— 否则
                 // `tab_strip_starts_clear_of_the_track_edge` 量的是另一条轨道。
-                .prefix(super::tab_strip_prefix())
-                .max_width(px(super::TAB_MAX_WIDTH));
+                .prefix(super::tab_strip_prefix());
+            // 生产代码同样不设 `max_width`（宽度跟着标题走），探针保持一致。
             if self.selected {
                 bar = bar.selected_index(0);
             }
@@ -1746,7 +1860,7 @@ mod tests {
         phase: f32,
     ) -> &mut gpui::VisualTestContext {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let (_, vcx) = cx.add_window_view(move |_, _| BarProbe { selected, phase });
@@ -1872,13 +1986,14 @@ mod tests {
     /// 优先级是硬约束：**可用 > 断连 > 连接中**。
     /// - 可用优先：重连成功那一帧 `Connecting` 还没落回去，但终端已经能用了；
     /// - 断连优先于连接中：断连态保留终端视图，`is_connecting()` 在「断连后原地
-    ///   重连」时同时为真，此时红点比黄点更有信息量（用户已经知道它在重连，
+    ///   重连」时同时为真，此时红点比「连接中的红点」更有信息量（用户已经知道它在重连，
     ///   他是从终端窗格底部那条断连条知道的）。
     #[test]
     fn tab_status_derives_from_session_state() {
         assert_eq!(TabStatus::of(true, false, false), TabStatus::Connected);
         assert_eq!(TabStatus::of(true, true, false), TabStatus::Connected);
-        // 断连：live=false 且 dead=true —— 空心红点，标签栏里唯一的「出事了」信号
+        // 断连：live=false 且 dead=true —— **静止**的实心红点，标签栏里唯一的
+        // 「出事了」信号（2026-11-16 起红点不再分空心/实心，靠动与不动区分重连中）
         assert_eq!(TabStatus::of(false, true, true), TabStatus::Dead);
         assert_eq!(TabStatus::of(false, false, true), TabStatus::Dead);
         assert_eq!(TabStatus::of(false, false, false), TabStatus::Idle);
@@ -2061,8 +2176,11 @@ mod tests {
     /// ★ 2026-09-20：「同步相位」这条**已作废** —— `repeat_synced()` 的相位是全局
     /// epoch 对 duration 取模，`delta` 恒 `< 1`，一次性动画永远结束不了。
     /// 取代它的负向断言是「生产源码里不许出现任何无限重播」。
+    ///
+    /// ★ 2026-11-16：`filled`（实心/空心）这个维度**已删除** —— 圆点只剩「呼吸实心」
+    /// 与「静止实心」两种，未连接根本不画点。判据随之改成 `breathing`。
     #[test]
-    fn filled_status_dot_breathes_with_capped_fps() {
+    fn breathing_status_dot_breathes_with_capped_fps() {
         let code = production_source();
         assert!(
             code.contains("with_animation"),
@@ -2087,10 +2205,10 @@ mod tests {
                  呼吸必须是有限次，见 status_dot_animation()。"
             );
         }
-        // 未连接的空心点必须保持静态：动画分支只允许出现在实心一侧
+        // 静态实心点（掉线态）必须保持静态：动画分支只允许出现在呼吸一侧。
         assert!(
-            code.contains("if !filled {"),
-            "呼吸动画必须只作用于实心点（`!filled` 提前返回静态空心点），未连接点保持静态。"
+            code.contains("if !breathing {"),
+            "呼吸动画必须只作用于 `breathing` 的圆点（提前返回静态实心点），掉线态保持静止。"
         );
         assert!(
             code.contains("dot_pulse("),
@@ -2103,6 +2221,73 @@ mod tests {
         assert!(
             code.contains("tab-status-dot-halo"),
             "必须画出外扩光环（`tab-status-dot-halo`）—— 用户要的「向外扩散的圆环」这一层。"
+        );
+    }
+
+    /// ★ 2026-11-16 两轮运行反馈合并后的判据：
+    /// ① 「只保留红色和绿色圆，取消红色空心圆和灰色空心圆」；
+    /// ② 「连接失败这类也是实心红点，**不要出现无实心点的事情**」。
+    ///
+    /// 全部落在纯函数 [`super::TabStatus::dot`] 上（不依赖渲染，量的是取色与呼吸位）：
+    ///   * 已连接 = 绿 + 呼吸；连接中 = 红 + 呼吸；
+    ///   * 掉线 / 未连接 = 红 + **静止**，且**都必须有点**（`dot()` 已不可空）。
+    ///
+    /// 另配两条**负向**源码断言钉住「删干净」：
+    ///   * 圆点取色不得再碰 `t.warning`（黄点已按反馈去掉）；
+    ///   * 空心点实现（`static_hollow_dot`）不得复活。
+    #[test]
+    fn every_tab_state_draws_a_solid_red_or_green_dot() {
+        let t = rustshell_core::theme::ThemeTokens::dark();
+
+        let connected = super::TabStatus::Connected.dot(&t);
+        assert_eq!(
+            connected.color,
+            super::hex(t.success),
+            "已连接必须是绿点（主题 success）"
+        );
+        assert!(connected.breathing, "已连接必须呼吸");
+
+        let connecting = super::TabStatus::Connecting.dot(&t);
+        assert_eq!(
+            connecting.color,
+            super::hex(t.danger),
+            "连接中必须是红点 —— 黄点已按「只保留红绿」去掉"
+        );
+        assert!(
+            connecting.breathing,
+            "连接中必须呼吸：它和掉线同为红色，只有「还在动」能区分二者"
+        );
+
+        let dead = super::TabStatus::Dead.dot(&t);
+        assert_eq!(dead.color, super::hex(t.danger), "掉线必须是红点");
+        assert!(!dead.breathing, "掉线必须静止（不再动 = 没救了）");
+
+        // 2026-11-16 第二轮：未连接（含首次连接就失败的标签）也必须是**实心红点**。
+        let idle = super::TabStatus::Idle.dot(&t);
+        assert_eq!(
+            idle.color,
+            super::hex(t.danger),
+            "未连接 / 连接失败必须是实心红点：不允许再出现「没有点」的标签"
+        );
+        assert!(
+            !idle.breathing,
+            "未连接必须静止：它和掉线视觉一致，靠「连接中才呼吸」区分「在努力」与「没连上」"
+        );
+
+        // 负向：源码里不许再出现黄点取色与空心点实现。
+        let code = production_source();
+        assert!(
+            !code.contains("t.warning"),
+            "圆点取色不得再碰 `t.warning`：连接中已改为红点（只保留红绿两种颜色）。"
+        );
+        assert!(
+            !code.contains("static_hollow_dot") && !code.contains(".border_color(color)"),
+            "空心点实现（描边不填底）必须彻底删除：现在只有实心点。"
+        );
+        // 负向：`dot()` 不得再回到「可空」——那正是「有的标签没有点」的来源。
+        assert!(
+            !code.contains("Option<DotSpec>"),
+            "`TabStatus::dot` 不得再返回 `Option`：每个状态都必须画点（2026-11-16 第二轮）。"
         );
     }
 
@@ -2147,7 +2332,7 @@ mod tests {
             "TabStatusDot 必须实现 Render（动画宿主）"
         );
         assert!(
-            code.contains("render_status_dot(self.filled, self.color)"),
+            code.contains("render_status_dot(self.breathing, self.color)"),
             "TabStatusDot::render 必须委托给 render_status_dot（唯一绘制入口）"
         );
     }
@@ -2181,7 +2366,10 @@ mod tests {
                 let mut bar = TabBar::new("scroll-probe")
                     .with_variant(TabVariant::Segmented)
                     .with_size(super::TAB_SIZE)
-                    .max_width(px(super::TAB_MAX_WIDTH))
+                    // ⚠️ 本探针**故意**限宽：它要制造「标签多到放不下」的溢出场景来量
+                    // `scroll_to_item` 的双向可达性。生产路径 2026-11-16 起已经不设上限
+                    // （宽度跟着标题走），照抄成不限宽会让这条用例失去前提。
+                    .max_width(px(120.))
                     .prefix(super::tab_strip_prefix())
                     .menu(true)
                     .track_scroll(&self.handle)
@@ -2195,7 +2383,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let handle = gpui::ScrollHandle::new();
@@ -2772,6 +2960,83 @@ mod tests {
         assert!(
             !tab_menu_flags(&ctx(true, false, false, true, 1)).connect,
             "启动中不得再点「连接」"
+        );
+    }
+
+    /// 2026-11-16 运行反馈「tab 的名称过长不要隐藏，按照名称长度展示 tab 长度。
+    /// 限制 tab 名称长度」——**几何**判据（这条只能量，源码断言看不出宽度）。
+    ///
+    /// 两件事一起守：
+    /// ① 长名字的标签必须比短名字宽 ⇒ 宽度由内容决定，不再被压成同一个宽度；
+    /// ② 必须越过老上限 `220px` ⇒ 证明 `TabBar::max_width` 那层「超宽就挤成省略号」
+    ///    真的撤掉了（那条正是「名称被隐藏」的根源）。
+    ///
+    /// 长度上限由 `TAB_TITLE_MAX_CHARS` 在**文案层**截断（见 `main_view::tab_model`），
+    /// 所以这里用「满额 24 个全角字」当长名字 —— 这也是任何标签能达到的最宽情况。
+    #[gpui::test]
+    fn a_long_title_makes_a_wider_tab(cx: &mut gpui::TestAppContext) {
+        struct WidthProbe {
+            title: SharedString,
+        }
+
+        impl Render for WidthProbe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let t = crate::theme::current(cx);
+                let probe_ctx = TabMenuCtx {
+                    id: "s1".into(),
+                    title: self.title.clone(),
+                    local: true,
+                    has_profile: false,
+                    ephemeral: false,
+                    connected: true,
+                    sftp: false,
+                    connecting: false,
+                    total: 1,
+                    in_split: false,
+                };
+                TabBar::new("width-probe")
+                    // 与生产代码同一变体/尺寸，且**同样不设 `max_width`**
+                    .with_variant(TabVariant::Segmented)
+                    .with_size(super::TAB_SIZE)
+                    .prefix(super::tab_strip_prefix())
+                    .child(
+                        super::build_tab_item(
+                            0,
+                            probe_ctx,
+                            super::static_solid_dot(crate::theme::to_hsla(t.success)),
+                            |_, _, _| {},
+                        )
+                        .debug_selector(|| "probe-tab".to_string()),
+                    )
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+
+        let mut width_of = |title: String| -> f32 {
+            let title: SharedString = title.into();
+            let (_, vcx) = cx.add_window_view(move |_, _| WidthProbe { title });
+            vcx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            vcx.run_until_parked();
+            let b = vcx.debug_bounds("probe-tab").expect("探针标签没渲染");
+            f32::from(b.size.width)
+        };
+
+        let short = width_of("db".to_string());
+        let long = width_of("测".repeat(crate::main_view::TAB_TITLE_MAX_CHARS));
+
+        assert!(
+            long > short * 2.0,
+            "长名字没能把标签撑宽（短 {short}px / 长 {long}px）：宽度仍被压成常量？"
+        );
+        assert!(
+            long > 220.,
+            "满额长度的标签只有 {long}px，没越过老上限 220px：「超宽挤成省略号」那层还在。"
         );
     }
 }

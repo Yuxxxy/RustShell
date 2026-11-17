@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  RustShell 的 Windows 应用清单（RT_MANIFEST）。
+
+  为什么由本仓自己嵌：gpui-kit 0.9.1 给 gpui-fast 打开了
+  `windows-manifest-provided-by-host`（见根 Cargo.toml 该条目下的说明），
+  意思是「清单由宿主提供」—— gpui-fast 的 build.rs 于是**不再**嵌入它自己的
+  `resources/windows/gpui.rc`。旧版本（gpui-fast <= 0.1.13）是 gpui 自己嵌的。
+
+  内容逐字取自 gpui-fast 0.1.14 的 `resources/windows/gpui.manifest.xml`，
+  刻意保持同一份：
+    · `dpiAware = true/pm` + `dpiAwareness = PerMonitorV2` —— 缺了它 Windows 认为
+      进程不感知 DPI，150% 缩放下整窗先按 100% 画、再由 DWM 位图放大 ⇒ **全界面发糊**，
+      而且 gpui 的 `scale_factor()` 恒为 1.0，版式会按逻辑像素算错。
+    · `Microsoft.Windows.Common-Controls` 6.0 —— 缺了它原生控件（对话框 / 菜单）
+      退回 Win95 观感。
+    · `heapType = SegmentHeap` —— 进程堆改用 Segment Heap（Win10 2004+ 生效）。
+    · `supportedOS` 只列 Windows 10：清单里列了哪个版本，系统才把 GetVersionEx
+      当成真实版本返回。
+
+  改这里要同步改 app/assets/rustshell.rc 里的 `RT_MANIFEST` 行（文件名对不上时
+  rc.exe 直接报错，不会静默跳过）。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+    <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+        <security>
+            <requestedPrivileges>
+                <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+            </requestedPrivileges>
+        </security>
+    </trustInfo>
+    <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+        <application>
+            <!-- Windows 10 -->
+            <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+        </application>
+    </compatibility>
+    <application xmlns="urn:schemas-microsoft-com:asm.v3">
+        <windowsSettings>
+            <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+            <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+            <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+        </windowsSettings>
+    </application>
+    <dependency>
+        <dependentAssembly>
+            <assemblyIdentity
+                type='win32'
+                name='Microsoft.Windows.Common-Controls'
+                version='6.0.0.0'
+                processorArchitecture='*'
+                publicKeyToken='6595b64144ccf1df'
+            />
+        </dependentAssembly>
+    </dependency>
+</assembly>

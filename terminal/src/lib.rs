@@ -339,6 +339,10 @@
 //! Use a monospace font. Nerd fonts work well with `line_height_multiplier: 1.0`
 //! to accommodate tall glyphs.
 
+// GPUI 门面别名（**必需**，别删）：唯一依赖是 `gpui-kit`（见根 Cargo.toml），源码里
+// 仍写 `gpui::`，因为 gpui 的 derive 宏展开出来的路径是字面量 `gpui::...`。
+extern crate gpui_kit as gpui;
+
 pub mod box_drawing;
 pub mod colors;
 pub mod event;

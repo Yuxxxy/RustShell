@@ -5,7 +5,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     input::Input,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
@@ -1293,7 +1293,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let (tx, _rx) = flume::unbounded::<SftpCmd>();
@@ -1395,7 +1395,7 @@ mod tests {
         );
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let (tx, _rx) = flume::unbounded::<SftpCmd>();
@@ -1673,7 +1673,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let (tx, _rx) = flume::unbounded::<SftpCmd>();
@@ -1740,7 +1740,7 @@ mod tests {
         rustshell_core::i18n::set_lang(rustshell_core::i18n::Lang::Zh);
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -1753,7 +1753,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();

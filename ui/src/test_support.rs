@@ -473,8 +473,8 @@ mod tests {
     /// 2026-09-18 实机取像素抓到过一次：聊天记录行首（`ai_history_panel`）的图标槽
     /// 是空白，同一行右侧的垃圾桶却正常 —— 同一个面板、同一次渲染，差别只在
     /// 第 5 个图标（`MessageSquare`）的 svg 没随包。根因很结构性：
-    /// `gpui_component::IconName` 只是**组件默认子集**（约 90 个），用到子集外的
-    /// 名字得别名到全量目录 `gpui_kit_assets::IconName`，而别名只解决了「编译」，
+    /// `gpui_kit::component::IconName` 只是**组件默认子集**（约 90 个），用到子集外的
+    /// 名字得别名到全量目录 `gpui_kit::assets::IconName`，而别名只解决了「编译」，
     /// **没解决「文件在不在」**。
     ///
     /// 判据不是手工维护一张「名 → 路径」表（那会腐烂），而是反过来问全量目录：
@@ -503,7 +503,7 @@ mod tests {
         }
 
         let mut missing = Vec::new();
-        for icon in gpui_kit_assets::IconName::ALL {
+        for icon in gpui_kit::assets::IconName::ALL {
             let icon = *icon;
             let path = icon.path().to_string();
             let Some(file) = path.strip_prefix("icons/") else {

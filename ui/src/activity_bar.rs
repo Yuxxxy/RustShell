@@ -5,7 +5,7 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     IconName, Sizable as _, Size,
@@ -83,7 +83,7 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         ("EN", "Language: English")
     };
 
-    gpui_component::v_flex()
+    gpui_kit::component::v_flex()
         .id("activity-rail")
         // 供测试量「栏到底多宽」用（release 下 no-op）。宽度是布局算出来的，
         // 源码扫描只能证明 `.w(px(RAIL_W))` 还在，证明不了它真变成 38.4px。

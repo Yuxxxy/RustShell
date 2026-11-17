@@ -7,7 +7,7 @@ use gpui::{
     IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -674,7 +674,7 @@ fn render_tree_item(
             this.tooltip(move |w, cx| {
                 let host = host_label.clone();
                 let note = note.clone();
-                gpui_component::tooltip::Tooltip::element(move |_w, cx| {
+                gpui_kit::component::tooltip::Tooltip::element(move |_w, cx| {
                     let t = crate::theme::current(cx);
                     v_flex()
                         .max_w(px(320.))
@@ -1126,7 +1126,7 @@ mod tests {
         use std::rc::Rc;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
         let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
@@ -1136,7 +1136,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -1212,12 +1212,12 @@ mod tests {
     fn clicking_the_new_connection_icon_opens_the_dialog(cx: &mut gpui::TestAppContext) {
         use crate::main_view::{AppShell, MainView, PanelKind};
         use gpui::AppContext as _;
-        use gpui_component::WindowExt as _;
+        use gpui_kit::component::WindowExt as _;
         use std::cell::RefCell;
         use std::rc::Rc;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -1228,7 +1228,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();
@@ -1690,7 +1690,7 @@ mod tests {
         use std::rc::Rc;
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
         });
 
@@ -1701,7 +1701,7 @@ mod tests {
                 let main = cx.new(|cx| MainView::new(window, cx));
                 *slot.borrow_mut() = Some(main.clone());
                 let shell = cx.new(|_| AppShell::new(main));
-                gpui_component::Root::new(shell, window, cx)
+                gpui_kit::component::Root::new(shell, window, cx)
             })
         };
         vcx.run_until_parked();

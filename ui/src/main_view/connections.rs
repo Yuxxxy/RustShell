@@ -1,7 +1,7 @@
 //! 会话编排域：本地 Shell / SSH 连接生命周期、Tab 增删与激活、指标源路由。 本模块为`main_view`的子模块，可直接访问`MainView`的私有字段。
 
 use gpui::{Context, Entity, SharedString, Window};
-use gpui_component::{button::ButtonVariant, dialog::DialogButtonProps, WindowExt as _};
+use gpui_kit::component::{button::ButtonVariant, dialog::DialogButtonProps, WindowExt as _};
 
 use rustshell_core::connections::ConnectionProfile;
 use rustshell_core::metrics::MetricsStore;

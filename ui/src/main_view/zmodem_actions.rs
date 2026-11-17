@@ -11,7 +11,7 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, AnyElement, App, Entity, InteractiveElement as _,
     IntoElement as _, ParentElement as _, SharedString, Styled as _, Window,
 };
-use gpui_component::{button::Button, h_flex, Sizable as _};
+use gpui_kit::component::{button::Button, h_flex, Sizable as _};
 use rustshell_core::i18n::{is_en, t, ts};
 use rustshell_terminal::{ZmodemNotice, ZmodemPhase, ZmodemStatus, ZmodemUploadError};
 

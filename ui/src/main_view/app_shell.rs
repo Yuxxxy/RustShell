@@ -18,7 +18,7 @@ use gpui::{
     div, px, App, AppContext as _, Context, Entity, Focusable as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Window,
 };
-use gpui_component::{input::InputState, v_flex, Sizable as _};
+use gpui_kit::component::{input::InputState, v_flex, Sizable as _};
 
 use super::{MainView, PanelKind};
 use crate::{
@@ -310,7 +310,7 @@ impl Render for GroupNameDialogView {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::theme::to_hsla as hex;
         use gpui::{prelude::FluentBuilder as _, Styled as _};
-        use gpui_component::input::Input;
+        use gpui_kit::component::input::Input;
         let t = crate::theme::current(cx);
         // 开框首帧：名称框此刻已在元素树里，`Window::focus` 才落得下去
         // （与终端的 `pending_focus` 同一手法）
@@ -402,10 +402,10 @@ fn render_sidebar_panel(m: &mut MainView, cx: &mut Context<MainView>) -> gpui::A
 impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // gpui-component 0.7 起，Dialog / Sheet / Notification / Tooltip 这些窗口级层
-        // **不再由应用自己挂**：`Root`（= `gpui_base::Root`，组件库只是 re-export）
+        // **不再由应用自己挂**：`Root`（= `gpui_kit::base::Root`，组件库只是 re-export）
         // 在 render 里把注册过的 plugin 视图绝对定位铺在内容之上
         // （`gpui-base/src/root.rs`：`.child(self.view.clone()).child(plugins...)`），
-        // 而 `gpui_component::init(cx)` 已经把 `WindowState`（持有 active_dialogs /
+        // 而 `gpui_kit::component::init(cx)` 已经把 `WindowState`（持有 active_dialogs /
         // active_sheet / notification）注册成 plugin。
         //
         // 0.6.x 的 `Root::render_dialog_layer` / `render_sheet_layer` 这两个函数

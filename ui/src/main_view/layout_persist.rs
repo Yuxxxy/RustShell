@@ -989,7 +989,7 @@ mod tests {
     /// **启动阶段一律不自动弹框、不自动恢复**。
     ///
     /// 历史背景（仍值得记住）：`MainView::new` 跑在 `cx.open_window(..)` 的
-    /// 建窗闭包里、官方 `gpui_component::Root` 成为窗口根视图**之前**。那一刻
+    /// 建窗闭包里、官方 `gpui_kit::component::Root` 成为窗口根视图**之前**。那一刻
     /// `present_dialog` 开头的 `has_active_dialog` 会去读 `Root`，读到 `None` 就
     /// panic —— 表现正是**启动闪退**。所以「启动段不许开框」这条铁律没变；
     /// 只是现在启动段连「置旗延后开框」也不做了。

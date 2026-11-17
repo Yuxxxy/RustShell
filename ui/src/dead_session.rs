@@ -160,7 +160,7 @@ impl std::io::Read for BlockingReader {
 fn engine_seals_every_input_path_once_the_session_is_dead(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext as _;
 
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
 
     let sink = SpySink::default();
     let sink_for_view = sink.clone();
@@ -357,7 +357,7 @@ fn reattaching_a_new_session_keeps_the_previous_screen(cx: &mut gpui::TestAppCon
 
     // 读端是真线程 ⇒ 投喂必然跨线程唤醒调度器（见 [`allow_real_io`]）
     allow_real_io(cx);
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
 
     let old_sink = SpySink::default();
     let (old_reader, old_feed) = feed_reader();
@@ -438,7 +438,7 @@ fn reattach_pushes_the_current_grid_size_to_the_new_pty(cx: &mut gpui::TestAppCo
 
     // 读端是真线程 ⇒ 投喂必然跨线程唤醒调度器（见 [`allow_real_io`]）
     allow_real_io(cx);
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
 
     let (reader, _feed) = feed_reader();
     let view = cx.update(|cx| {
@@ -498,7 +498,7 @@ fn reattaching_leaves_the_alternate_screen_behind(cx: &mut gpui::TestAppContext)
 
     // 读端是真线程 ⇒ 投喂必然跨线程唤醒调度器（见 [`allow_real_io`]）
     allow_real_io(cx);
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
 
     let (reader, feed) = feed_reader();
     let view = cx.update(|cx| {
@@ -546,7 +546,7 @@ fn reattaching_drops_the_old_sessions_paste_wrapping(cx: &mut gpui::TestAppConte
 
     // 读端是真线程 ⇒ 投喂必然跨线程唤醒调度器（见 [`allow_real_io`]）
     allow_real_io(cx);
-    cx.update(gpui_component::init);
+    cx.update(gpui_kit::component::init);
 
     let old_sink = SpySink::default();
     let (reader, feed) = feed_reader();
@@ -658,7 +658,9 @@ fn the_dead_bar_lives_inside_the_terminal_pane_and_blocks_the_mouse() {
         "断连条与占位卡的选取条件被改乱了（断连态绝不能走「连接失败」占位卡）"
     );
 
-    let bar = region(&split, "fn render_dead_bar", "fn render_pane_header");
+    // 区域终点用**下一个函数名**：`render_pane_header` 已于 2026-11-16 按用户反馈
+    // 「双层标题栏」删除，终点改成它后面的 `render_no_session`。
+    let bar = region(&split, "fn render_dead_bar", "fn render_no_session");
     for needle in [
         // 钉住三个口径：挡住鼠标、给出两个动作
         ".occlude()",
@@ -709,9 +711,18 @@ fn a_dead_tab_looks_dead_in_the_tab_bar() {
          2026-10-30 起这两支合并成 `TabEntry::is_healthy`，分屏窗格的状态点也用它 —— \
          两处显示同一件事，判据必须同一份"
     );
+    // `Dead` 必须是「有圆点的红」—— 掉线要能被一眼看见，且不能画成健康的绿。
+    //
+    // 只钉「这一支存在」这个结构，**不钉整行字面量**：`DotSpec` 是跨行的结构体字面量，
+    // rustfmt 折行一变锚点就失配（老坑）。取色（danger）与呼吸位（false = 静止）的
+    // 语义由 `tab_bar::tests::every_tab_state_draws_a_solid_red_or_green_dot`
+    // 直接调纯函数钉住。
+    //
+    // 2026-11-16 两轮：`Dead` 从「空心红点」→「静态实心红点」，随后又与 `Idle`
+    // 合并成同一支（用户第二轮要求「不要出现无实心点的事情」），所以这里只查变体名。
     assert!(
-        tab_bar.contains("Self::Dead => (hex(t.danger), false)"),
-        "断连态在标签栏应当是一个空心红点（`Dead` 变体）"
+        tab_bar.contains("Self::Dead"),
+        "断连态在标签栏应当是一个实心红点（`Dead` 变体不能从圆点取色的 match 里消失）"
     );
     assert!(
         tab_bar.contains("connected: tab.is_live()"),

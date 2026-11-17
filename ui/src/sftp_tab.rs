@@ -51,7 +51,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -61,8 +61,8 @@ use gpui_component::{
     v_flex, Icon, Sizable as _,
 };
 
-/// 全量 Lucide 目录（`gpui_component::IconName` 只是默认子集）。
-use gpui_kit_assets::IconName as LucideIcon;
+/// 全量 Lucide 目录（`gpui_kit::component::IconName` 只是默认子集）。
+use gpui_kit::assets::IconName as LucideIcon;
 
 use rustshell_core::sftp::SftpCmd;
 
@@ -247,6 +247,13 @@ const COL_MODE_W: f32 = 84.;
 /// 拖宽的下限：再窄就只剩省略号，看不出是哪一列。
 const COL_MIN_W: f32 = 40.;
 const COL_MAX_W: f32 = 600.;
+
+/// 行首图标槽的宽度（px）。
+///
+/// 一行是 `[图标][名称][大小]…`，而列头是 `[名称][大小]…` —— 差这一格，列头就会整体
+/// 左移「图标 + 间距」那么宽，和下面的内容错开（2026-11-16 截图里「名称」正压在文件夹
+/// 图标上方）。所以行首图标**定宽**包一层，列头补一个同样宽的空槽，两侧列边界才对齐。
+const ROW_ICON_W: f32 = 18.;
 
 /// 本地窗格可拖列的默认宽度：`[名称, 大小, 修改时间]`（类型是最后一列，吃剩余空间）。
 pub const COL_DEFAULTS_LOCAL: [f32; 3] = [COL_NAME_W, COL_SIZE_W, COL_MTIME_W];
@@ -870,6 +877,12 @@ fn local_header(
         .py_1()
         .border_b_1()
         .border_color(hex(t.border_subtle))
+        // 列宽之和可能超过窗格宽（窄窗格 / 用户把列拖宽）：**必须裁掉**多出来的部分，
+        // 否则最后几列会画到相邻窗格里去 —— 2026-11-16 用户报的「列标题重叠」就是
+        // 左窗格的「类型」溢到右窗格、与「名称」撞在一起。
+        .overflow_hidden()
+        // 与行首图标对齐的空槽（见 `ROW_ICON_W`）
+        .child(div().w(px(ROW_ICON_W)).flex_shrink_0())
         .child(head_cell(
             HeadCol {
                 label: rustshell_core::i18n::t("名称"),
@@ -940,6 +953,10 @@ fn remote_header(
         .py_1()
         .border_b_1()
         .border_color(hex(t.border_subtle))
+        // 同本地列头：宽度溢出必须裁在本窗格内，不能画到隔壁去
+        .overflow_hidden()
+        // 与行首图标对齐的空槽（见 `ROW_ICON_W`）
+        .child(div().w(px(ROW_ICON_W)).flex_shrink_0())
         .child(head_cell(
             HeadCol {
                 label: rustshell_core::i18n::t("名称"),
@@ -1068,15 +1085,28 @@ fn head_cell(
     // 用 accent 点亮，其余留成弱化色 —— 一眼就能看出「按哪列、哪个方向」。
     let active_dir = if active { Some(sort.asc) } else { None };
     let cell = h_flex()
-        // 抓手是 `absolute` 定位的子元素，得有个定位祖先
+        // 抓手是 `absolute` 定位的子元素，得有个定位祖先。
+        // 注意：**不要**在这一层加 `overflow_hidden` —— 抓手的右半边伸到格子外面
+        // （`.right(px(-4.))`），裁在这里会把可拖区域砍掉一半。要在哪裁见下面那个
+        // 包住「文字 + 箭头」的内层。
         .relative()
         .items_center()
         .gap_1()
         .text_size(px(10.))
         .text_color(hex(if active { t.fg_primary } else { t.fg_muted }))
         .whitespace_nowrap()
-        .child(SharedString::from(label))
-        .children(sort_key.map(|_| sort_arrows(active_dir, t)));
+        // 文字 + 箭头单独装一层并裁剪：格子被挤窄（定宽列小于字样、或 `flex_1` 被压到
+        // 0 宽）时，内容只能在自己格子里截断，不能画到隔壁列上去 —— 2026-11-16 用户
+        // 报的「列标题重叠」就是这个溢出（左窗格的「类型」画进了右窗格）。
+        .child(
+            h_flex()
+                .min_w_0()
+                .items_center()
+                .gap_1()
+                .overflow_hidden()
+                .child(SharedString::from(label))
+                .children(sort_key.map(|_| sort_arrows(active_dir, t))),
+        );
     let cell = match width {
         Some(w) => cell.w(px(w)).flex_shrink_0(),
         None => cell.flex_1().min_w_0(),
@@ -1286,14 +1316,25 @@ fn row_base(
         .py_1()
         .rounded(px(6.))
         .cursor_pointer()
+        // 与列头同一条纪律：列宽溢出不许画到行外（否则右边的「类型 / 权限」会压到
+        // 相邻窗格的内容上）。顺带让行的圆角选中底色裁得干净。
+        .overflow_hidden()
         .when(selected, |d| d.bg(hex(t.accent).opacity(0.18)))
         .hover(|s| s.bg(hex(t.accent).opacity(0.08)))
 }
 
 fn icon_of(icon: LucideIcon, is_dir: bool, t: &rustshell_core::theme::ThemeTokens) -> AnyElement {
-    Icon::new(icon)
-        .xsmall()
-        .text_color(hex(if is_dir { t.warning } else { t.fg_muted }))
+    // 定宽槽（见 `ROW_ICON_W`）：列头靠它对齐，别改成按内容撑开
+    div()
+        .w(px(ROW_ICON_W))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .child(Icon::new(icon).xsmall().text_color(hex(if is_dir {
+            t.warning
+        } else {
+            t.fg_muted
+        })))
         .into_any_element()
 }
 
@@ -1302,6 +1343,7 @@ fn name_cell(name: SharedString, width: f32, t: &rustshell_core::theme::ThemeTok
     div()
         .w(px(width))
         .flex_shrink_0()
+        .overflow_hidden()
         .text_size(px(12.))
         .text_color(hex(t.fg_primary))
         .whitespace_nowrap()
@@ -1324,6 +1366,9 @@ fn fixed_cell(
         .text_color(hex(t.fg_muted))
         .whitespace_nowrap()
         .text_ellipsis()
+        // 盒子多宽就画多宽：`flex_1().min_w_0()` 在窗格过窄时会压到 0 宽，若不裁剪，
+        // 里面的文字会照旧画出去（2026-11-16「列标题重叠」的直接成因）。
+        .overflow_hidden()
         .child(text);
     match width {
         Some(w) => cell.w(px(w)).flex_shrink_0().into_any_element(),
@@ -1809,6 +1854,60 @@ mod tests {
             code.matches("rustshell_core::i18n::t(\"类型\")").count(),
             2,
             "「类型」列要同时出现在本地与远端的列头里"
+        );
+    }
+
+    /// 2026-11-16 用户报「sftp 列标题可以重叠」（截图里右窗格的「名称」与一枚「类」撞在
+    /// 一起）。成因不是文案，是**溢出**：列宽之和可以超过窗格宽（窄窗格，或把列拖宽），
+    /// 而定宽格子既不换行也不裁剪 —— 于是左窗格末尾的「类型」直接画进了右窗格。
+    ///
+    /// 三条一起守：
+    /// ① 列头与列表行都必须在自己盒子里裁剪（外溢就没有了）；
+    /// ② 列头格里「文字 + 箭头」单独装一层裁剪 —— 抓手伸到格子外 4px，裁在外层会把
+    ///    可拖区域砍掉一半；
+    /// ③ 行首图标定宽 + 列头补同宽空槽，列边界才对得齐（否则「名称」压在文件夹图标
+    ///    上方，看起来也像错位/重叠）。
+    #[test]
+    fn headers_never_spill_out_of_their_pane() {
+        let code = crate::test_support::prod(include_str!("sftp_tab.rs"));
+
+        // ① 两个列头 + 行的底座
+        for (needle, why) in [
+            ("fn local_header(", "本地列头"),
+            ("fn remote_header(", "远端列头"),
+            ("fn row_base(", "列表行"),
+        ] {
+            let at = code.find(needle).unwrap_or_else(|| panic!("找不到 {why}"));
+            let rest = &code[at..];
+            let end = rest.find("\nfn ").unwrap_or(rest.len());
+            assert!(
+                rest[..end].contains(".overflow_hidden()"),
+                "{why}没有裁剪：列宽溢出时会画到相邻窗格上去（「列标题重叠」的直接成因）"
+            );
+        }
+
+        // ② 单元格自己也要裁（定宽列小于字样 / `flex_1` 列被压到 0 宽时）
+        for needle in ["fn name_cell(", "fn fixed_cell(", "fn head_cell("] {
+            let at = code
+                .find(needle)
+                .unwrap_or_else(|| panic!("找不到 {needle}"));
+            let rest = &code[at..];
+            let end = rest.find("\nfn ").unwrap_or(rest.len());
+            assert!(
+                rest[..end].contains(".overflow_hidden()"),
+                "{needle} 里的文字没有被裁剪：格子被挤窄时文字会画到格子外"
+            );
+        }
+
+        // ③ 行首图标定宽 + 列头对齐空槽
+        assert!(
+            code.contains("const ROW_ICON_W: f32"),
+            "行首图标必须定宽（`ROW_ICON_W`），否则列头没法与内容对齐"
+        );
+        let used = code.matches(".w(px(ROW_ICON_W))").count();
+        assert!(
+            used >= 3,
+            "`ROW_ICON_W` 必须同时用在行首图标与两个列头的空槽上（现在只有 {used} 处）"
         );
     }
 }
