@@ -304,6 +304,20 @@ pub struct UiHub {
 impl gpui::Global for UiHub {}
 
 /// 连接结果通道：SSH 连接线程 到 UI 轮询
+/// 概览要不要因为「有新样本」而重绘（纯函数，可单测）。
+///
+/// * 焦点标签变了 ⇒ 序号体系换了，一律算新数据（切换本身也会重绘，这里只是把
+///   「已见」对齐到新标签，避免下一拍白重绘一次）；
+/// * 序号变了 ⇒ 采样线程真的写了新样本（`MetricsStore::seq` 只增）；
+/// * 没有焦点标签 ⇒ 概览是空态，不重绘。
+fn metrics_are_fresh(active: Option<&str>, seen: Option<(&str, u64)>, seq: u64) -> bool {
+    match (active, seen) {
+        (Some(id), Some((seen_id, seen_seq))) => id != seen_id || seq != seen_seq,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 pub fn connect_results() -> &'static (flume::Sender<ConnectResult>, flume::Receiver<ConnectResult>)
 {
     use std::sync::OnceLock;
@@ -1088,6 +1102,12 @@ pub struct MainView {
     pub panel_ui: PanelUiState,
     pub ai_ui: AiUiState,
     pub io: DialogIoState,
+    /// 概览最近一次「已见」的样本序号：`(会话 id, MetricsStore::seq)`。
+    ///
+    /// `MetricsStore` 是裸共享内存（采样线程直接写，没有 entity 也就没有自动 notify），
+    /// 所以「样本到了要重绘」只能靠 `poll` 每拍比一次序号 —— 见
+    /// [`metrics_are_fresh`]。2026-11-18「概览显示过慢」就是缺了这一拍。
+    pub metrics_seen: Option<(String, u64)>,
     /// 终端全屏：竖栏 / 侧栏 / AI 对话列全部让位，终端卡片独占窗口内容区；
     /// 同时把窗口推入系统全屏（见 [`MainView::toggle_terminal_fullscreen`]）。
     ///
@@ -1878,6 +1898,8 @@ impl MainView {
                 dlg_task_notify: (true, true, false),
                 task_dlg_error: None,
             },
+            // 概览的「已见样本序号」：首拍会因此判成 fresh 并重绘一次，无害
+            metrics_seen: None,
             terminal_fullscreen: false,
             conn_store,
             quick_store,
@@ -2005,6 +2027,29 @@ impl MainView {
         // 0.5) 单实例转交过来的启动参数（`ssh://` / `sftp://`）：先建占位 Tab 再连，
         // 与正常连接完全同一条收口（结果仍从 `connect_results` 回来）。
         changed |= self.drain_launch_requests(cx);
+        // 0.9) 概览：**样本一到就重绘**（2026-11-18「概览显示过慢」）。
+        //
+        // `MetricsStore` 不是 entity（采样线程直接写裸内存），写样本的那一刻没人
+        // 叫醒 UI；旧实现在这里什么都不做，于是概览只在「碰巧有别的原因重绘」时才
+        // 更新 —— 用户看到的就是「等好几秒才出来」。
+        // 只在概览**真的可见**时认这笔变更：MainView 是覆盖全窗口的大树，
+        // 每秒白重建一次既不划算也没必要（状态栏不读指标）。
+        if self.panel_ui.panel == PanelKind::Dashboard
+            && !self.panel_ui.sidebar_collapsed
+            && !self.terminal_fullscreen
+        {
+            let seq = self.metrics_for_active().seq();
+            let active = self.tabs_state.active.clone();
+            let seen = self.metrics_seen.as_ref().map(|(id, s)| (id.as_str(), *s));
+            if metrics_are_fresh(active.as_deref(), seen, seq) {
+                if let Some(id) = active {
+                    self.metrics_seen = Some((id, seq));
+                    // 只点侧栏（概览就长在侧栏里）：`MainView` 是覆盖全窗口的大树，
+                    // 为了侧栏一张卡去重建整棵树，正是 P0-3 想避免的那种白工。
+                    self.notify_view(ChildView::Sidebar, cx);
+                }
+            }
+        }
         // 1) 连接结果
         while let Ok(res) = connect_results().1.try_recv() {
             changed = true;
@@ -5524,6 +5569,69 @@ mod tests {
             "终端卡片底边到窗格底边只剩 {}px —— 快捷命令栏（40px + 1px 描边）被挤掉了，\
              用户看到的正是「终端输入栏离底边还差一截」。",
             before.2 - before.4
+        );
+    }
+
+    /// 2026-11-18「概览显示过慢」：判据是 `MetricsStore::seq` 的纯函数部分。
+    ///
+    /// 三条行为各钉一次 —— 它决定「概览这一拍要不要重绘」：
+    /// ① 序号变了 ⇒ 重绘（采样线程真的写了新样本）；
+    /// ② 序号没变 ⇒ **不重绘**（否则整棵大树立在 1Hz 空转，就是 P0-3 又在犯）；
+    /// ③ 换了标签 ⇒ 当作新数据（两个标签的序号体系互不相干）。
+    #[test]
+    fn metrics_are_fresh_only_when_the_store_moved() {
+        assert!(
+            super::metrics_are_fresh(Some("a"), Some(("a", 1)), 2),
+            "新样本 ⇒ 重绘"
+        );
+        assert!(
+            !super::metrics_are_fresh(Some("a"), Some(("a", 7)), 7),
+            "序号没动 ⇒ 不许重绘"
+        );
+        assert!(
+            super::metrics_are_fresh(Some("b"), Some(("a", 7)), 7),
+            "换了标签 ⇒ 新标签的序号体系不同，必须重绘一次"
+        );
+        assert!(
+            super::metrics_are_fresh(Some("a"), None, 0),
+            "第一次看不到 ⇒ 重绘"
+        );
+        assert!(
+            !super::metrics_are_fresh(None, Some(("a", 1)), 9),
+            "没有焦点标签时概览是空态，不该被样本牵着每秒重绘"
+        );
+    }
+
+    /// 接线：`poll` 必须在**概览可见**时比较样本序号。
+    ///
+    /// 光有纯函数没用 —— 少这一拍，概览就只能等「碰巧有别的原因重绘」才更新，
+    /// 表现正是用户报的「概览显示过慢」。
+    #[test]
+    fn poll_watches_the_metrics_seq_while_the_dashboard_is_visible() {
+        let code = prod(include_str!("main_view.rs"));
+        let at = code
+            .find("fn poll(&mut self, cx: &mut Context<Self>) -> bool {")
+            .expect("找不到 poll");
+        let body = &code[at..];
+        let end = body.find("\n    fn ").unwrap_or(body.len());
+        let body = &body[..end];
+
+        assert!(
+            body.contains("metrics_are_fresh("),
+            "`poll` 没有比较样本序号：概览又只能靠偶发重绘刷新了（「概览显示过慢」）"
+        );
+        assert!(
+            body.contains("metrics_for_active().seq()"),
+            "比较的必须是**当前会话**那个存储的序号（`metrics_for_active().seq()`）"
+        );
+        assert!(
+            body.contains("PanelKind::Dashboard"),
+            "只有概览面板可见时才认这笔变更，否则整棵树每秒白重建一次"
+        );
+        assert!(
+            body.contains("notify_view(ChildView::Sidebar"),
+            "样本驱动的重绘必须只点侧栏（`notify_view(ChildView::Sidebar)`）：\n\
+             为了侧栏一张卡去重建整棵窗口树，就是 P0-3 那笔白工。"
         );
     }
 }

@@ -6,8 +6,33 @@
 use chrono::TimeZone as _;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// 远端探测的稳态间隔：每 5s 一条 exec 信道拉 `/proc` 快照。
+pub const REMOTE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// 预热轮数：连上之后前几轮用 1s 的间隔，把走势图**快速填出形状**。
+pub const REMOTE_PROBE_WARMUP_ROUNDS: u32 = 5;
+
+/// 预热间隔。
+pub const REMOTE_PROBE_WARMUP_GAP: Duration = Duration::from_secs(1);
+
+/// 远端探测「跑过 `rounds` 轮之后，下一轮等多久」。
+///
+/// 2026-11-18 运行反馈「概览显示过慢」：原来是**先 `sleep(5s)` 再探第一下**，
+/// 于是刚连上的那 5 秒里概览全是占位符（「—」/「暂无采样数据」）。现在改成
+/// **先探后睡**，并且头几轮加密到 1s —— 用户切到概览时第一屏就有数据，
+/// 走势也能在一两秒内连成线，之后再退回 5s 稳态（远端 exec 是有成本的，
+/// 稳态不能按 1s 打）。
+pub fn remote_probe_gap(rounds: u32) -> Duration {
+    if rounds < REMOTE_PROBE_WARMUP_ROUNDS {
+        REMOTE_PROBE_WARMUP_GAP
+    } else {
+        REMOTE_PROBE_INTERVAL
+    }
+}
 
 /// 单次采样（本机 sysinfo 或远端 SSH 轮询归一化而来）
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -435,6 +460,12 @@ pub struct MetricsStore {
     /// （`Vec<DiskInfo>` + 每个挂载点 6 个 `String`，10 个挂载点约 70 次分配）
     /// 降为一次 `Arc` 引用计数自增。写入侧 15s 才发生一次，替换成本可忽略。
     overview: Mutex<Arc<SystemOverview>>,
+    /// 写入序号：`push` / `set_overview` 各 +1。
+    ///
+    /// 这个结构是**裸共享内存**（不是 gpui entity，写样本时没人 notify），概览面板
+    /// 因此只能等「碰巧有别的原因重绘」才看到新数据 —— 用户感受就是「概览要等几秒
+    /// 才出来」（2026-11-18 反馈）。UI 侧每拍读一次这个序号，变了才重绘。
+    seq: AtomicU64,
 }
 
 impl Default for MetricsStore {
@@ -448,11 +479,18 @@ impl MetricsStore {
         Self {
             cpu: Mutex::new(RingBuffer::new(300)),
             overview: Mutex::new(Arc::new(SystemOverview::default())),
+            seq: AtomicU64::new(0),
         }
     }
 
     pub fn push(&self, s: Sample) {
         self.cpu.lock().push(s);
+        self.seq.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 写入序号（见 [`MetricsStore::seq`] 字段的说明）。只增不减，单调。
+    pub fn seq(&self) -> u64 {
+        self.seq.load(Ordering::Relaxed)
     }
 
     /// 最新样本：O(1)，不再为了取尾部而复制整条历史。
@@ -469,6 +507,8 @@ impl MetricsStore {
 
     pub fn set_overview(&self, o: SystemOverview) {
         *self.overview.lock() = Arc::new(o);
+        // 概况也算「有新数据」：主机名 / IP / 运行时长 / df 都靠它上屏
+        self.seq.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 概况快照（**廉价**：只加一次引用计数，不做深拷贝）。
@@ -551,6 +591,56 @@ mod tests {
             rb.push(i);
         }
         assert_eq!(rb.iter(), vec![3, 4, 5]);
+    }
+
+    /// 2026-11-18「概览显示过慢」：`MetricsStore` 是裸共享内存，UI 侧只能靠这个序号
+    /// 知道「有没有新数据」。它必须**每写必增**，且单调不回退 —— 否则概览要么不刷新，
+    /// 要么每拍都白重绘。
+    #[test]
+    fn store_seq_advances_on_every_write() {
+        let store = MetricsStore::new();
+        assert_eq!(store.seq(), 0, "新建的存储没有写过任何东西");
+
+        store.push(Sample::default());
+        assert_eq!(store.seq(), 1, "写入一条样本必须 +1");
+
+        store.push(Sample::default());
+        assert_eq!(store.seq(), 2);
+
+        // 概况（主机名 / IP / df）也算新数据：它上屏同样要触发重绘
+        store.set_overview(SystemOverview::default());
+        assert_eq!(store.seq(), 3, "写概况也必须 +1");
+
+        // 单调：不会因为环形缓冲覆盖旧样本而回退
+        for _ in 0..10 {
+            store.push(Sample::default());
+        }
+        assert!(store.seq() > 3, "序号只增不减");
+    }
+
+    /// 远端探测的节奏：前几轮 1s（快速把走势填出形状），之后 5s 稳态。
+    ///
+    /// 这条直接对应「连上后概览不要空五秒」：首轮是**先探后睡**，所以 `rounds=0`
+    /// 对应的等待只发生在第一份数据到手之后。
+    #[test]
+    fn remote_probe_gap_warms_up_then_settles() {
+        for rounds in 0..REMOTE_PROBE_WARMUP_ROUNDS {
+            assert_eq!(
+                remote_probe_gap(rounds),
+                REMOTE_PROBE_WARMUP_GAP,
+                "第 {rounds} 轮应当用预热间隔（1s）"
+            );
+        }
+        assert_eq!(
+            remote_probe_gap(REMOTE_PROBE_WARMUP_ROUNDS),
+            REMOTE_PROBE_INTERVAL,
+            "预热结束后必须回到 5s 稳态（远端 exec 有成本，不能一直按 1s 打）"
+        );
+        assert_eq!(remote_probe_gap(u32::MAX), REMOTE_PROBE_INTERVAL);
+        assert!(
+            REMOTE_PROBE_WARMUP_GAP < REMOTE_PROBE_INTERVAL,
+            "预热间隔必须比稳态更密，否则这条优化没有意义"
+        );
     }
 
     /// 架构标签：同一个架构的四种写法必须收敛成同一个名字。

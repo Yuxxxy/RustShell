@@ -1362,6 +1362,11 @@ async fn establish(
 }
 
 /// 远端指标常驻任务：每 5s 打开独立 exec 信道拉取 /proc 快照（远端 SSH 轮询）
+///
+/// 2026-11-18 运行反馈「概览显示过慢」：原来循环是 `sleep(5s)` **打头**，也就是连上
+/// 之后要干等五秒才探第一下 —— 那五秒里概览的主机名 / IP / 运行时长 / 磁盘全是「—」，
+/// 走势卡是「暂无采样数据」。现在改成**先探后睡**：首轮立刻出数据，接下来几轮按
+/// 1s 加密（走势迅速连成线），之后退回 5s 稳态（见 [`crate::metrics::remote_probe_gap`]）。
 fn spawn_remote_metrics<H: russh::client::Handler + 'static>(
     handle: std::sync::Arc<russh::client::Handle<H>>,
     store: Arc<MetricsStore>,
@@ -1370,11 +1375,8 @@ fn spawn_remote_metrics<H: russh::client::Handler + 'static>(
 ) {
     runtime().spawn(async move {
         let mut prev = ProcSnapshot::default();
+        let mut rounds: u32 = 0;
         loop {
-            if exit.raised() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_secs(5)).await;
             if exit.raised() {
                 break;
             }
@@ -1413,6 +1415,10 @@ fn spawn_remote_metrics<H: russh::client::Handler + 'static>(
                     break;
                 }
             }
+
+            // 探测**之后**才等（首轮因此没有前摇）
+            rounds = rounds.saturating_add(1);
+            tokio::time::sleep(crate::metrics::remote_probe_gap(rounds)).await;
         }
     });
 }
