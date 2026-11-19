@@ -514,6 +514,18 @@ impl TerminalState {
         self.dispatch(bytes, None);
     }
 
+    /// 往滚动区打一行**客户端自己写的**提示（不是 PTY 来的字节）。
+    ///
+    /// 用途：断连时写「[连接已断开] …」，让这句话成为会话历史的一部分 —— 用户往上翻、
+    /// 复制、搜索都能看到它。在 UI 层叠一条常驻提示是另一回事：那只在这一屏可见，
+    /// 滚上去就没了，也复制不到。
+    ///
+    /// 前后各补一个 CRLF：对端最后一行可能被掐在行中间（没有换行），提示不能粘在
+    /// 那半行后面；结尾补一个，免得下一次提示符跟提示挤在同一行。
+    pub fn write_notice_line(&mut self, text: &str) {
+        self.process_bytes(format!("\r\n{text}\r\n").as_bytes());
+    }
+
     /// 同 [`process_bytes`](Self::process_bytes)，但把 shell integration 事件投给 `tx`。
     ///
     /// 生产路径用这一条（`TerminalView` 的读线程把 `TerminalEvent::PromptMark`
@@ -839,6 +851,34 @@ mod tests {
 
         assert_eq!(terminal.cols(), 80);
         assert_eq!(terminal.rows(), 24);
+    }
+
+    /// 2026-11-19 运行反馈「断开后要在终端中输出断开连接」：这句提示必须**真的进网格**
+    /// —— 往后用户翻历史、划选复制、搜索都靠网格，UI 层叠一条常驻提示是另一回事
+    /// （只在这一屏可见，滚上去就没了）。
+    ///
+    /// 两个细节一起钉：① 前后各一个 CRLF ⇒ 提示独占一行，既不会粘在「被掐掉换行」
+    /// 的旧输出后面，也不会把下一次提示符顶到同一行；② 旧输出一个字节都不能少。
+    #[test]
+    fn notice_line_lands_in_the_grid_on_its_own_row() {
+        let (tx, _rx) = channel();
+        let mut terminal = TerminalState::new(80, 24, GpuiEventProxy::new(tx));
+        // 故意**不带**换行：对端掉线时最常见的就是被掐在半行上
+        terminal.process_bytes(b"last line without newline");
+        terminal.write_notice_line("[连接已断开] 对端关闭");
+
+        let rows = grid_text(&terminal);
+        assert!(
+            rows.iter().any(|r| r == "last line without newline"),
+            "旧输出被弄丢了：{rows:?}"
+        );
+        // 宽字符占两列：`grid_text` 一列一个字符，CJK 后面那格是占位空格，
+        // 所以比对前先把空格去掉（不是为了宽松，而是取出「人看到的字形序列」）。
+        assert!(
+            rows.iter()
+                .any(|r| r.replace(' ', "") == "[连接已断开]对端关闭"),
+            "提示没有独占一行（前后各要一个 CRLF）：{rows:?}"
+        );
     }
 
     #[test]

@@ -1880,6 +1880,23 @@ impl TerminalView {
         })
     }
 
+    /// 往终端里打一行**系统提示**（客户端自己写的，不是 PTY 来的字节）。
+    ///
+    /// 2026-11-19 运行反馈「断开后要在终端中输出断开连接」：断连时把这句话写进滚动区，
+    /// 用户翻历史、复制、搜索都能看到它 —— 窗格底部那条断连条只在这一屏可见，
+    /// 往上滚就没了。文本走网格解析（`TerminalState::write_notice_line`），
+    /// 因此和普通输出一样参与滚动与复制。
+    ///
+    /// 读线程可能正在往同一个网格里写（掉线与最后一屏输出常常同帧到达），
+    /// 所以这里不额外加锁：`process_bytes` 自己持的是网格锁。
+    pub fn print_notice(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.state.write_notice_line(text);
+        // 内容变了 ⇒ 让渲染侧的缓存失效（与 `reattach` 同一个手法）
+        self.content_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cx.notify();
+    }
+
     /// 会话是否还活着（宿主判定的会话生命期，不是「能不能连上」）。
     pub fn is_alive(&self) -> bool {
         self.alive

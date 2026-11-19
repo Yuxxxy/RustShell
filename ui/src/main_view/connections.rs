@@ -1357,6 +1357,19 @@ impl MainView {
         // 引擎侧封输入 —— 必须先于 UI 侧改动，这样任何「同一帧里又收到一次输入」
         // 的竞争都已经被挡住。
         term.update(cx, |v, cx| v.set_alive(false, cx));
+        // 2026-11-19 运行反馈「断开后要在终端中输出断开连接」：断连现场保留画面的同时，
+        // 往**滚动区**写一行系统提示。窗格底部那条断连条只在这一屏可见，用户往上翻历史
+        // 就看不见了；写进网格后它和普通输出一样参与滚动 / 划选复制 / 搜索。
+        //
+        // 文案复用词条 `连接已断开`（断连条上那句），只在外面加方括号 ——
+        // 新造一条 `[连接已断开]` 会撞上 i18n 的 G1 护栏（调 `t()` 无词条）。
+        let head = rustshell_core::i18n::t("连接已断开");
+        let notice = if reason.trim().is_empty() {
+            format!("[{head}]")
+        } else {
+            format!("[{head}] {reason}")
+        };
+        term.update(cx, |v, cx| v.print_notice(&notice, cx));
         tab.dead = Some(reason);
         tab.session.state = SessionState::Closed;
         tab.session.writer = None;

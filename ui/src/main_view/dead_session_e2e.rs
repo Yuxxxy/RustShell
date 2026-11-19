@@ -179,7 +179,26 @@ mod e2e {
             "断连条尺寸为零，等于没画：{bar:?}"
         );
 
-        // ⑤ 收尾：这条断连的标签仍然可以被用户主动关掉（现场不是牢笼）
+        // ⑤ 2026-11-19 运行反馈「断开后要在终端中输出断开连接」：这句话必须真的写进
+        // **网格**（不是只在窗格底部画一条条），所以从终端视图里读回来验。
+        let grid_text = main
+            .read_with(vcx, |m, cx| {
+                m.tabs_state.tabs[0]
+                    .terminal
+                    .as_ref()
+                    .map(|t| t.read(cx).visible_text())
+            })
+            .expect("断连现场应当保留终端视图");
+        assert!(
+            grid_text.contains("连接已断开"),
+            "终端里没有「连接已断开」这一行（用户翻历史时才看得到它）：{grid_text}"
+        );
+        assert!(
+            grid_text.contains("连接已被远端关闭"),
+            "提示里要带上断开原因，否则用户只知道「断了」不知道「为什么」：{grid_text}"
+        );
+
+        // ⑥ 收尾：这条断连的标签仍然可以被用户主动关掉（现场不是牢笼）
         vcx.update(|_w, cx| {
             main.update(cx, |m, cx| m.close_tab_by_session("e2e-dead", cx));
         });
