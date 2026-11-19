@@ -452,18 +452,13 @@ impl MainView {
         // 输入框走 Small 档（`h_6` = 1.5rem），与任务 / 快捷命令 / 连接对话框
         // 同一行高；默认的 Medium 是 `h_8` = 2rem，在 420px 宽的模态里
         // 每只框高出 7.5px，一屏六只框就显得「框比字大」。
-        let field = |label: &'static str, input: &gpui::Entity<InputState>| {
+        let field = |label: &'static str, input: &gpui::Entity<InputState>, required: bool| {
             v_flex()
                 .gap_1()
                 .flex_1()
                 .min_w_0()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(label_color)
-                        .child(SharedString::from(t(label))),
-                )
+                // 标签与星号走 dialogs 里那一份（必填星号必须是同一个红色、同一个字号）
+                .child(super::dialogs::field_label(t(label), required, th))
                 .child(Input::new(input).small().w_full())
         };
 
@@ -528,17 +523,16 @@ impl MainView {
                         ),
                 ),
         );
-        body = body.child(field("规则名称（可空）", &self.io.fwd_form.name));
+        body = body.child(field("规则名称（可空）", &self.io.fwd_form.name, false));
         body = body.child(
             v_flex()
                 .gap_1()
                 .w_full()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .w_full()
-                        .child(field("监听端口", &self.io.fwd_form.listen_port)),
-                )
+                .child(h_flex().gap_2().w_full().child(field(
+                    "监听端口",
+                    &self.io.fwd_form.listen_port,
+                    true,
+                )))
                 // 「只绑回环地址」是产品口径，不是这一条规则的选项 ——
                 // 写在这里而不是做成一个地址输入框，是为了让用户知道
                 // 「别的机器连不上这个端口」是设计如此。
@@ -554,8 +548,8 @@ impl MainView {
                 h_flex()
                     .gap_2()
                     .w_full()
-                    .child(field("目标地址", &self.io.fwd_form.target_host))
-                    .child(field("目标端口", &self.io.fwd_form.target_port)),
+                    .child(field("目标地址", &self.io.fwd_form.target_host, true))
+                    .child(field("目标端口", &self.io.fwd_form.target_port, true)),
             );
         } else {
             body = body.child(

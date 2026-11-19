@@ -28,6 +28,49 @@ use super::{AuthMode, DialogMode, MainView};
 use crate::terminal_view::TerminalPaneConfig;
 use crate::theme::to_hsla as hex;
 
+/// 表单字段标签，必填时在**右侧**补一枚红色 `*`。
+///
+/// 为什么单独成函数：连接 / 端口转发 / 任务 / 快捷命令四张表单各有一个 `field`
+/// 闭包，星号若各写一遍，早晚出现「一处 11px 灰、一处 10px 红」。
+///
+/// 红色是 2026-11-19 用户明确要求的（此前是拼进标签串里的 `*`，与标签同色的
+/// 次级灰 —— 11px 下几乎看不见，等于没标）。
+pub(super) fn field_label(
+    label: &'static str,
+    required: bool,
+    tk: rustshell_core::theme::ThemeTokens,
+) -> impl IntoElement {
+    field_label_sized(label, required, tk, 11.)
+}
+
+/// 同 [`field_label`]，但标签字号可调（任务 / 快捷命令两张表单的标签是 12px）。
+pub(super) fn field_label_sized(
+    label: &'static str,
+    required: bool,
+    tk: rustshell_core::theme::ThemeTokens,
+    size: f32,
+) -> impl IntoElement {
+    h_flex()
+        .gap_0p5()
+        .items_center()
+        .child(
+            div()
+                .text_size(px(size))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(hex(tk.fg_secondary))
+                .child(SharedString::from(label)),
+        )
+        .when(required, |d| {
+            d.child(
+                div()
+                    .text_size(px(size))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(hex(tk.danger))
+                    .child("*"),
+            )
+        })
+}
+
 /// 设置面板拖拽的载荷类型：只作类型标识（`on_drag_move::<T>` 按 `T` 匹配），不承载数据。
 pub(super) struct SettingsDrag;
 
@@ -453,32 +496,19 @@ impl MainView {
                 .gap_1()
                 .flex_1()
                 .min_w_0()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(hex(t.fg_secondary))
-                        .child(if required {
-                            SharedString::from(format!("{label} *"))
-                        } else {
-                            SharedString::from(label.to_string())
-                        }),
-                )
+                .child(field_label(label, required, t))
                 .child(Input::new(input).small().w_full())
         };
-        // 固定宽度的字段列（端口等短输入）
+        // 固定宽度的字段列（端口等短输入）。`required` 照旧要给：端口虽然
+        // 可以留空（保存时回退 22），但它是同一行里的字段，标签样式必须与
+        // 左边那枚一致 —— 不然两列标签一个带星一个不带，看起来像漏标。
         let field_w = |label: &'static str, input: &Entity<InputState>, w: f32| {
+            let label = rustshell_core::i18n::t(label);
             v_flex()
                 .gap_1()
                 .w(px(w))
                 .flex_none()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(hex(t.fg_secondary))
-                        .child(SharedString::from(rustshell_core::i18n::t(label))),
-                )
+                .child(field_label(label, false, t))
                 .child(Input::new(input).small().w_full())
         };
 
@@ -609,13 +639,9 @@ impl MainView {
         let key_row = v_flex()
             .gap_1()
             .debug_selector(|| "dlg-key-row".to_string())
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(hex(t.fg_secondary))
-                    .child(rustshell_core::i18n::t("私钥文件")),
-            )
+            // 私钥认证下这一行必然必填（保存时校验非空），而它只在选了私钥
+            // 认证时出现 —— 出现即带星，不需要三态。
+            .child(field_label(rustshell_core::i18n::t("私钥文件"), true, t))
             .child(
                 h_flex()
                     .gap_2()
@@ -1675,18 +1701,16 @@ impl MainView {
         let no_groups = group_options.is_empty();
         let no_profiles = profile_options.is_empty();
 
-        let field = |label: &'static str, input: &Entity<InputState>| {
+        let field = |label: &'static str, input: &Entity<InputState>, required: bool| {
             h_flex()
                 .gap_2()
                 .items_center()
-                .child(
-                    div()
-                        .w(px(76.))
-                        .flex_shrink_0()
-                        .text_size(px(12.))
-                        .text_color(hex(t.fg_secondary))
-                        .child(SharedString::from(rustshell_core::i18n::t(label))),
-                )
+                .child(div().w(px(76.)).flex_shrink_0().child(field_label_sized(
+                    rustshell_core::i18n::t(label),
+                    required,
+                    t,
+                    12.,
+                )))
                 .child(Input::new(input).small().w_full())
         };
         // 标题保留（用户要求）：只写「任务」——任务名回到表单里了，
@@ -1711,6 +1735,7 @@ impl MainView {
             .child(field(
                 rustshell_core::i18n::t("名称"),
                 &self.io.dlg_task_name,
+                false,
             ))
             // 时间：五段式 cron（**只有这一种写法**，时区跟随本机）。
             // 表单五项：名称 / 时间 / 目标 / AI 要求 / 通知。
@@ -1720,6 +1745,7 @@ impl MainView {
                     .child(field(
                         rustshell_core::i18n::t("时间"),
                         &self.io.dlg_task_cron,
+                        true,
                     ))
                     .child(
                         div()
@@ -1731,16 +1757,12 @@ impl MainView {
                             )),
                     ),
             )
-            // 目标：方式二选一（分组 / 连接），下面是**可选列表**
+            // 目标：方式二选一（分组 / 连接），下面是**可选列表**。
+            // 至少要选到一个连接（`task_actions` 保存前用 `dry_run` 校验），故带星。
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(hex(t.fg_secondary))
-                            .child(rustshell_core::i18n::t("目标")),
-                    )
+                    .child(field_label(rustshell_core::i18n::t("目标"), true, t))
                     .child(
                         h_flex()
                             .gap_3()
@@ -1772,27 +1794,19 @@ impl MainView {
                 d.child(
                     v_flex()
                         .gap_1()
-                        .child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(hex(t.fg_secondary))
-                                        .child(rustshell_core::i18n::t("AI 要求")),
-                                )
-                                // 「必输」标记（2026-09-22 用户要求「AI 要求必输」）：
-                                // 真正的拦截在 core 的 `TaskAction::validate()`（保存 /
-                                // 启用 / 开跑三条路都过它），这里只负责**在填之前**
-                                // 就告诉用户它是必填的 —— 让人填完再被驳回是两种体验。
-                                .child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .text_color(hex(t.warning))
-                                        .child(rustshell_core::i18n::t("必输")),
-                                ),
-                        )
+                        // 「必填」标记（2026-09-22 用户要求「AI 要求必输」）：
+                        // 真正的拦截在 core 的 `TaskAction::validate()`（保存 /
+                        // 启用 / 开跑三条路都过它），这里只负责**在填之前**
+                        // 就告诉用户它是必填的 —— 让人填完再被驳回是两种体验。
+                        //
+                        // 2026-11-19 起统一成红色的 `*`（此前是 warning 色的
+                        // 「必输」二字，与其它表单的星号不是一套符号）。
+                        .child(field_label_sized(
+                            rustshell_core::i18n::t("AI 要求"),
+                            true,
+                            t,
+                            12.,
+                        ))
                         // `Textarea` 没有 `small()`（尺寸全由高度决定）。
                         .child(
                             gpui_kit::component::input::Textarea::new(&self.io.dlg_task_prompt)
@@ -2148,18 +2162,16 @@ impl MainView {
         use gpui::Styled as _;
         let t = crate::theme::current(cx);
 
-        let field = |label: &'static str, input: &Entity<InputState>| {
+        let field = |label: &'static str, input: &Entity<InputState>, required: bool| {
             h_flex()
                 .gap_2()
                 .items_center()
-                .child(
-                    div()
-                        .w(px(88.))
-                        .flex_shrink_0()
-                        .text_size(px(12.))
-                        .text_color(hex(t.fg_secondary))
-                        .child(SharedString::from(rustshell_core::i18n::t(label))),
-                )
+                .child(div().w(px(88.)).flex_shrink_0().child(field_label_sized(
+                    rustshell_core::i18n::t(label),
+                    required,
+                    t,
+                    12.,
+                )))
                 .child(Input::new(input).small().w_full())
         };
 
@@ -2173,19 +2185,15 @@ impl MainView {
             .child(field(
                 rustshell_core::i18n::t("名称"),
                 &self.io.dlg_qc_label,
+                false,
             ))
             // 命令正文改用官方 Editor（代码编辑器）：标签在上、编辑器在下，
-            // 支持多行 shell 片段 + 行号 + 自动缩进
+            // 支持多行 shell 片段 + 行号 + 自动缩进。
+            // 「命令」是必填（保存时 `script.trim()` 为空即驳回），故带红色 `*`。
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(hex(t.fg_secondary))
-                            .child(rustshell_core::i18n::t("命令")),
-                    )
+                    .child(field_label(rustshell_core::i18n::t("命令"), true, t))
                     .child(Editor::new(&self.io.dlg_qc_script).h(px(148.))),
             )
             // 「末尾添加回车」：勾上 = 写入后立即执行；取消勾选 = 只键入不执行
@@ -3685,6 +3693,73 @@ pub(in crate::main_view) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// 必填项的星号必须是**红色**（`danger`），且四张表单的必填字段都要带上。
+    ///
+    /// 2026-11-19 用户要求「必填项的星号要为红色的。检查必填项是否都已经加好 *」：
+    /// 此前星号是拼进标签串里的 `*`，与标签同色的次级灰，11px 下几乎看不见；
+    /// 「AI 要求」那一处用的还是「必输」两个字（另一种符号）。
+    #[test]
+    fn required_fields_are_marked_with_a_red_asterisk() {
+        let code = crate::test_support::prod(include_str!("dialogs.rs"));
+
+        // ① 星号取 danger 色，且不许回到弱化灰
+        let at = code
+            .find("pub(super) fn field_label(")
+            .expect("找不到 `field_label`（星号与标签的唯一渲染入口）");
+        let seg = &code[at..(at + 900).min(code.len())];
+        assert!(seg.contains("hex(tk.danger)"), "必填星号必须取 danger 色");
+        assert!(
+            !seg.contains("hex(tk.fg_muted)"),
+            "星号又用了弱化灰 —— 11px 下看不出来，等于没标"
+        );
+
+        // ② 文案型标记已收编成星号
+        assert!(
+            !code.contains("必输"),
+            "还有「必输」文字标记没换成红色星号（两种符号并存看起来像两件事）"
+        );
+
+        // ③ 连接表单三项必填：名称 / 主机 / 用户名
+        for input in [
+            "&self.io.dlg_name",
+            "&self.io.dlg_host",
+            "&self.io.dlg_user",
+        ] {
+            let i = code
+                .find(input)
+                .unwrap_or_else(|| panic!("找不到字段输入框 `{input}`"));
+            let seg = &code[i..(i + 80).min(code.len())];
+            assert!(
+                seg.contains("true"),
+                "`{input}` 的字段没有标必填：标签上会缺红色星号"
+            );
+        }
+
+        // ④ 私钥路径：这行出现即必填（保存时校验非空）
+        let i = code
+            .find("rustshell_core::i18n::t(\"私钥文件\")")
+            .expect("找不到私钥路径那一行");
+        let seg = &code[i..(i + 120).min(code.len())];
+        assert!(seg.contains("true"), "私钥路径必须标必填");
+
+        // ⑤ 任务表单：时间 / 目标 / AI 要求三项必填
+        for label in ["\"时间\"", "\"目标\"", "\"AI 要求\""] {
+            let pattern = format!("rustshell_core::i18n::t({label})");
+            let i = code
+                .find(&pattern)
+                .unwrap_or_else(|| panic!("找不到 `{pattern}`"));
+            let seg = &code[i..(i + 120).min(code.len())];
+            assert!(seg.contains("true"), "`{label}` 必须标必填");
+        }
+
+        // ⑥ 快捷命令的「命令」必填
+        let i = code
+            .find("rustshell_core::i18n::t(\"命令\")")
+            .expect("找不到快捷命令的「命令」标签");
+        let seg = &code[i..(i + 80).min(code.len())];
+        assert!(seg.contains("true"), "快捷命令的「命令」必须标必填");
+    }
 
     /// 三个表单（新增连接 / 任务编辑 / 快捷命令）的输入框必须**同一档高度**。
     ///

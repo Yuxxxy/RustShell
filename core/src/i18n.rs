@@ -646,8 +646,8 @@ fn translate(zh: &'static str) -> &'static str {
         // ---- 定时任务面板（UI 侧引用）----
         "定时" => "Schedule",
         "定时任务" => "Scheduled Tasks",
-        // 「AI 要求」旁的必填标记（2026-09-22）：拦截在 core，这枚标记负责提前说明
-        "必输" => "Required",
+        // 「AI 要求」旁的必填标记已统一成红色的 `*`（2026-11-19），
+        // 「必输」这条文案随之撤下 —— 留着就是 G2 的死条目。
         "运行记录" => "Run History",
         "还没有运行记录" => "No runs yet",
         "还没有定时任务" => "No scheduled tasks yet",
