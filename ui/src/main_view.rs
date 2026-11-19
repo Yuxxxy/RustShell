@@ -2094,9 +2094,9 @@ impl MainView {
                         })
                     });
                     // 落点是否已经有一块屏？有 = 这是「断连现场」上的重连 ⇒ 复用它。
-                    // 走到这里还带着终端视图的只有一条路径：`mark_session_dead` 之后
-                    // `reconnect_tab` 把状态推回 `Connecting`（主动断开那条会把终端卸下，
-                    // 所以落在 `None` 上，见 `detach_session`）。
+                    // 2026-11-19 起意外掉线与**主动断开**都保留终端视图，所以两条来路
+                    // 重连时都会复用它（用户 2026-09-22 的要求：重连不要清掉原内容）；
+                    // 只有「连接还没建立就没有了」的占位 Tab 落在 `None` 上。
                     let reuse_ix = slot.filter(|ix| self.tabs_state.tabs[*ix].terminal.is_some());
                     match slot {
                         Some(ix) => {

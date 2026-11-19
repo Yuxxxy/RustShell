@@ -1305,36 +1305,52 @@ impl MainView {
     /// 的 PTY 句柄，但 ConPTY 的阻塞式释放已由 `AsyncMasterPty` 转交后台线程，
     /// 因此这里只做「取下引用」，不做系统调用。
     pub fn disconnect_tab(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs_state.tabs.iter_mut().find(|t| t.session.id == id) else {
+        let Some(has_terminal) = self
+            .tabs_state
+            .tabs
+            .iter()
+            .find(|t| t.session.id == id)
+            .map(|t| t.terminal.is_some())
+        else {
             return;
         };
-        if tab.terminal.is_none() {
+        if !has_terminal {
             return; // 本就未连接（连接中 / 已断开），无需处理
         }
-        log::info!("断开会话（保留 Tab）: {id}");
-        Self::detach_session(tab);
-        tab.connect_error = None;
-        tab.connect_started = None;
-        // 用户主动断开 = 自动重连计划作废：留着它，断连条上的「等待重试」会
-        // 让用户以为「它还会自己连回来」，而实际上他已经把这条路关掉了。
-        tab.retry = None;
-        cx.notify();
+        log::info!("用户主动断开会话（保留画面）: {id}");
+        // 2026-11-19 运行反馈「主动断开也保留现场、并输出同样一行」：
+        // 以前这里走 `detach_session`，把终端视图整个卸下、换成「已断开连接」占位卡 ——
+        // 最后一屏输出、报错、光标位置全没了，与意外掉线是两种待遇。
+        // 现在与掉线走**同一套收场**（`mark_session_dead`：封输入 + 留屏 + 在滚动区写一行
+        // + 挂断连条 + 真的关掉底层连接），差别只有两处：原因写「主动断开」，
+        // 以及**自动重连作废**（用户已经把那条路关掉了）。
+        self.mark_session_dead(id, rustshell_core::i18n::t("主动断开").to_string(), cx);
+        if let Some(tab) = self.tabs_state.tabs.iter_mut().find(|t| t.session.id == id) {
+            // 用户主动断开 = 自动重连计划作废：留着它，断连条上的「等待重试」会
+            // 让用户以为「它还会自己连回来」，而实际上他已经把这条路关掉了。
+            tab.retry = None;
+        }
+        // `mark_session_dead` 已经发过 notify（一次 update 只发一次）
     }
 
-    /// 把 Tab 转入「意外断连」态：**保留终端画面**，只封输入。
+    /// 把一个 Tab 转入「断连现场」态：**保留终端画面**，只封输入。
     ///
-    /// 与 [`MainView::disconnect_tab`]（用户主动断开）的关键差别只有一条：
-    /// 这里**不卸下终端视图**。掉线现场是要给人看的 —— 最后那几行输出、
-    /// 报错信息、光标停在哪，都是判断「为什么断」的证据；把它换成一页
-    /// 「已断开连接」的占位卡等于把证据删了。
+    /// 2026-11-19 起两条来路都走这里 —— 意外掉线（`poll` 收到 `SessionEvent::Closed`）
+    /// 与**用户主动断开**（[`MainView::disconnect_tab`]，只是原因写「主动断开」且
+    /// 顺手作废自动重连）。在此之前主动断开是另一套收场：卸下终端视图、换成
+    /// 「已断开连接」占位卡，于是同样是断开，用户按的和机器断的看到的是两个界面 ——
+    /// 而现场（最后几行输出、报错、光标停在哪）恰恰是判断「为什么断」的证据。
     ///
-    /// 三件事同时发生：
+    /// 四件事同时发生：
     /// 1. 终端引擎 `set_alive(false)` —— 键盘 / 粘贴 / `write_to_pty` 三条输入通路
     ///    在**引擎内部**堵死（不依赖 UI 层是否记得判），光标停画、闪烁停表、
     ///    点击不再抢焦点；画面、滚动、划选复制全部保留。
-    /// 2. `dead = Some(原因)` —— 渲染层据此在窗格底部叠断连条，状态点转灰。
-    /// 3. 会话句柄里与「连接」有关的通道放掉（writer/reader/SFTP/指标），
-    ///    但 `TabEntry` 本身留在标签栏，`active` 指过来，用户看到的就是原来那一屏。
+    /// 2. 往滚动区写一行 `[连接已断开] 原因`（`TerminalView::print_notice`）：
+    ///    断连条只在这一屏可见，往上翻历史就没了；写进网格才跟着滚动 / 复制 / 搜索走。
+    /// 3. `dead = Some(原因)` —— 渲染层据此在窗格底部叠断连条。
+    /// 4. 会话句柄里与「连接」有关的通道放掉（writer/reader/SFTP/指标），并把 `exit`
+    ///    置位、杀掉本地 shell —— 留下来的只是画面，不是一条还活着的会话。
+    ///    `TabEntry` 与终端视图本身留在标签栏，`active` 指过来，用户看到的就是原来那一屏。
     ///
     /// 幂等：已在断连态时直接返回（`poll` 可能对同一 Tab 收到多个终止事件）。
     pub fn mark_session_dead(&mut self, id: &str, reason: String, cx: &mut Context<Self>) {
@@ -1370,6 +1386,17 @@ impl MainView {
             format!("[{head}] {reason}")
         };
         term.update(cx, |v, cx| v.print_notice(&notice, cx));
+        // 真的把底层连接关掉（用户主动「断开」走的就是这条路径）：`exit` 置位后，
+        // 输出泵 / 指标采样 / SFTP 服务 / 端口转发都会在下一拍退出 ——
+        // 与 `SessionHandle::drop` 用的是同一手。本地会话还要杀 shell 子进程：
+        // 留下来的是**画面**，不是一条活着的会话。
+        tab.session
+            .exit
+            .0
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(killer) = tab.session.child_killer.as_mut() {
+            let _ = killer.kill();
+        }
         tab.dead = Some(reason);
         tab.session.state = SessionState::Closed;
         tab.session.writer = None;

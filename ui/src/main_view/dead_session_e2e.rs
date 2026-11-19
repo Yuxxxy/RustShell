@@ -209,6 +209,69 @@ mod e2e {
         );
     }
 
+    /// 2026-11-19 运行反馈「主动断开也保留现场、并输出同样一行」。
+    ///
+    /// 以前「断开」走的是 `detach_session`：终端视图被卸下、换成一页「已断开连接」
+    /// 占位卡 —— 同样是一次断开，用户按的和机器断的看到两个界面，现场还全丢了。
+    /// 这条用例钉住「两条来路同一套收场」：
+    /// ① 画面还在（`terminal.is_some()`），滚动历史都在；
+    /// ② 滚动区里有 `[连接已断开] 主动断开`；
+    /// ③ 转成断连态（`is_dead()`、`!is_live()`），断连条真的进帧；
+    /// ④ 自动重连账本作废（`retry` 为空）—— 用户已经把这条路关掉了。
+    #[gpui::test]
+    fn disconnecting_manually_keeps_the_scene_and_says_so(cx: &mut gpui::TestAppContext) {
+        allow_real_io(cx);
+        let (main, vcx, _feed, _sink) = build_with_a_connected_ssh_tab(cx);
+
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| m.disconnect_tab("e2e-dead", cx));
+        });
+        vcx.run_until_parked();
+        vcx.update(|w, cx| {
+            w.refresh();
+            w.draw(cx).clear(cx);
+        });
+
+        let (kept_scene, dead, alive, has_retry) = main.read_with(vcx, |m, _| {
+            let tab = &m.tabs_state.tabs[0];
+            (
+                tab.terminal.is_some(),
+                tab.is_dead(),
+                tab.is_live(),
+                tab.retry.is_some(),
+            )
+        });
+        assert!(
+            kept_scene,
+            "主动断开把终端视图卸掉了 —— 现场必须留着（同一套收场）"
+        );
+        assert!(dead, "主动断开没有转成断连态（断连条与状态点都靠它）");
+        assert!(!alive, "主动断开之后不能再算「活着」");
+        assert!(!has_retry, "主动断开必须作废自动重连账本：留着会自己连回来");
+
+        let grid_text = main
+            .read_with(vcx, |m, cx| {
+                m.tabs_state.tabs[0]
+                    .terminal
+                    .as_ref()
+                    .map(|t| t.read(cx).visible_text())
+            })
+            .expect("主动断开后终端视图应当还在");
+        assert!(
+            grid_text.contains("连接已断开"),
+            "终端里没有「连接已断开」这一行：{grid_text}"
+        );
+        assert!(
+            grid_text.contains("主动断开"),
+            "提示里要点明是用户自己断的（与掉线区分开）：{grid_text}"
+        );
+
+        assert!(
+            vcx.debug_bounds("term-dead-bar").is_some(),
+            "主动断开也要画断连条（否则「重新连接」没有入口）"
+        );
+    }
+
     /// 重连成功之后：**同一块屏**、旧内容一个字节没少、输入走新管道、`dead` 已清。
     ///
     /// 对应用户 2026-09-22 的反馈「终端超时注销后重新连接，不要清除原连接的内容」。
@@ -342,8 +405,13 @@ mod e2e {
     /// 任何一环断掉，单测都能全绿（文案拼装看起来在、落点代码看起来在），
     /// 用户那边却是「点了没反应、也没人告诉我为什么」。
     ///
-    /// 连接目标是 `127.0.0.1:1`：本机必然「积极拒绝」，几毫秒就回一个**真实**的
-    /// 失败原因，用例既不需要网络也不依赖任何凭据。
+    /// 连接目标是 `127.0.0.1:1`（本机必然「积极拒绝」，不依赖网络与凭据）。
+    ///
+    /// ⚠️ 2026-11-19：失败结果改为**直接注入** `connect_results`，不再等那个真线程。
+    /// 它跑在进程级共享的 `ssh::runtime()` 上，全量并发跑时十几秒都排不上队
+    /// （诊断实测 `state=Connecting 在途守卫=true connect_started=10.3s`），
+    /// 于是这条用例会随机红 —— 那是测试环境争用，不是「失败没有落点」。
+    /// 注入走的仍是同一条落点链路（`poll` 的失败分支），三条链路一条都没绕。
     #[gpui::test]
     fn a_failed_reconnect_from_the_dead_scene_reports_why(cx: &mut gpui::TestAppContext) {
         allow_real_io(cx);
@@ -393,7 +461,25 @@ mod e2e {
         });
         vcx.run_until_parked();
 
-        // 真连接线程会失败，`poll` 才把结果收进来 —— 轮询到结果出现为止。
+        // ★ 2026-11-19：不再等**真连接线程**的结果。
+        //
+        // 上面那次 `reconnect_tab` 确实会起线程，但它跑在 `ssh::runtime()` 这个
+        // **进程级共享 tokio 运行时**上；全量并发跑时（440 个用例抢 worker）这条连接
+        // 可能十几秒都排不上 —— 2026-11-17 加的现场诊断已经证实：
+        // `state=Connecting 在途守卫=true connect_started=10.3s`，线程还在排队。
+        // 那是**测试环境争用**，与本条要验的东西（失败的落点）无关，却把这条用例
+        // 变成了随机红灯。
+        //
+        // 所以改成**注入**：往 `connect_results` 投一条真实的失败结果，再跑真 `poll`。
+        // 落点逻辑（写 `connect_error` + 弹提示 + 保留断连现场）一个字都没被绕过，
+        // 而结果与线程调度彻底解耦 —— 同一个手法见
+        // `reconnecting_keeps_the_previous_output_and_swaps_the_pipes`（那边注入成功结果）。
+        const INJECTED: &str = "Connection refused";
+        crate::main_view::connect_results()
+            .0
+            .send(Err(("p-e2e".to_string(), INJECTED.to_string())))
+            .expect("连接结果通道应当可用");
+
         // 通知队列必须在**同一次** update 里读：`render` 开头会 `flush_notices`
         // 把它推给窗口并清空，跨帧再读就永远是空的。
         type Outcome = (
@@ -402,16 +488,8 @@ mod e2e {
             bool,
         );
         let mut outcome: Option<Outcome> = None;
-        // ⚠️ 2026-11-17：原来是 100 × 50ms（5 秒）硬预算。单跑必过，但**全量并发跑**
-        // 时（CI 的 2 核 runner 上 438 个用例抢 CPU，本机也跑着 clippy/索引）会踩线
-        // 报「结果没有任何落点」—— 那是假红，不是功能坏了。
-        // 现在：10 秒预算 + 每轮先 `run_until_parked()` 把执行器推一步（后台任务的
-        // 完成回调要靠它落地），超时也不再只说「空的」，而是把现场一并打出来。
-        let mut waited = std::time::Duration::ZERO;
-        for _ in 0..200 {
+        for _ in 0..20 {
             vcx.run_until_parked();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            waited += std::time::Duration::from_millis(50);
             let r = vcx.update(|_w, cx| {
                 main.update(cx, |m, cx| {
                     m.poll(cx);
@@ -423,28 +501,13 @@ mod e2e {
                 outcome = Some(r);
                 break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         let Some((tab_err, notices, still_dead)) = outcome else {
-            // 失败时给现场：光说「connect_error 是空的」没法判断是线程没起来、
-            // 还是被在途守卫挡了、还是连接还在挂着。
-            let diag = vcx.update(|_w, cx| {
-                main.update(cx, |m, _| {
-                    let tab = &m.tabs_state.tabs[0];
-                    format!(
-                        "state={:?} connecting={} dead={} 在途守卫={} connect_started={:?}",
-                        tab.session.state,
-                        tab.is_connecting(),
-                        tab.is_dead(),
-                        m.conn_ui.connecting_profiles.contains("p-e2e"),
-                        tab.connect_started.map(|s| s.elapsed()),
-                    )
-                })
-            });
             panic!(
-                "重连失败的结果在 {waited:?} 内没有落到 `connect_error`：\
-                 后台的失败结果没有任何落点（用户看到的就是「无任何失败提示」）。\
-                 现场：{diag}"
+                "注入的失败结果没有落到 `connect_error`：\n\
+                 后台的失败结果没有任何落点（用户看到的就是「无任何失败提示」）。"
             );
         };
         let err = tab_err.expect("上面已保证非空");

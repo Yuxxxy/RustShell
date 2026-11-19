@@ -529,9 +529,11 @@ fn translate(zh: &'static str) -> &'static str {
         "正在建立 SSH 连接…" => "Connecting over SSH…",
         "已断开" => "Disconnected",
         // 掉线现场（「不跳页面」那一版）：终端窗格内叠的一条断连条 + 两个动作。
-        // 与上面的「已断开」是**两种不同状态** —— 那个是用户主动断开（终端已卸下、
-        // 只剩占位卡），这里是意外掉线（终端画面仍在，只把输入封死）。
+        // 2026-11-19 起**主动断开**也走这套收场（保留画面 + 断连条 + 一行提示），
+        // 原因文案见下面的「主动断开」—— 与上面那个「已断开」（那是连接还没建立
+        // 就没了时的占位状态）不是一回事。
         "连接已断开" => "Connection Lost",
+        "主动断开" => "Disconnected by user",
         "连接已被远端关闭" => "The remote side closed the connection",
         "重新连接" => "Reconnect",
         "关闭标签" => "Close Tab",
