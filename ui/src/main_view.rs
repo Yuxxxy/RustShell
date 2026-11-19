@@ -3505,6 +3505,93 @@ mod tests {
         }
     }
 
+    /// 输入框的**实际高度**跟着全局字号走（`theme.font_size` 是 rem 基准）。
+    ///
+    /// 上游定义（gpui-component `sizing.rs::input_h`）：Medium = `h_8`、Small = `h_6`，
+    /// 而 gpui 的 `h_*` 是 **rem 制**（`h_6` = 1.5rem、`h_8` = 2rem），不是 px。
+    /// ⇒ 本应用把 `font_size` 从组件库默认的 16 收到 15（2026-09-18 用户要求
+    /// 「全局较大字体收一档」）之后，输入框**跟着一起缩了 15/16 = 93.75%**：
+    ///   Medium 32 → 30、Small 24 → 22.5。
+    ///
+    /// 这条用例量的是渲染出来的真实高度（不是源码里写没写 `h_..`），并且用
+    /// 「把字号改回 16 再量一次」来钉住「高度是 rem 推出来的」这个机制 ——
+    /// 只报一个数字证明不了因果关系。
+    #[gpui::test]
+    fn input_height_follows_the_global_font_scale(cx: &mut gpui::TestAppContext) {
+        use gpui::{px, AppContext as _};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::{AppShell, MainView, PanelKind};
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_kit::component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        // 侧栏搜索框是 `.small()` 档（`h_6`），且外层 div 不设高度 —— 量到的就是
+        // 输入框自己算出来的高度。
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| {
+                m.panel_ui.sidebar_collapsed = false;
+                m.panel_ui.panel = PanelKind::Tasks;
+                cx.notify();
+            })
+        });
+        vcx.run_until_parked();
+
+        let measure = |vcx: &mut gpui::VisualTestContext| -> f32 {
+            let b = vcx
+                .debug_bounds("task-search-box")
+                .expect("找不到任务面板搜索框");
+            b.size.height.into()
+        };
+        let h15 = measure(vcx);
+
+        // 把全局字号调回组件库默认的 16：`Root::render` 下一帧会
+        // `window.set_rem_size(theme.font_size)`，rem 制的高度随之还原。
+        vcx.update(|_w, cx| {
+            gpui_kit::component::theme::Theme::global_mut(cx).font_size = px(16.);
+            cx.refresh_windows();
+        });
+        vcx.run_until_parked();
+        let h16 = measure(vcx);
+
+        println!("MEASURE_INPUT_H small@15={h15} small@16={h16}");
+        assert!(
+            (h15 - 22.5).abs() < 0.6,
+            "15px rem 下 Small 档输入框应为 22.5px（h_6 = 1.5rem），实际 {h15}"
+        );
+        assert!(
+            (h16 - 24.0).abs() < 0.6,
+            "16px rem（组件库默认）下 Small 档输入框应为 24px，实际 {h16}"
+        );
+        assert!(
+            (h16 / h15 - 16.0 / 15.0).abs() < 0.01,
+            "输入框高度必须与 rem 基准成正比（{h15} → {h16}）"
+        );
+
+        // `Theme` 是进程级全局：不还原的话，并行跑的其它用例会拿到 16px 的 rem
+        // 基准（它们量的是 15 下的像素），表现为随机失败。
+        vcx.update(|_w, cx| {
+            gpui_kit::component::theme::Theme::global_mut(cx).font_size = px(15.);
+            cx.refresh_windows();
+        });
+        vcx.run_until_parked();
+    }
+
     /// 端口转发面板必须能**从图标栏切出来并真的画出内容**。
     ///
     /// 为什么要有这条几何用例：新面板最容易出的错不是逻辑错，而是「图标加了、
