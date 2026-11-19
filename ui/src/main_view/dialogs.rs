@@ -440,6 +440,13 @@ impl MainView {
         }
 
         // 标签在上、输入在下的字段列（现代表单布局；required 显示红色星号）
+        //
+        // 输入框一律走 **Small 档**（`h_6` = 1.5rem）：任务编辑与快捷命令两个
+        // 对话框早就是这个档位，而这里原先用默认的 Medium（`h_8` = 2rem，
+        // 高 7.5px）—— 同一套表单在三个对话框里长出两种行高。2026-11-19 用户
+        // 点名「主要是新增连接、新增端口转发的输入框」，这里统一到 Small。
+        // 注意两档的**字号是同一个**（`input_text_size`：Medium / Small 都取
+        // `text_sm`），收的只有高度与内边距，文字不会变小。
         let field = |label: &'static str, input: &Entity<InputState>, required: bool| {
             let label = rustshell_core::i18n::t(label);
             v_flex()
@@ -457,7 +464,7 @@ impl MainView {
                             SharedString::from(label.to_string())
                         }),
                 )
-                .child(Input::new(input).w_full())
+                .child(Input::new(input).small().w_full())
         };
         // 固定宽度的字段列（端口等短输入）
         let field_w = |label: &'static str, input: &Entity<InputState>, w: f32| {
@@ -472,7 +479,7 @@ impl MainView {
                         .text_color(hex(t.fg_secondary))
                         .child(SharedString::from(rustshell_core::i18n::t(label))),
                 )
-                .child(Input::new(input).w_full())
+                .child(Input::new(input).small().w_full())
         };
 
         // 多行字段列（备注）：与 `field` 同一版式，控件换成官方 `Textarea`。
@@ -614,7 +621,7 @@ impl MainView {
                     .gap_2()
                     .items_center()
                     .w_full()
-                    .child(Input::new(&self.io.dlg_key_path).w_full())
+                    .child(Input::new(&self.io.dlg_key_path).small().w_full())
                     .child(
                         Button::new("dlg-key-browse")
                             .small()
@@ -3678,6 +3685,49 @@ pub(in crate::main_view) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// 三个表单（新增连接 / 任务编辑 / 快捷命令）的输入框必须**同一档高度**。
+    ///
+    /// 2026-11-19 用户指出「主要是新增连接、新增端口转发的输入框」—— 它们原先
+    /// 用默认的 Medium（`h_8` = 2rem = 30px），而任务与快捷命令那两个对话框
+    /// 早就是 Small（`h_6` = 1.5rem = 22.5px），同一套表单在不同对话框里差 7.5px。
+    /// 这里钉住「谁都不许单独回退到默认档」。
+    #[test]
+    fn every_form_input_uses_the_same_size() {
+        let code = crate::test_support::prod(include_str!("dialogs.rs"));
+
+        // 两个字段闭包各自切段断言：整文件级 `matches(..).count()` 会把任务 /
+        // 快捷命令那两个对话框也算进来（它们早就是 Small），数字对不上还看不出
+        // 是哪一个闭包漏了。
+        let field = code
+            .find("let field = |label: &'static str, input: &Entity<InputState>, required: bool|")
+            .expect("找不到连接对话框的 `field` 闭包");
+        let field_w = code
+            .find("let field_w = |label: &'static str, input: &Entity<InputState>, w: f32|")
+            .expect("找不到连接对话框的 `field_w` 闭包");
+        let field_area = code
+            .find("let field_area = |label: &'static str")
+            .expect("找不到 `field_area`（备注那个多行字段）");
+        assert!(
+            field < field_w && field_w < field_area,
+            "三个闭包的次序变了，切段失效"
+        );
+
+        let body = &code[field..field_w];
+        assert!(
+            body.contains("Input::new(input).small()"),
+            "`field` 闭包的输入框不是 Small 档 —— 「新增连接」的框会比「任务编辑」高 7.5px"
+        );
+        let body_w = &code[field_w..field_area];
+        assert!(
+            body_w.contains("Input::new(input).small()"),
+            "`field_w` 闭包（端口等短输入）不是 Small 档 —— 同一行会出现两种高度"
+        );
+        assert!(
+            code.contains("Input::new(&self.io.dlg_key_path).small()"),
+            "私钥路径那一行必须同档：它与同列的其它框并排，高一档会把整行顶歪"
+        );
+    }
 
     /// 搭一个与生产同构的窗口：Root → AppShell → MainView（对话层由 AppShell 挂）。
     ///

@@ -449,6 +449,9 @@ impl MainView {
 
         let label_color = crate::theme::to_hsla(th.fg_secondary);
         let muted = crate::theme::to_hsla(th.fg_muted);
+        // 输入框走 Small 档（`h_6` = 1.5rem），与任务 / 快捷命令 / 连接对话框
+        // 同一行高；默认的 Medium 是 `h_8` = 2rem，在 420px 宽的模态里
+        // 每只框高出 7.5px，一屏六只框就显得「框比字大」。
         let field = |label: &'static str, input: &gpui::Entity<InputState>| {
             v_flex()
                 .gap_1()
@@ -461,7 +464,7 @@ impl MainView {
                         .text_color(label_color)
                         .child(SharedString::from(t(label))),
                 )
-                .child(Input::new(input).w_full())
+                .child(Input::new(input).small().w_full())
         };
 
         let header = div()
@@ -693,6 +696,23 @@ mod tests {
         assert!(
             c.contains(".conn_store") && c.contains(".save("),
             "保存规则必须落盘（`conn_store.save(..)`）—— 只改内存的话重启就丢"
+        );
+    }
+
+    /// 转发表单的输入框必须与其它表单同档（Small）。
+    ///
+    /// 2026-11-19 用户点名这一扇与「新增连接」：它们原先都是默认 Medium，
+    /// 比任务 / 快捷命令对话框里的框高 7.5px。
+    #[test]
+    fn the_form_inputs_share_the_same_size_as_other_dialogs() {
+        let c = code();
+        assert!(
+            c.contains("Input::new(input).small().w_full()"),
+            "转发表单的输入框必须走 Small 档"
+        );
+        assert!(
+            !c.contains("Input::new(input).w_full()"),
+            "转发表单的输入框又回到默认 Medium 档了（比其它表单高 7.5px）"
         );
     }
 
