@@ -1335,13 +1335,17 @@ async fn establish(
             profile.host.clone(),
         );
         session.metrics = Some(metrics);
-        // 端口转发（F-3）：规则随连接建立自动启动。**先于 SFTP** 起 ——
-        // 两者都要 `handle`，而 SFTP 服务把 handle 吃掉了，转发只能排在它前面。
-        session.forwards =
-            crate::forward::spawn_forwards(handle.clone(), &profile.forwards, session.exit.clone());
-        if !session.forwards.is_empty() {
-            log::info!("已启动 {} 条端口转发规则", session.forwards.len());
-        }
+        // 端口转发（F-3）：连接建立时**只建板子，不自动启动规则**。
+        //
+        // 2026-11-19 起改为「显式启动」（用户要求，对齐端口转发面板的语义）：
+        // 保存规则 ≠ 开始监听。auto 启动的旧行为会让用户仅仅因为「连上了」就
+        // 在后台多出若干个本地端口，而界面上没有任何一处提示它们在监听。
+        // 板子必须**先于 SFTP** 建 —— 两者都要 `handle`，而 SFTP 服务把 handle
+        // 吃掉了，转发只能排在它前面。
+        session.forwards = Some(crate::forward::ForwardBoard::new(
+            handle.clone(),
+            session.exit.clone(),
+        ));
     }
     if channels == SshChannels::ShellOnly {
         // 单通道（外部 `ssh://`）：既没有指标任务也没有 SFTP 服务持有 Handle，

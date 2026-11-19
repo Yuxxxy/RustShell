@@ -199,4 +199,13 @@ pub(crate) enum DialogMode {
     /// 无参数：版本号 / 阶段 / 已下载的文件都在 `io.update_*` 里 —— 对话框
     /// 每帧重跑 builder，读的就是那份真值；存进枚举只多一份会漂移的副本。
     Update,
+    /// 端口转发规则表单（F-3 面板的 `+` / 「编辑…」）。
+    ///
+    /// `profile_id` = 规则挂在哪个连接上；`rule_id: None` = 新建。
+    /// 「改哪一条」必须进枚举：表单草稿（`io.fwd_form`）是可复用的单槽，
+    /// 对话框开着时若草稿被别处重置，闭包里捕获的 id 才是可读回的事实来源。
+    ForwardForm {
+        profile_id: String,
+        rule_id: Option<String>,
+    },
 }

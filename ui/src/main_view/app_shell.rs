@@ -396,6 +396,7 @@ fn render_sidebar_panel(m: &mut MainView, cx: &mut Context<MainView>) -> gpui::A
         PanelKind::Terminals => terminals_panel::render(m, cx).into_any_element(),
         PanelKind::Ai => ai_history_panel::render(m, cx).into_any_element(),
         PanelKind::Tasks => tasks_panel::render(m, cx).into_any_element(),
+        PanelKind::Forwards => crate::forward_panel::render(m, cx).into_any_element(),
     }
 }
 

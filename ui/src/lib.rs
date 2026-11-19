@@ -10,6 +10,7 @@ pub mod ai_panel;
 pub mod connections_panel;
 pub mod dashboard_panel;
 pub mod files_panel;
+pub mod forward_panel;
 pub mod keybinds;
 pub mod main_view;
 pub mod metrics_card;

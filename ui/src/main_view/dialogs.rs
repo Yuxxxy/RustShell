@@ -138,6 +138,11 @@ impl MainView {
             }
             // 在线更新：正文/按钮全部现读 `io.update_*`（同一条真值，不存副本）
             DialogMode::Update => self.render_update_dialog(dialog, w, cx),
+            // 端口转发规则表单（F-3 面板的 `+` / 「编辑…」）
+            DialogMode::ForwardForm {
+                profile_id,
+                rule_id,
+            } => self.render_forward_dialog(dialog, &profile_id, rule_id.as_deref(), w, cx),
         }
     }
 
@@ -1170,6 +1175,11 @@ impl MainView {
             // 更新对话框没有「保存」语义：它的按钮各自调动作，不经 `dialog_save`。
             Some(DialogMode::Update) => {
                 unreachable!("更新对话框不保存，走 render_update_dialog 里的按钮")
+            }
+            // 端口转发表单同理：保存走 `forward_save_form`（写的是 profile.forwards
+            // 里的一条，而不是连接本体）。
+            Some(DialogMode::ForwardForm { .. }) => {
+                unreachable!("端口转发表单走 forward_save_form，不经 dialog_save")
             }
             Some(DialogMode::Edit(id)) => {
                 if let Some(p) = self.conn_store.profiles.iter_mut().find(|p| p.id == id) {

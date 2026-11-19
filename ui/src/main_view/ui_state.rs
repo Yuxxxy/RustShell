@@ -27,7 +27,7 @@ use super::{
 // `main_view.rs` 里是**裸名可见**（同模块），搬进 ui_state 后必须写全路径。
 use super::completion_bar;
 use super::settings_panel;
-use rustshell_core::connections::{ConnectionProfile, ForwardRule};
+use rustshell_core::connections::{ConnectionProfile, ForwardKind, ForwardRule};
 use rustshell_core::launch::LaunchKind;
 use rustshell_core::session::SessionId;
 use rustshell_core::split::SplitAxis;
@@ -566,6 +566,27 @@ impl UpdatePhase {
     }
 }
 
+/// 端口转发规则表单的草稿（面板 `+` / 「编辑…」打开的那一扇对话框）。
+///
+/// 为什么单独成结构而不是再往 `DialogIoState` 摊五个 `dlg_fwd_*`：这五只输入框
+/// 只在这一扇对话框里成组出现（保存时整组读、关窗时整组清），摊平之后
+/// 「哪些字段是一组的」只能靠命名前缀去猜。
+pub struct ForwardFormDraft {
+    /// 规则挂在哪个连接上（`ConnectionProfile::id`）。
+    pub profile_id: String,
+    /// 编辑既有规则时的规则 id；`None` = 新建。
+    pub editing_id: Option<String>,
+    /// 规则类型（四选一；由表单上的循环按钮切换）。
+    pub kind: ForwardKind,
+    /// 规则名（可空 —— 留空时按类型 + 端口自动生成）。
+    pub name: Entity<InputState>,
+    pub listen_port: Entity<InputState>,
+    pub target_host: Entity<InputState>,
+    pub target_port: Entity<InputState>,
+    /// 校验 / 落盘失败的原因（有值时**不关窗**，让用户改）
+    pub error: Option<String>,
+}
+
 pub struct DialogIoState {
     pub dlg_name: Entity<InputState>,
 
@@ -622,6 +643,13 @@ pub struct DialogIoState {
     /// 的隧道），新建取默认。下面的会话日志 / 代理 / 自动重连同此：界面没有入口，
     /// 但数据仍要原值往返，界面消失 ≠ 静默清空。
     pub dlg_forwards: Vec<ForwardRule>,
+
+    /// 端口转发规则表单（[`ForwardFormDraft`]）：面板的新建 / 编辑入口共用一个草稿。
+    ///
+    /// 与 `dlg_forwards`（连接对话框里那份「随连接保存」的整表草稿）**不是一回事**：
+    /// 那一份是连接表单的一个字段，这一份是独立面板的编辑对象 —— 两者都写回
+    /// `ConnectionProfile::forwards`，但入口、生命周期、校验时机各不相同。
+    pub fwd_form: ForwardFormDraft,
 
     /// 连接对话框里**待保存**的会话日志覆盖（F-7）。三态：
     /// `None` = 跟随全局设置，`Some(true)` = 强制记录，`Some(false)` = 强制不记录。

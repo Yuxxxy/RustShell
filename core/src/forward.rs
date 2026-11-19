@@ -1,6 +1,7 @@
-//! 端口转发（F-3）：本地（`ssh -L`）/ 远端（`ssh -R`）/ 动态 SOCKS5（`ssh -D`）。
+//! 端口转发（F-3）：本地（`ssh -L`）/ 远端（`ssh -R`）/ 动态 SOCKS5（`ssh -D`）/
+//! HTTP CONNECT 代理。
 //!
-//! 三条链路的共同形态都是「一条 TCP 连接 ↔ 一条 SSH 信道，双向搬字节」，
+//! 四条链路的共同形态都是「一条 TCP 连接 ↔ 一条 SSH 信道，双向搬字节」，
 //! 差别只在**谁在监听**与**目标从哪来**：
 //!
 //! | 类型 | 谁监听 | 目标来源 | 建信道方式 |
@@ -8,6 +9,7 @@
 //! | Local | 本机 | 规则表（固定） | `channel_open_direct_tcpip` |
 //! | Remote | 服务器 | 规则表（固定） | 服务端主动开，经 [`deliver_forwarded`] 投递 |
 //! | Dynamic | 本机 | SOCKS5 握手（每连接） | `channel_open_direct_tcpip` |
+//! | HttpConnect | 本机 | `CONNECT host:port` 请求行（每连接） | `channel_open_direct_tcpip` |
 //!
 //! # 生命周期不变量
 //!
@@ -15,6 +17,13 @@
 //! 用户手动停（[`ForwardSlot::stop`]）与会话结束（转发任务自己看 [`ExitFlag`]）。
 //! 少了后者，用户不关面板就能让一个本地端口在会话已死之后继续接受连接 —— 那时
 //! 连进来的流量会开在一个已断开的 `Handle` 上，失败得又慢又难懂。
+//!
+//! # 为什么是 [`ForwardBoard`] 而不是「连接时一次性 spawn 完」
+//!
+//! 转发面板要能**显式**启停单条隧道（保存规则 ≠ 开始监听）。一次性 spawn 的
+//! 形态在连接建立那一刻就把规则表烧死了，运行期既加不进也停不掉。板子持有
+//! `Arc<Handle>`（非 Clone）与槽位表，UI 拿 `&SessionHandle` 就能启停 —— 不需要
+//! 可变借用会话句柄，也不需要把 `Handle` 暴露给 UI。
 //!
 //! # 为什么槽位只暴露「状态快照」而不是 `&Mutex<ForwardStatus>`
 //!
@@ -101,11 +110,97 @@ impl Drop for ForwardSlot {
     }
 }
 
-/// 为一个**已建立**的 SSH 会话启动全部规则，返回可观察的槽位。
+/// 一个 SSH 会话的隧道板子：持有 `Handle` 与全部槽位，支持运行期启停。
 ///
-/// 规则不合法（端口为 0 / 缺目标）也照样产出槽位，只是状态直接是
-/// [`ForwardStatus::Failed`] —— 静默丢掉的话，用户在隧道面板里看到的
-/// 是「这条规则凭空消失」，而这比「它在这儿、为什么不能用」更难查。
+/// 由 `SessionHandle::forwards` 持有（`Option<Arc<ForwardBoard>>`）：
+/// 会话句柄一释放，板子跟着 drop，板子里的槽位再依次 drop ⇒ 监听关闭。
+/// 这就是「隧道随拥有它的 SSH 标签页一起停止」的唯一落点 —— UI 侧不需要
+/// （也不应该）在关标签时逐个补一遍 `stop`。
+pub struct ForwardBoard {
+    handle: Arc<russh::client::Handle<ServerKeyVerifier>>,
+    exit: ExitFlag,
+    slots: Mutex<Vec<Arc<ForwardSlot>>>,
+}
+
+impl ForwardBoard {
+    pub fn new(handle: Arc<russh::client::Handle<ServerKeyVerifier>>, exit: ExitFlag) -> Arc<Self> {
+        Arc::new(Self {
+            handle,
+            exit,
+            slots: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// 当前在板子上的槽位快照（含已失败的，见 [`ForwardStatus`]）。
+    ///
+    /// 返回 `Arc` 的克隆而不是 `&`：UI 每帧都要读状态，而槽位可能在读与用之间
+    /// 被 `stop` 从表里摘掉 —— 拿着克隆的话那一帧画的东西仍然自洽。
+    pub fn list(&self) -> Vec<Arc<ForwardSlot>> {
+        self.slots.lock().clone()
+    }
+
+    /// 按规则 id 找运行中的槽位（`None` = 这条规则没在跑）。
+    pub fn find(&self, rule_id: &str) -> Option<Arc<ForwardSlot>> {
+        self.slots
+            .lock()
+            .iter()
+            .find(|s| s.rule.id == rule_id)
+            .cloned()
+    }
+
+    /// 启动一条规则。**同 id 已在跑时先停掉旧的那条**（规则被编辑过再启动，
+    /// 旧监听必须让出端口，否则新的一条会以「端口已被占用」失败）。
+    pub fn start(&self, rule: &ForwardRule) -> Arc<ForwardSlot> {
+        self.stop(&rule.id);
+        let slot = start_one(self.handle.clone(), rule.clone(), self.exit.clone());
+        self.slots.lock().push(slot.clone());
+        slot
+    }
+
+    /// 停掉一条规则并从板上摘下。返回 `false` = 本来就没在跑（幂等）。
+    pub fn stop(&self, rule_id: &str) -> bool {
+        let taken: Vec<Arc<ForwardSlot>> = {
+            let mut slots = self.slots.lock();
+            let (hit, keep): (Vec<_>, Vec<_>) = slots.drain(..).partition(|s| s.rule.id == rule_id);
+            *slots = keep;
+            hit
+        };
+        let found = !taken.is_empty();
+        // 显式 stop：`taken` 可能还被 UI 持有 `Arc`，只靠 drop 收不了监听。
+        for slot in taken {
+            slot.stop();
+        }
+        found
+    }
+
+    /// 停掉全部（「全部停止」按钮 / 会话收摊前的兜底）。
+    pub fn stop_all(&self) {
+        let all: Vec<Arc<ForwardSlot>> = {
+            let mut slots = self.slots.lock();
+            std::mem::take(&mut *slots)
+        };
+        for slot in all {
+            slot.stop();
+        }
+    }
+
+    /// 板上还有几条（含失败态）。
+    pub fn len(&self) -> usize {
+        self.slots.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Drop for ForwardBoard {
+    fn drop(&mut self) {
+        self.stop_all();
+    }
+}
+
+/// 启动一批规则（连接建立时的旧入口，保留给「规则本来就该随手连随起」的调用方）。
 pub fn spawn_forwards(
     handle: Arc<russh::client::Handle<ServerKeyVerifier>>,
     rules: &[ForwardRule],
@@ -140,6 +235,7 @@ fn start_one(
         ForwardKind::Local => spawn_local(handle, rule, status, stop_rx, exit),
         ForwardKind::Dynamic => spawn_dynamic(handle, rule, status, stop_rx, exit),
         ForwardKind::Remote => spawn_remote(handle, rule, status, stop_rx, exit),
+        ForwardKind::HttpConnect => spawn_http_connect(handle, rule, status, stop_rx, exit),
     }
     slot
 }
@@ -684,6 +780,194 @@ async fn read_more(stream: &mut tokio::net::TcpStream, buf: &mut Vec<u8>, cap: u
     }
 }
 
+// --------------------------------------------------------------- HTTP CONNECT
+
+/// 请求头上限：有意义的只有 `CONNECT host:port HTTP/1.x` 一行，8KB 已经极其宽松。
+/// 超过它就不是代理请求（多半是端口上接了个别的协议），按 400 拒掉，
+/// 而不是把内存读到爆。
+const HTTP_HEAD_CAP: usize = 8 * 1024;
+
+/// 解析 HTTP CONNECT 请求头（RFC 9110 §9.3.6）。
+///
+/// - `Ok(Some((n, host, port)))` = 已收齐请求头；`n` 是头部字节数，
+///   **其后若还粘着客户端提前发来的数据，必须原样转给目标**（CONNECT 允许
+///   客户端把应用数据与请求头一次发出，丢了它会让 HTTPS 握手卡住）
+/// - `Ok(None)` = 还没读到 `\r\n\r\n`
+/// - `Err(status)` = 该回的 HTTP 状态码：405 = 方法不是 CONNECT，400 = 请求行坏
+///
+/// 做成纯函数是为了可单测：握手埋在 async 里时，「头部没读全」与「方法不对」
+/// 这两种错都只能靠真起一个代理客户端才发现。
+pub fn decode_http_connect(buf: &[u8]) -> Result<Option<(usize, String, u16)>, u16> {
+    let Some(end) = find_head_end(buf) else {
+        return if buf.len() > HTTP_HEAD_CAP {
+            Err(400)
+        } else {
+            Ok(None)
+        };
+    };
+    let head = String::from_utf8_lossy(&buf[..end]);
+    let line = head.lines().next().unwrap_or("").trim_end();
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+    let version = parts.next().unwrap_or("");
+    if method.is_empty() || !version.starts_with("HTTP/1.") {
+        return Err(400);
+    }
+    if !method.eq_ignore_ascii_case("CONNECT") {
+        // 405 而不是 400：`GET http://x/` 是合法 HTTP，只是我们不代理普通请求。
+        return Err(405);
+    }
+    let Some((host, port)) = split_host_port(target) else {
+        return Err(400);
+    };
+    if host.is_empty() || port == 0 {
+        return Err(400);
+    }
+    Ok(Some((end, host, port)))
+}
+
+/// `\r\n\r\n` 之后的位置（= 请求头的字节数）。
+fn find_head_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+}
+
+/// 拆 `host:port` / `[::1]:port`。
+///
+/// CONNECT **必须**带端口（不带就没有目标），所以缺端口一律返回 `None`；
+/// 裸 IPv6（含多个冒号却无方括号）同样是语法错误。
+fn split_host_port(target: &str) -> Option<(String, u16)> {
+    if let Some(rest) = target.strip_prefix('[') {
+        let (host, tail) = rest.split_once(']')?;
+        let port = tail.strip_prefix(':')?;
+        return Some((host.to_string(), port.parse().ok()?));
+    }
+    let (host, port) = target.rsplit_once(':')?;
+    if host.contains(':') {
+        return None;
+    }
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+/// 出错时回给客户端的**最短**响应：带 `Connection: close` 让客户端别等复用。
+fn http_error_reply(code: u16) -> String {
+    let reason = match code {
+        400 => "Bad Request",
+        405 => "Method Not Allowed",
+        502 => "Bad Gateway",
+        _ => "Error",
+    };
+    format!("HTTP/1.1 {code} {reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+}
+
+/// HTTP CONNECT 代理：本机监听，目标由每个连接的请求行给出。
+fn spawn_http_connect(
+    handle: Arc<russh::client::Handle<ServerKeyVerifier>>,
+    rule: ForwardRule,
+    status: Arc<Mutex<ForwardStatus>>,
+    mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    exit: ExitFlag,
+) {
+    let bind = listen_addr(&rule);
+    spawn_detached(async move {
+        let listener = match bind_listener(&bind).await {
+            Ok(l) => l,
+            Err(e) => {
+                *status.lock() = ForwardStatus::Failed(bind_error(&bind, &e));
+                return;
+            }
+        };
+        *status.lock() = ForwardStatus::Active;
+        log::info!("端口转发（HTTP CONNECT）已启动: {bind}");
+
+        let mut conns = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = stop_rx.changed() => break,
+                _ = exit_raised(&exit) => break,
+                Some(_) = conns.join_next(), if !conns.is_empty() => {}
+                accepted = listener.accept() => match accepted {
+                    Ok((stream, peer)) => {
+                        let h = handle.clone();
+                        conns.spawn(async move { serve_http_connect(stream, h, peer).await });
+                    }
+                    Err(e) => log::warn!("HTTP CONNECT accept 失败: {e}"),
+                },
+            }
+        }
+        conns.shutdown().await;
+        log::info!("端口转发（HTTP CONNECT）已停止: {bind}");
+    });
+}
+
+async fn serve_http_connect(
+    mut stream: tokio::net::TcpStream,
+    handle: Arc<russh::client::Handle<ServerKeyVerifier>>,
+    peer: std::net::SocketAddr,
+) {
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    let (host, port, leftover) = loop {
+        match decode_http_connect(&buf) {
+            Ok(Some((n, host, port))) => break (host, port, buf.split_off(n)),
+            Ok(None) => {
+                if !read_more(&mut stream, &mut buf, HTTP_HEAD_CAP).await {
+                    return;
+                }
+            }
+            Err(code) => {
+                let _ = stream.write_all(http_error_reply(code).as_bytes()).await;
+                return;
+            }
+        }
+    };
+
+    match handle
+        .channel_open_direct_tcpip(
+            host.clone(),
+            port as u32,
+            peer.ip().to_string(),
+            peer.port() as u32,
+        )
+        .await
+    {
+        Ok(channel) => {
+            if stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+            splice_with_prefix(stream, channel, leftover).await;
+        }
+        Err(e) => {
+            // 502 = 上游不可达（与「代理本身坏了」区分开，客户端据此提示才有意义）
+            log::warn!("HTTP CONNECT 目标 {host}:{port} 不可达: {e}");
+            let _ = stream.write_all(http_error_reply(502).as_bytes()).await;
+        }
+    }
+}
+
+/// 与 [`splice`] 同一件事，但先把客户端提前发来的字节灌进信道。
+async fn splice_with_prefix(
+    tcp: tokio::net::TcpStream,
+    channel: russh::Channel<russh::client::Msg>,
+    prefix: Vec<u8>,
+) {
+    use tokio::io::AsyncWriteExt as _;
+    let mut local = tcp;
+    let mut remote = channel.into_stream();
+    if !prefix.is_empty() && remote.write_all(&prefix).await.is_err() {
+        return;
+    }
+    match tokio::io::copy_bidirectional(&mut local, &mut remote).await {
+        Ok((up, down)) => log::debug!("HTTP CONNECT 管道结束: 上行 {up}B 下行 {down}B"),
+        Err(e) => log::debug!("HTTP CONNECT 管道结束: {e}"),
+    }
+}
+
 // ------------------------------------------------------------------- 会话退出
 
 /// 会话退出标志的异步等待。
@@ -779,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_rule_validation_covers_the_three_kinds() {
+    fn forward_rule_validation_covers_the_four_kinds() {
         let mut local = ForwardRule::new(ForwardKind::Local);
         local.listen_port = 8080;
         // 本地转发没有目标 → 不可用（这条规则真跑起来会连到空主机名）
@@ -804,6 +1088,83 @@ mod tests {
         let mut dynamic = ForwardRule::new(ForwardKind::Dynamic);
         dynamic.listen_port = 1080;
         assert_eq!(dynamic.validate(), None);
+
+        // HTTP CONNECT 同理：目标在请求行里，规则不需要它
+        let mut http = ForwardRule::new(ForwardKind::HttpConnect);
+        http.listen_port = 8888;
+        assert_eq!(http.validate(), None);
+    }
+
+    /// CONNECT 的请求头必须**逐字节**收齐才算收到：任何前缀都不许被当成
+    /// 「已经能建连了」（少读一个 `\r\n` 就会把请求头残片当应用数据发进隧道）。
+    #[test]
+    fn http_connect_waits_for_the_full_head_then_parses_the_target() {
+        let req = b"CONNECT db.internal:5432 HTTP/1.1\r\nHost: db.internal:5432\r\n\r\n";
+        for cut in 0..req.len() {
+            assert_eq!(
+                decode_http_connect(&req[..cut]),
+                Ok(None),
+                "截断到 {cut} 字节时不应给出结果"
+            );
+        }
+        assert_eq!(
+            decode_http_connect(req),
+            Ok(Some((req.len(), "db.internal".to_string(), 5432)))
+        );
+    }
+
+    #[test]
+    fn http_connect_rejects_non_connect_and_malformed_targets() {
+        // 普通代理请求我们不代理 —— 405 而不是 400：那是一个合法 HTTP 请求
+        assert_eq!(
+            decode_http_connect(b"GET http://example.com/ HTTP/1.1\r\n\r\n"),
+            Err(405)
+        );
+        // 缺端口 = 没有目标（CONNECT 必须带）
+        assert_eq!(
+            decode_http_connect(b"CONNECT db.internal HTTP/1.1\r\n\r\n"),
+            Err(400)
+        );
+        // 端口 0 不是可连的目标
+        assert_eq!(
+            decode_http_connect(b"CONNECT db.internal:0 HTTP/1.1\r\n\r\n"),
+            Err(400)
+        );
+        // 主机为空
+        assert_eq!(
+            decode_http_connect(b"CONNECT :8080 HTTP/1.1\r\n\r\n"),
+            Err(400)
+        );
+        // 缺协议版本
+        assert_eq!(
+            decode_http_connect(b"CONNECT db.internal:5432\r\n\r\n"),
+            Err(400)
+        );
+        // 裸 IPv6（多个冒号又没有方括号）是语法错误，不许猜
+        assert_eq!(
+            decode_http_connect(b"CONNECT ::1:443 HTTP/1.1\r\n\r\n"),
+            Err(400)
+        );
+    }
+
+    /// 方括号 IPv6 能用，且**粘在请求头后面的应用数据不能丢**（CONNECT 允许
+    /// 客户端把 TLS hello 与请求头一次发出）。
+    #[test]
+    fn http_connect_handles_ipv6_and_reports_head_length_for_the_leftover() {
+        let mut req = b"CONNECT [::1]:443 HTTP/1.1\r\n\r\n".to_vec();
+        let head = req.len();
+        req.extend_from_slice(&[0x16, 0x03, 0x01]);
+        assert_eq!(
+            decode_http_connect(&req),
+            Ok(Some((head, "::1".to_string(), 443)))
+        );
+    }
+
+    /// 头部超过上限还不完整时按 400 拒掉 —— 端口上接的很可能不是 HTTP。
+    #[test]
+    fn http_connect_gives_up_on_an_oversized_head() {
+        let junk = vec![b'A'; HTTP_HEAD_CAP + 1];
+        assert_eq!(decode_http_connect(&junk), Err(400));
     }
 
     #[test]
@@ -826,6 +1187,27 @@ mod tests {
     fn listen_host_defaults_to_loopback_not_all_interfaces() {
         let rule = ForwardRule::new(ForwardKind::Local);
         assert_eq!(rule.listen_host, "127.0.0.1");
+    }
+
+    /// 列表里的 NAME 列必须总有可读内容：老配置没有 `name` 键，空名由
+    /// 类型 + 端口补出来；用户起的名字只去空白，不被覆盖。
+    #[test]
+    fn normalize_gives_every_rule_a_readable_name() {
+        let mut http = ForwardRule::new(ForwardKind::HttpConnect);
+        http.listen_port = 8888;
+        http.normalize();
+        assert_eq!(http.name, "http connect 8888");
+
+        // 端口还没填时只给类型名：列表里出现「local 0」只会让人以为是 bug
+        let mut pending = ForwardRule::new(ForwardKind::Local);
+        pending.normalize();
+        assert_eq!(pending.name, "local");
+
+        let mut named = ForwardRule::new(ForwardKind::Local);
+        named.listen_port = 5432;
+        named.name = "  postgres  ".into();
+        named.normalize();
+        assert_eq!(named.name, "postgres");
     }
 
     /// 老 `connections.json` 里没有 `forwards` 键，必须照常读得进来。

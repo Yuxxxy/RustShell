@@ -276,13 +276,16 @@ pub struct SessionHandle {
     pub sftp_tx: Option<flume::Sender<crate::sftp::SftpCmd>>,
     /// 子进程杀手（仅本地会话）。关闭会话时用来终止 shell，否则每开一次终端就残留一个 PowerShell/cmd 进程。
     pub child_killer: Option<Box<dyn ChildKiller + Send + Sync>>,
-    /// 端口转发隧道（仅 SSH 会话，F-3）。
+    /// 端口转发隧道板子（仅 SSH 会话，F-3）。
     ///
     /// **放在 `SessionHandle` 上而不是 `MainView` 字段里**：隧道的生命周期必须
-    /// 严格等于会话 —— 会话句柄一释放，槽位跟着析构，监听随之关闭。挂在 UI 上
-    /// 就要额外维护「Tab 关了 / 会话断了要记得清隧道」，而漏清的表现是
+    /// 严格等于会话 —— 会话句柄一释放，板子跟着析构，板上每条监听随之关闭。
+    /// 挂在 UI 上就要额外维护「Tab 关了 / 会话断了要记得清隧道」，而漏清的表现是
     /// 「一个已经没人在看的本地端口继续接受连接」。
-    pub forwards: Vec<Arc<crate::forward::ForwardSlot>>,
+    ///
+    /// 板子而不是 `Vec<ForwardSlot>`（2026-11-19）：转发面板要能**显式**启停单条
+    /// 隧道，而 `&SessionHandle` 是不可变借用 —— 只有板子内部的锁能支撑运行期改表。
+    pub forwards: Option<Arc<crate::forward::ForwardBoard>>,
     /// 会话日志（F-7）。`None` = 本会话不记录（开关关着，或文件建不出来）。
     ///
     /// 和 `forwards` 同一个道理：**挂在句柄上**，句柄一释放文件就关。
@@ -333,7 +336,7 @@ impl SessionHandle {
             metrics: None,
             sftp_tx: None,
             child_killer: None,
-            forwards: Vec::new(),
+            forwards: None,
             log: None,
         }
     }
@@ -652,7 +655,7 @@ pub(crate) fn build_session_pipes(spec: PipesSpec) -> anyhow::Result<SessionHand
         metrics: None,
         sftp_tx: None,
         child_killer: spec.child_killer,
-        forwards: Vec::new(),
+        forwards: None,
         log: spec.log,
     })
 }

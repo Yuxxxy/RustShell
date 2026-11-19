@@ -100,6 +100,13 @@ pub enum ForwardKind {
     Remote,
     /// 动态转发（`ssh -D`）：在本机起一个 SOCKS5，目标由客户端在握手时才说。
     Dynamic,
+    /// HTTP CONNECT 代理（`ssh -L` 的代理形态）：在本机起一个只认 `CONNECT` 的
+    /// HTTP 代理，目标由客户端在请求行里说。
+    ///
+    /// 与 [`ForwardKind::Dynamic`] 的取舍：SOCKS5 是通用代理协议，但很多工具
+    /// （`curl -x`、容器 runtime、IDE）只会设 `http_proxy`；两者目标来源相同、
+    /// 都是「每连接协商」，差别只在协议文法。
+    HttpConnect,
 }
 
 impl ForwardKind {
@@ -109,18 +116,23 @@ impl ForwardKind {
             ForwardKind::Local => "local",
             ForwardKind::Remote => "remote",
             ForwardKind::Dynamic => "dynamic",
+            ForwardKind::HttpConnect => "http_connect",
         }
     }
 
-    /// 该类型是否需要「目标」两段（Dynamic 由客户端在握手时提供，故不需要）。
+    /// 该类型是否需要「目标」两段。
+    ///
+    /// `Dynamic` / `HttpConnect` 的目标由客户端**每个连接**在协议里给出，
+    /// 规则里存一份只会与真实目标不一致。
     pub fn needs_target(self) -> bool {
-        !matches!(self, ForwardKind::Dynamic)
+        matches!(self, ForwardKind::Local | ForwardKind::Remote)
     }
 
-    pub const ALL: [ForwardKind; 3] = [
+    pub const ALL: [ForwardKind; 4] = [
         ForwardKind::Local,
         ForwardKind::Remote,
         ForwardKind::Dynamic,
+        ForwardKind::HttpConnect,
     ];
 }
 
@@ -134,6 +146,12 @@ pub struct ForwardRule {
     /// 规则 id：UI 行内定位（增删改）与「哪条失败」的报账依据。
     #[serde(default)]
     pub id: String,
+    /// 规则名（列表 NAME 列）。空 = 由 [`ForwardRule::normalize`] 按类型 + 端口生成。
+    ///
+    /// 允许用户起「postgres」「mail」这种语义名：转发面板一屏能放七八条，
+    /// 只认 `127.0.0.1:5432` 的话，用户得先读端口才能想起它是干什么的。
+    #[serde(default)]
+    pub name: String,
     pub kind: ForwardKind,
     /// 监听地址。本地/动态是**本机**地址；远端是**服务器**上的地址。
     #[serde(default = "default_listen_host")]
@@ -159,6 +177,7 @@ impl ForwardRule {
     pub fn new(kind: ForwardKind) -> Self {
         Self {
             id: uuid_like(),
+            name: String::new(),
             kind,
             listen_host: default_listen_host(),
             listen_port: 0,
@@ -187,13 +206,14 @@ impl ForwardRule {
         None
     }
 
-    /// 归一化：去空白、补 `Dynamic` 的 `None` 目标、补空 id。
+    /// 归一化：去空白、补 `Dynamic` / `HttpConnect` 的 `None` 目标、补空 id 与空名。
     pub fn normalize(&mut self) -> bool {
         let before = self.clone();
         self.listen_host = self.listen_host.trim().to_string();
         if self.listen_host.is_empty() {
             self.listen_host = default_listen_host();
         }
+        self.name = self.name.trim().to_string();
         self.target_host = self
             .target_host
             .as_deref()
@@ -206,12 +226,17 @@ impl ForwardRule {
             }
         }
         if !self.kind.needs_target() {
-            // SOCKS5 的目标由客户端每连接指定，留着一个空目标只会让校验/序列化多两个分支。
+            // SOCKS5 / HTTP CONNECT 的目标由客户端每连接指定，留着一个空目标只会让
+            // 校验/序列化多两个分支。
             self.target_host = None;
             self.target_port = None;
         }
         if self.id.trim().is_empty() {
             self.id = uuid_like();
+        }
+        if self.name.is_empty() {
+            // 空名不是错误（老配置里没有这个键），但列表里总得有个能读的标识。
+            self.name = default_forward_name(self.kind, self.listen_port);
         }
         *self != before
     }
@@ -222,8 +247,31 @@ impl ForwardRule {
             (Some(h), Some(p)) if self.kind.needs_target() => {
                 format!("{}:{} -> {}:{}", self.listen_host, self.listen_port, h, p)
             }
-            _ => format!("{}:{} (SOCKS5)", self.listen_host, self.listen_port),
+            _ => {
+                let tag = match self.kind {
+                    ForwardKind::HttpConnect => "HTTP CONNECT",
+                    _ => "SOCKS5",
+                };
+                format!("{}:{} ({tag})", self.listen_host, self.listen_port)
+            }
         }
+    }
+}
+
+/// 没有名字时的默认规则名，如 `local 8080` / `http connect 8888`。
+///
+/// 端口还没填（0）时只给类型名 —— 列表里显示 `local 0` 只会让人以为是 bug。
+pub fn default_forward_name(kind: ForwardKind, listen_port: u16) -> String {
+    let label = match kind {
+        ForwardKind::Local => "local",
+        ForwardKind::Remote => "remote",
+        ForwardKind::Dynamic => "socks5",
+        ForwardKind::HttpConnect => "http connect",
+    };
+    if listen_port == 0 {
+        label.to_string()
+    } else {
+        format!("{label} {listen_port}")
     }
 }
 

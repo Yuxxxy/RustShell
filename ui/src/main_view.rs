@@ -54,6 +54,13 @@ pub use completion_bar::{
 mod completion_persist;
 // 定时任务域：调度器启停、任务增删改、立即执行、运行记录读取。
 pub mod task_actions;
+// 端口转发域（F-3）：规则增删改、单条隧道启停、表单落库。
+// 与 `task_actions` 同一手法公开：面板里的右键菜单闭包拿不到 `&mut MainView`，
+// 只能经 `UiHub` 回到宿主（见文件末尾那组 `ui_call_*`）。
+pub mod forward_actions;
+pub use forward_actions::{
+    ui_call_forward_form, ui_call_forward_remove, ui_call_forward_start, ui_call_forward_stop,
+};
 mod terminal_actions;
 // 粘贴保护的宿主半边（F-5）：弹确认框、兑现确认 / 取消（判定与写入在引擎里）。
 mod paste_guard;
@@ -860,6 +867,12 @@ pub enum PanelKind {
     Ai,
     /// 定时任务与运维预警（左侧栏第 5 项）。
     Tasks,
+    /// 端口转发（左侧栏第 6 项）：规则列表 + 显式启停。
+    ///
+    /// 单独一面板而不是并进连接面板：连接树回答「我要连到哪台机器」，
+    /// 转发回答「哪个本地端口正在被谁占着」—— 混在一栏里两边都看不清
+    /// （2026-09-30 撤掉过连接树底部的隧道列表，就是这条判断）。
+    Forwards,
 }
 
 impl PanelKind {
@@ -868,12 +881,13 @@ impl PanelKind {
     /// 2026-10-28 撤掉了 `Files`（用户要求「sftp 功能已有，移除侧边栏-文件」）：
     /// 独立 SFTP 标签页已经承担了文件浏览 / 上传下载，侧栏再挂一份是重复入口，
     /// 而且它只服务「当前会话」、越过 SFTP 标签页还会让人以为两个面板不同步。
-    pub const ALL: [PanelKind; 5] = [
+    pub const ALL: [PanelKind; 6] = [
         PanelKind::Dashboard,
         PanelKind::Connections,
         PanelKind::Terminals,
         PanelKind::Ai,
         PanelKind::Tasks,
+        PanelKind::Forwards,
     ];
 
     pub fn label(self) -> &'static str {
@@ -883,6 +897,7 @@ impl PanelKind {
             PanelKind::Terminals => rustshell_core::i18n::t("终端"),
             PanelKind::Ai => "AI",
             PanelKind::Tasks => rustshell_core::i18n::t("定时"),
+            PanelKind::Forwards => rustshell_core::i18n::t("端口转发"),
         };
         rustshell_core::i18n::t(zh)
     }
@@ -902,6 +917,7 @@ impl PanelKind {
             PanelKind::Terminals => "terminals",
             PanelKind::Ai => "ai",
             PanelKind::Tasks => "tasks",
+            PanelKind::Forwards => "forwards",
         }
     }
 }
@@ -1108,6 +1124,12 @@ pub struct MainView {
     /// 所以「样本到了要重绘」只能靠 `poll` 每拍比一次序号 —— 见
     /// [`metrics_are_fresh`]。2026-11-18「概览显示过慢」就是缺了这一拍。
     pub metrics_seen: Option<(String, u64)>,
+    /// 端口转发面板最近一次「已见」的状态指纹（`forward_actions::forwards_signature`）。
+    ///
+    /// 隧道状态由 SSH 任务在后台线程里改（`ForwardSlot` 的 `Mutex<ForwardStatus>`），
+    /// 那里没有 `Context`、也就没有通知通道。面板要显示「启动中 → 已启动 / 失败」
+    /// 的推进，只能由这一拍 poll 比一次指纹 —— 与概览的 `metrics_seen` 同一手法。
+    pub fwd_seen: u64,
     /// 终端全屏：竖栏 / 侧栏 / AI 对话列全部让位，终端卡片独占窗口内容区；
     /// 同时把窗口推入系统全屏（见 [`MainView::toggle_terminal_fullscreen`]）。
     ///
@@ -1212,6 +1234,12 @@ impl MainView {
                 .placeholder(rustshell_core::i18n::t("代理口令（可选）"))
                 .masked(true)
         });
+        // 端口转发规则表单（F-3 面板的 `+` / 编辑，共用一套草稿）：
+        // 四只框一律不带 placeholder —— 与连接表单同一条口径（每只框上方已有标签）。
+        let fwd_name = cx.new(|cx| InputState::new(window, cx));
+        let fwd_listen_port = cx.new(|cx| InputState::new(window, cx));
+        let fwd_target_host = cx.new(|cx| InputState::new(window, cx));
+        let fwd_target_port = cx.new(|cx| InputState::new(window, cx));
         // 分组只在下拉里选既有分组（引用分组 id）。新建/改名分组挪出本对话框，
         // 走连接树右键菜单 到 `DialogMode::NewGroup`：
         // 同一条输入管线里既选归属又建分组，会让人分不清「这次保存到底建了什么」。
@@ -1812,6 +1840,16 @@ impl MainView {
                 dlg_auth: AuthMode::Password,
                 dlg_notes,
                 dlg_forwards: Vec::new(),
+                fwd_form: ui_state::ForwardFormDraft {
+                    profile_id: String::new(),
+                    editing_id: None,
+                    kind: rustshell_core::connections::ForwardKind::Local,
+                    name: fwd_name,
+                    listen_port: fwd_listen_port,
+                    target_host: fwd_target_host,
+                    target_port: fwd_target_port,
+                    error: None,
+                },
                 dlg_session_log: None,
                 dlg_auto_reconnect: None,
                 dlg_proxy_mode: rustshell_core::proxy::ProxyMode::FollowGlobal,
@@ -1900,6 +1938,8 @@ impl MainView {
             },
             // 概览的「已见样本序号」：首拍会因此判成 fresh 并重绘一次，无害
             metrics_seen: None,
+            // 端口转发面板的「已见状态指纹」：0 = 首拍必判一次变化（无害）
+            fwd_seen: 0,
             terminal_fullscreen: false,
             conn_store,
             quick_store,
@@ -2048,6 +2088,19 @@ impl MainView {
                     // 为了侧栏一张卡去重建整棵树，正是 P0-3 想避免的那种白工。
                     self.notify_view(ChildView::Sidebar, cx);
                 }
+            }
+        }
+        // 0.95) 端口转发：状态推进靠这一拍比指纹（同 0.9 的理由：后台任务没有
+        // `Context`，`ForwardSlot` 的状态是自己那个 `Mutex` 里的事实，不会叫醒 UI）。
+        // 只在面板**真的可见**时算 —— 一套指纹要遍历全部规则，没必要每秒白跑。
+        if self.panel_ui.panel == PanelKind::Forwards
+            && !self.panel_ui.sidebar_collapsed
+            && !self.terminal_fullscreen
+        {
+            let sig = self.forwards_signature();
+            if sig != self.fwd_seen {
+                self.fwd_seen = sig;
+                self.notify_view(ChildView::Sidebar, cx);
             }
         }
         // 1) 连接结果
@@ -3369,12 +3422,14 @@ mod tests {
 
         /// 图标栏自上而下的**固定**次序（= `PanelKind::ALL` 的 key 次序）。
         /// 2026-10-28 去掉 `rail-files`：左侧「文件」面板已撤，SFTP 用独立标签页。
-        const RAIL_KEYS: [&str; 5] = [
+        /// 2026-11-19 加 `rail-forwards`（端口转发面板）。
+        const RAIL_KEYS: [&str; 6] = [
             "rail-dashboard",
             "rail-connections",
             "rail-terminals",
             "rail-ai",
             "rail-tasks",
+            "rail-forwards",
         ];
 
         cx.update(|cx| {
@@ -3448,6 +3503,151 @@ mod tests {
                  重排了（用户 2026-09-21 要求回退）。"
             );
         }
+    }
+
+    /// 端口转发面板必须能**从图标栏切出来并真的画出内容**。
+    ///
+    /// 为什么要有这条几何用例：新面板最容易出的错不是逻辑错，而是「图标加了、
+    /// 分派漏了」或「面板渲染出来是 0 高」—— 两种都只在用户点下去那一刻才暴露。
+    /// `forwards-panel` 的 debug_selector 在本面板根节点上（见 `forward_panel::render`）。
+    #[gpui::test]
+    fn forwards_panel_can_be_opened_from_the_rail(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::{AppShell, MainView, PanelKind};
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_kit::component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| {
+                m.panel_ui.sidebar_collapsed = false;
+                m.panel_ui.panel = PanelKind::Forwards;
+                cx.notify();
+            })
+        });
+        vcx.run_until_parked();
+
+        let b = vcx
+            .debug_bounds("forwards-panel")
+            .expect("切到端口转发面板后找不到 `forwards-panel`（分派漏了，或面板没渲染）");
+        let (w, h): (f32, f32) = (b.size.width.into(), b.size.height.into());
+        assert!(
+            w > 0.0 && h > 100.0,
+            "端口转发面板尺寸异常：{w}x{h}（应为一张占满侧栏的卡片）"
+        );
+    }
+
+    /// 面板必须把**所有连接**的规则都列出来，且没有活动会话时一律显示「未启动」。
+    ///
+    /// 这一条钉的是面板最容易搞错的边界：规则存在连接上，而运行态存在会话上。
+    /// 没有会话时若把「查不到状态」当成「已启动」或者干脆不显示这一行，用户会以为
+    /// 自己配的规则丢了 —— 而实际上只是那台机器还没连上。
+    #[gpui::test]
+    fn forwards_panel_lists_rules_and_marks_them_stopped_without_a_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::AppContext as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use rustshell_core::connections::{ConnectionProfile, ForwardKind, ForwardRule};
+
+        use super::{AppShell, MainView, PanelKind};
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_kit::component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        let local_rule = || {
+            let mut r = ForwardRule::new(ForwardKind::Local);
+            r.name = "postgres".into();
+            r.listen_port = 15432;
+            r.target_host = Some("10.0.0.21".into());
+            r.target_port = Some(5432);
+            r.normalize();
+            r
+        };
+        let http_rule = || {
+            let mut r = ForwardRule::new(ForwardKind::HttpConnect);
+            r.name = "proxy".into();
+            r.listen_port = 8888;
+            r.normalize();
+            r
+        };
+
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| {
+                m.conn_store.profiles.clear();
+                let mut a = ConnectionProfile::new("web-01", "10.0.0.11", "deploy");
+                a.forwards.push(local_rule());
+                let mut b = ConnectionProfile::new("db-01", "10.0.0.21", "postgres");
+                b.forwards.push(http_rule());
+                m.conn_store.profiles.push(a);
+                m.conn_store.profiles.push(b);
+                m.panel_ui.sidebar_collapsed = false;
+                m.panel_ui.panel = PanelKind::Forwards;
+                cx.notify();
+            })
+        });
+        vcx.run_until_parked();
+
+        let (count, all_unstarted, any_can_start) = vcx.update(|_w, cx| {
+            main.update(cx, |m, _| {
+                let rows = m.forward_rows();
+                (
+                    rows.len(),
+                    rows.iter().all(|r| r.status.is_none()),
+                    rows.iter().any(|r| r.can_start),
+                )
+            })
+        });
+        assert_eq!(count, 2, "两条连接各有一条规则，面板应当列出两行");
+        assert!(
+            all_unstarted,
+            "没有活动会话时每条规则都必须是「未启动」，不许把「查不到」显示成在跑"
+        );
+        assert!(
+            !any_can_start,
+            "没有活动 SSH 会话就不该有可启动的转发板 —— 否则 Start 会建在一条不存在的连接上"
+        );
+
+        let b = vcx
+            .debug_bounds("forwards-panel")
+            .expect("切到端口转发面板后找不到 `forwards-panel`");
+        let h: f32 = b.size.height.into();
+        assert!(h > 100., "端口转发面板高度异常：{h}px");
     }
 
     /// 回归（2026-09-21 用户要求「隐藏终端界面与左右两侧相间的线条」）。

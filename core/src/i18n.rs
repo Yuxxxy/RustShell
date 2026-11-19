@@ -1019,6 +1019,37 @@ fn translate(zh: &'static str) -> &'static str {
         "切换分支或还原文件" => "Switch branches or restore files",
         "查看运行中的容器" => "List running containers",
         "查看容器日志" => "Show container logs",
+        // ── 端口转发面板（F-3，2026-11-19）────────────────────────────────
+        "端口转发" => "Port forwarding",
+        "新建端口转发" => "New port forward",
+        "编辑端口转发" => "Edit port forward",
+        "还没有端口转发规则" => "No port forwarding rules yet",
+        "新建规则" => "New rule",
+        "所属连接" => "Connection",
+        "规则名称（可空）" => "Rule name (optional)",
+        "监听端口" => "Listen port",
+        "目标地址" => "Destination host",
+        "目标端口" => "Destination port",
+        "只监听本机 127.0.0.1" => "Listens on 127.0.0.1 only",
+        "目标由每个连接自己给出，不需要在这里填" => {
+            "The destination is supplied by each client connection"
+        }
+        "（未选择连接）" => "(no connection selected)",
+        "启动" => "Start",
+        "已启动" => "Running",
+        "启动中" => "Starting",
+        "未启动" => "Stopped",
+        "保存失败" => "Save failed",
+        "连接已不存在" => "That connection no longer exists",
+        "该连接还没有连上，先连上再启动隧道" => {
+            "That connection is not up yet — connect first, then start the tunnel"
+        }
+        "还没有连接，先建一条连接再配转发" => {
+            "No connections yet — create one before adding a forward"
+        }
+        "远端" => "Remote",
+        "SOCKS5" => "SOCKS5",
+        "HTTP CONNECT" => "HTTP CONNECT",
         _ => zh,
     }
 }

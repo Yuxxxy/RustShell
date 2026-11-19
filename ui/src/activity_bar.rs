@@ -44,6 +44,9 @@ pub fn panel_icon(p: PanelKind) -> IconName {
         // 写一个没有对应 svg 的名字**不会报错**，只在界面上留一片空白
         // （见 `ui/src/test_support.rs::every_icon_the_ui_asks_for_is_shipped`）。
         PanelKind::Tasks => IconName::Calendar,
+        // `Replace`（双向箭头）= 端口转发的语义：两端互相搬运字节。
+        // 随包图标表里没有 network / route 一类的图形，这里是语义最接近的一枚。
+        PanelKind::Forwards => IconName::Replace,
     }
 }
 
@@ -54,6 +57,7 @@ pub fn panel_hotkey(p: PanelKind) -> usize {
         PanelKind::Terminals => 3,
         PanelKind::Ai => 4,
         PanelKind::Tasks => 5,
+        PanelKind::Forwards => 6,
     }
 }
 
