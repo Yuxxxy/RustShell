@@ -1026,15 +1026,17 @@ fn translate(zh: &'static str) -> &'static str {
         "还没有端口转发规则" => "No port forwarding rules yet",
         "新建规则" => "New rule",
         "所属连接" => "Connection",
+        "选择连接" => "Select a connection",
+        // 监听地址那一格：远端转发的监听点在服务器上，标签要换口径
+        "本地监听 IP" => "Local listen IP",
+        "服务器监听地址" => "Server listen address",
         "规则名称（可空）" => "Rule name (optional)",
         "监听端口" => "Listen port",
         "目标地址" => "Destination host",
         "目标端口" => "Destination port",
-        "只监听本机 127.0.0.1" => "Listens on 127.0.0.1 only",
         "目标由每个连接自己给出，不需要在这里填" => {
             "The destination is supplied by each client connection"
         }
-        "（未选择连接）" => "(no connection selected)",
         "启动" => "Start",
         "已启动" => "Running",
         "启动中" => "Starting",

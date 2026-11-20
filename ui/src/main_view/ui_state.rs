@@ -576,13 +576,30 @@ pub struct ForwardFormDraft {
     pub profile_id: String,
     /// 编辑既有规则时的规则 id；`None` = 新建。
     pub editing_id: Option<String>,
-    /// 规则类型（四选一；由表单上的循环按钮切换）。
+    /// 规则类型（四选一；表单上是**一整行单选框**，2026-11-20）。
     pub kind: ForwardKind,
     /// 规则名（可空 —— 留空时按类型 + 端口自动生成）。
     pub name: Entity<InputState>,
+    /// 监听地址（2026-11-20 用户要求显式给出来，默认 127.0.0.1）。
+    ///
+    /// 2026-11-19 那版是「表单不给地址、保存时钉回环」；用户明确要看到这个框 ——
+    /// 绑哪个网卡是需要能改的（`0.0.0.0` 暴露到局域网、或绑某块内网卡）。
+    pub listen_host: Entity<InputState>,
     pub listen_port: Entity<InputState>,
     pub target_host: Entity<InputState>,
     pub target_port: Entity<InputState>,
+    /// 「所属连接」的可筛选下拉（`Select` + `searchable(true)`）。
+    ///
+    /// 不用「点一下换一台」的循环按钮：连接一多，点十几次才轮到目标。
+    /// 保存时以它的 `selected_value()` 为准（见 `forward_save_form`），
+    /// 上面的 `profile_id` 只是打开表单时的初值。
+    pub conn_select: Entity<
+        gpui_kit::component::select::SelectState<
+            gpui_kit::component::searchable_list::SearchableVec<
+                super::forward_actions::ProfileItem,
+            >,
+        >,
+    >,
     /// 校验 / 落盘失败的原因（有值时**不关窗**，让用户改）
     pub error: Option<String>,
 }

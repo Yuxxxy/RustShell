@@ -1237,9 +1237,26 @@ impl MainView {
         // 端口转发规则表单（F-3 面板的 `+` / 编辑，共用一套草稿）：
         // 四只框一律不带 placeholder —— 与连接表单同一条口径（每只框上方已有标签）。
         let fwd_name = cx.new(|cx| InputState::new(window, cx));
+        // 监听地址框：初值就是回环 —— 用户 2026-11-20 要求「默认显示，默认 127.0.0.1」。
+        let fwd_listen_host = cx.new(|cx| InputState::new(window, cx).default_value("127.0.0.1"));
         let fwd_listen_port = cx.new(|cx| InputState::new(window, cx));
         let fwd_target_host = cx.new(|cx| InputState::new(window, cx));
         let fwd_target_port = cx.new(|cx| InputState::new(window, cx));
+        // 「所属连接」的可筛选下拉：初值空表，每次打开表单时按当前连接库重建
+        // （见 `open_forward_form`）—— 库里增删连接后不需要重启。
+        let fwd_conn_select = cx.new(|cx| {
+            // `searchable(true)` 是 **state** 上的开关（下拉展开后顶部多一只筛选框），
+            // 不是 `Select` 元素上的 —— 元素那边没有这个方法。
+            gpui_kit::component::select::SelectState::new(
+                gpui_kit::component::searchable_list::SearchableVec::<
+                    forward_actions::ProfileItem,
+                >::new(Vec::new()),
+                None,
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         // 分组只在下拉里选既有分组（引用分组 id）。新建/改名分组挪出本对话框，
         // 走连接树右键菜单 到 `DialogMode::NewGroup`：
         // 同一条输入管线里既选归属又建分组，会让人分不清「这次保存到底建了什么」。
@@ -1845,9 +1862,11 @@ impl MainView {
                     editing_id: None,
                     kind: rustshell_core::connections::ForwardKind::Local,
                     name: fwd_name,
+                    listen_host: fwd_listen_host,
                     listen_port: fwd_listen_port,
                     target_host: fwd_target_host,
                     target_port: fwd_target_port,
+                    conn_select: fwd_conn_select,
                     error: None,
                 },
                 dlg_session_log: None,
@@ -3503,6 +3522,64 @@ mod tests {
                  重排了（用户 2026-09-21 要求回退）。"
             );
         }
+    }
+
+    /// 端口转发表单必须**真的渲染出来**（单选框 + 可筛选下拉是首次出现在本仓）。
+    ///
+    /// 这两个控件都是组件库里的受控组件：构造参数写错不会编译失败，而是在
+    /// 渲染期才炸（或者画出一片空白）。用例只钉「点开之后正文有高度」——
+    /// 不钉具体像素，避免被字号/主题的调整拖红。
+    #[gpui::test]
+    fn the_forward_form_renders_its_controls(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use rustshell_core::connections::ConnectionProfile;
+
+        use super::{AppShell, MainView, PanelKind};
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_kit::component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        vcx.update(|_w, cx| {
+            main.update(cx, |m, cx| {
+                m.conn_store
+                    .profiles
+                    .push(ConnectionProfile::new("web-01", "10.0.0.11", "deploy"));
+                m.panel_ui.sidebar_collapsed = false;
+                m.panel_ui.panel = PanelKind::Forwards;
+                cx.notify();
+            })
+        });
+        vcx.run_until_parked();
+
+        // 面板的 `+`：空 profile_id = 自动挑一台（这里只有一台）
+        let mut vcx_mut = vcx.clone();
+        main.update_in(&mut vcx_mut, |m, window, cx| {
+            m.open_forward_form("", None, window, cx);
+        });
+        vcx.run_until_parked();
+
+        let b = vcx
+            .debug_bounds("fwd-form-body")
+            .expect("端口转发表单没渲染出来（单选/下拉构造失败，或对话框没开）");
+        let h: f32 = b.size.height.into();
+        assert!(h > 120., "端口转发表单正文高度异常：{h}px");
     }
 
     /// 输入框的**实际高度**跟着全局字号走（`theme.font_size` 是 rem 基准）。

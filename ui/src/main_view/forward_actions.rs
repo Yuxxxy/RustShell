@@ -17,7 +17,7 @@
 //! 同一台机器、同一条网络路径，挑哪条对结果没有影响，而「最新那个」会随用户
 //! 开关标签而变，面板上的启停就会指向一个搬过家的会话。
 
-use gpui::{App, Context, Window};
+use gpui::{App, Context, SharedString, Window};
 use rustshell_core::connections::{default_listen_host, ForwardKind, ForwardRule};
 use rustshell_core::forward::{validate_error_text, ForwardStatus};
 use rustshell_core::i18n::t;
@@ -26,6 +26,29 @@ use rustshell_core::session::{SessionKind, SessionState};
 use super::domain::DialogMode;
 use super::MainView;
 use crate::notice::NoticeKind;
+
+/// 「所属连接」下拉里的一项：显示「名称（主机）」，落库的值是 profile id。
+///
+/// 为什么必须自定义 item，而不是像组件库示例那样用 `&'static str`：
+/// ① id 是运行期字符串；② 下拉里读到的文本（名称 + 主机）与要落库的值（id）
+/// 不是同一份东西 —— 拿名字当值，改个名归属就断了。
+#[derive(Clone)]
+pub struct ProfileItem {
+    pub id: String,
+    pub label: String,
+}
+
+impl gpui_kit::component::searchable_list::SearchableListItem for ProfileItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.label.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+}
 
 /// 面板一行的只读快照（渲染期先复制成纯值，免得与 `cx.listener` 的可变借用打架）。
 #[derive(Clone)]
@@ -200,9 +223,12 @@ impl MainView {
         self.io.fwd_form.error = None;
 
         // 回填：只在编辑时；新建一律空（含端口 —— 留着上一条的数字最容易误存）。
-        let (name, listen, thost, tport) = match &existing {
+        // 监听地址是例外：新建也要给初值（127.0.0.1），否则框里空着，
+        // 用户以为「不填就不监听」。
+        let (name, listen_host, listen, thost, tport) = match &existing {
             Some(r) => (
                 r.name.clone(),
+                r.listen_host.clone(),
                 if r.listen_port == 0 {
                     String::new()
                 } else {
@@ -211,12 +237,22 @@ impl MainView {
                 r.target_host.clone().unwrap_or_default(),
                 r.target_port.map(|p| p.to_string()).unwrap_or_default(),
             ),
-            None => (String::new(), String::new(), String::new(), String::new()),
+            None => (
+                String::new(),
+                default_listen_host(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
         };
         self.io
             .fwd_form
             .name
             .update(cx, |s, cx| s.set_value(name, w, cx));
+        self.io
+            .fwd_form
+            .listen_host
+            .update(cx, |s, cx| s.set_value(listen_host, w, cx));
         self.io
             .fwd_form
             .listen_port
@@ -229,6 +265,28 @@ impl MainView {
             .fwd_form
             .target_port
             .update(cx, |s, cx| s.set_value(tport, w, cx));
+
+        // 「所属连接」下拉：每次打开都按**当前连接库**重建（新增/删除连接后不必重启）。
+        // 选中项由 profile id 反查下标 —— 下拉里显示的是「名称（主机）」，
+        // 而落库的值是 id，两者不是一回事。
+        let items: Vec<ProfileItem> = self
+            .conn_store
+            .profiles
+            .iter()
+            .map(|p| ProfileItem {
+                id: p.id.clone(),
+                label: format!("{}（{}）", p.name, p.host),
+            })
+            .collect();
+        let selected = items.iter().position(|it| it.id == profile_id);
+        self.io.fwd_form.conn_select.update(cx, |state, cx| {
+            state.set_items(
+                gpui_kit::component::searchable_list::SearchableVec::new(items),
+                w,
+                cx,
+            );
+            state.set_selected_index(selected.map(gpui_kit::component::IndexPath::new), w, cx);
+        });
 
         self.present_dialog(
             DialogMode::ForwardForm {
@@ -255,16 +313,30 @@ impl MainView {
         let draft = &self.io.fwd_form;
         let kind = draft.kind;
         let name = draft.name.read(cx).value().trim().to_string();
+        let listen_host_raw = draft.listen_host.read(cx).value().trim().to_string();
         let listen_raw = draft.listen_port.read(cx).value().trim().to_string();
         let thost = draft.target_host.read(cx).value().trim().to_string();
         let tport_raw = draft.target_port.read(cx).value().trim().to_string();
+        // 「所属连接」以下拉的当前选中为准（`profile_id` 只是打开表单时的初值）——
+        // 不读它的话，用户在表单里换了连接，规则会落回原来那台机器。
+        let target_pid = draft
+            .conn_select
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .unwrap_or_else(|| profile_id.clone());
 
         let mut rule = ForwardRule::new(kind);
         rule.id = rule_id.clone().unwrap_or_default();
         rule.name = name;
-        // 「只绑回环地址」：表单不提供改地址的入口，新建一律 127.0.0.1。
-        // 编辑时也重写一遍 —— 老配置里若有 0.0.0.0，这里就把它收回来。
-        rule.listen_host = default_listen_host();
+        // 监听地址取自输入框（默认 127.0.0.1）；**留空回退回环**而不是拒绝保存 ——
+        // 空地址在 `validate` 里是 `NoListenHost`，但「没填」与「填了非法地址」
+        // 对用户是两件事：前者按默认值补上更省事。
+        rule.listen_host = if listen_host_raw.is_empty() {
+            default_listen_host()
+        } else {
+            listen_host_raw
+        };
         rule.listen_port = listen_raw.parse::<u16>().unwrap_or(0);
         if kind.needs_target() {
             rule.target_host = Some(thost);
@@ -282,7 +354,7 @@ impl MainView {
             .conn_store
             .profiles
             .iter_mut()
-            .find(|p| p.id == profile_id)
+            .find(|p| p.id == target_pid)
         else {
             self.io.fwd_form.error = Some(t("连接已不存在").to_string());
             cx.notify();
@@ -315,7 +387,7 @@ impl MainView {
         // 规则改过而隧道正在跑：停掉旧监听。用户改完端口/目标后期待的是
         // 「新的生效」，而不是「旧的继续按老配置搬字节，新的点一次才起」。
         if replaced {
-            if let Some(board) = self.live_forward_board(&profile_id) {
+            if let Some(board) = self.live_forward_board(&target_pid) {
                 board.stop(&rule.id);
             }
         }
@@ -385,33 +457,6 @@ impl MainView {
         cx.notify();
     }
 
-    /// 表单上的类型循环：`local → remote → socks5 → http connect → local`。
-    pub fn forward_cycle_kind(&mut self, cx: &mut Context<Self>) {
-        let kinds = ForwardKind::ALL;
-        let ix = kinds
-            .iter()
-            .position(|k| *k == self.io.fwd_form.kind)
-            .unwrap_or(0);
-        self.io.fwd_form.kind = kinds[(ix + 1) % kinds.len()];
-        cx.notify();
-    }
-
-    /// 所属连接的循环（表单里改挂到哪台机器）。
-    pub fn forward_cycle_profile(&mut self, cx: &mut Context<Self>) {
-        if self.conn_store.profiles.is_empty() {
-            return;
-        }
-        let cur = self
-            .conn_store
-            .profiles
-            .iter()
-            .position(|p| p.id == self.io.fwd_form.profile_id)
-            .unwrap_or(0);
-        let next = (cur + 1) % self.conn_store.profiles.len();
-        self.io.fwd_form.profile_id = self.conn_store.profiles[next].id.clone();
-        cx.notify();
-    }
-
     /// 规则表单的对话框正文（`DialogMode::ForwardForm`）。
     ///
     /// 「所属连接」与「类型」都用**循环按钮**而不是下拉：官方 `Dropdown` 是受控
@@ -425,12 +470,14 @@ impl MainView {
         _w: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::component::dialog::Dialog {
-        use gpui::{div, px, FontWeight, ParentElement as _, SharedString, Styled as _};
+        use gpui::{div, px, FontWeight, InteractiveElement as _, ParentElement as _, Styled as _};
         use gpui_kit::component::{
             button::{Button, ButtonVariants as _},
             dialog::DialogButtonProps,
             h_flex,
             input::{Input, InputState},
+            radio::Radio,
+            select::Select,
             v_flex, Sizable as _,
         };
 
@@ -438,16 +485,6 @@ impl MainView {
         let editing = rule_id.is_some();
         let kind = self.io.fwd_form.kind;
         let err = self.io.fwd_form.error.clone();
-        let profile_pid = self.io.fwd_form.profile_id.clone();
-        let profile_label = self
-            .conn_store
-            .profiles
-            .iter()
-            .find(|p| p.id == profile_pid)
-            .map(|p| format!("{}（{}）", p.name, p.host))
-            .unwrap_or_else(|| t("（未选择连接）").to_string());
-
-        let label_color = crate::theme::to_hsla(th.fg_secondary);
         let muted = crate::theme::to_hsla(th.fg_muted);
         // 输入框走 Small 档（`h_6` = 1.5rem），与任务 / 快捷命令 / 连接对话框
         // 同一行高；默认的 Medium 是 `h_8` = 2rem，在 420px 宽的模态里
@@ -462,6 +499,17 @@ impl MainView {
                 .child(Input::new(input).small().w_full())
         };
 
+        // 固定宽度的字段列（端口这类短输入）：`PORT_W` 与新增连接窗口的「端口」同宽。
+        let field_w =
+            |label: &'static str, input: &gpui::Entity<InputState>, required: bool, w: f32| {
+                v_flex()
+                    .gap_1()
+                    .w(px(w))
+                    .flex_none()
+                    .child(super::dialogs::field_label(t(label), required, th))
+                    .child(Input::new(input).small().w_full())
+            };
+
         let header = div()
             .text_size(px(14.))
             .font_weight(FontWeight::BOLD)
@@ -471,85 +519,86 @@ impl MainView {
                 "新建端口转发"
             }));
 
-        let mut body = v_flex().gap_3().w_full();
-        // 所属连接 + 类型：两枚循环按钮并排（各占一半，长名字会省略）
-        body = body.child(
-            h_flex()
-                .gap_2()
-                .w_full()
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(label_color)
-                                .child(t("所属连接")),
-                        )
-                        .child(
-                            Button::new("fwd-pick-conn")
-                                .small()
-                                .label(SharedString::from(profile_label))
-                                .on_click(cx.listener(|m, _e, _w, cx| {
-                                    m.forward_cycle_profile(cx);
-                                })),
-                        ),
-                )
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(label_color)
-                                .child(t("类型")),
-                        )
-                        .child(
-                            Button::new("fwd-pick-kind")
-                                .small()
-                                .label(SharedString::from(kind_label(kind)))
-                                .on_click(cx.listener(|m, _e, _w, cx| {
-                                    m.forward_cycle_kind(cx);
-                                    // 换类型后目标两段可能出现/消失：清掉上一次的错误，
-                                    // 否则「缺少目标地址」会挂在一个已经不需要目标的类型上。
-                                    m.io.fwd_form.error = None;
-                                })),
-                        ),
-                ),
-        );
-        body = body.child(field("规则名称（可空）", &self.io.fwd_form.name, false));
+        // 量取钩子：单选框 / 下拉都是**首次**出现在本仓的表单里，用例靠它证明
+        // 「点开表单不 panic，且真的长出了内容」。
+        let mut body = v_flex()
+            .gap_3()
+            .w_full()
+            .debug_selector(|| "fwd-form-body".to_string());
+        // ① 所属连接：**可筛选**下拉（点开后顶部有输入框，打字即过滤）。
+        //    连接一多，原先那种「点一下换一台」的循环按钮要按十几次才轮到目标。
         body = body.child(
             v_flex()
                 .gap_1()
                 .w_full()
-                .child(h_flex().gap_2().w_full().child(field(
+                .child(super::dialogs::field_label(t("所属连接"), true, th))
+                .child(
+                    Select::new(&self.io.fwd_form.conn_select)
+                        .small()
+                        .placeholder(t("选择连接"))
+                        .w_full(),
+                ),
+        );
+        // ② 转发类型：**单独一行单选框**（2026-11-20 用户要求，此前是一枚循环按钮）。
+        body = body.child(
+            v_flex()
+                .gap_1()
+                .w_full()
+                .child(super::dialogs::field_label(t("类型"), false, th))
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .flex_wrap()
+                        .children(ForwardKind::ALL.map(|k| {
+                            Radio::new(kind_radio_id(k))
+                                .xsmall()
+                                .label(kind_label(k))
+                                .checked(kind == k)
+                                .on_click(cx.listener(move |m, _checked, _w, cx| {
+                                    if m.io.fwd_form.kind != k {
+                                        m.io.fwd_form.kind = k;
+                                        // 换类型后目标两段可能出现/消失：清掉上一次的错误，
+                                        // 否则「缺少目标地址」会挂在一个不需要目标的类型上。
+                                        m.io.fwd_form.error = None;
+                                        cx.notify();
+                                    }
+                                }))
+                        })),
+                ),
+        );
+        // ③ 监听地址 + 端口。远端转发的监听点在**服务器**上，标签跟着换口径 ——
+        //    同一个框在两种语义下都叫「监听地址」会让人以为绑的是本机网卡。
+        let listen_label = if kind == ForwardKind::Remote {
+            t("服务器监听地址")
+        } else {
+            t("本地监听 IP")
+        };
+        body = body.child(
+            h_flex()
+                .gap_2()
+                .w_full()
+                .child(field(listen_label, &self.io.fwd_form.listen_host, true))
+                .child(field_w(
                     "监听端口",
                     &self.io.fwd_form.listen_port,
                     true,
-                )))
-                // 「只绑回环地址」是产品口径，不是这一条规则的选项 ——
-                // 写在这里而不是做成一个地址输入框，是为了让用户知道
-                // 「别的机器连不上这个端口」是设计如此。
-                .child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(muted)
-                        .child(t("只监听本机 127.0.0.1")),
-                ),
+                    PORT_W,
+                )),
         );
+        // ④ 目标地址 + 目标端口：端口宽度与新增连接窗口里的「端口」一致（96px），
+        //    地址占掉剩下的宽度 —— 两个框各占一半会让端口框显得过宽、地址框不够敲。
         if kind.needs_target() {
             body = body.child(
                 h_flex()
                     .gap_2()
                     .w_full()
                     .child(field("目标地址", &self.io.fwd_form.target_host, true))
-                    .child(field("目标端口", &self.io.fwd_form.target_port, true)),
+                    .child(field_w(
+                        "目标端口",
+                        &self.io.fwd_form.target_port,
+                        true,
+                        PORT_W,
+                    )),
             );
         } else {
             body = body.child(
@@ -559,6 +608,8 @@ impl MainView {
                     .child(t("目标由每个连接自己给出，不需要在这里填")),
             );
         }
+        // ⑤ 规则名（可空）：可选项放最后，前面的必填项先读完。
+        body = body.child(field("规则名称（可空）", &self.io.fwd_form.name, false));
         if let Some(e) = err {
             body = body.child(crate::notice::NoticeKind::Error.card("fwd-form-error", e));
         }
@@ -606,6 +657,23 @@ impl MainView {
                         true
                     }),
             )
+    }
+}
+
+/// 端口类输入框的宽度（px）：与新增连接窗口里「端口」那一格同宽
+/// （那里写的是 `field_w(.., 96.)`）—— 两个表单的短输入对齐看起来是一套。
+const PORT_W: f32 = 96.;
+
+/// 转发类型单选框的稳定 id（`Radio::new` 只收 `&'static str`）。
+///
+/// 用固定字面量而不是 `format!`：`Radio` 的 id 进了 gpui 的缓动/焦点表，
+/// 每帧换一个字符串等于每帧换一个新元素。
+fn kind_radio_id(kind: ForwardKind) -> &'static str {
+    match kind {
+        ForwardKind::Local => "fwd-kind-local",
+        ForwardKind::Remote => "fwd-kind-remote",
+        ForwardKind::Dynamic => "fwd-kind-socks5",
+        ForwardKind::HttpConnect => "fwd-kind-http",
     }
 }
 
@@ -710,20 +778,62 @@ mod tests {
         );
     }
 
-    /// 只绑回环：表单里把监听地址**强制**写成默认回环值，不提供输入框。
+    /// 监听地址：**默认回环，但可改**（2026-11-20 用户要求把框显示出来）。
     ///
-    /// 编辑老配置时也重写一遍 —— 手改 `connections.json` 写成 `0.0.0.0` 的那条，
-    /// 只要用户打开表单保存一次就会被收回来。
+    /// 2026-11-19 那版是反过来的 —— 表单不给地址、保存时钉回 127.0.0.1。现在用户
+    /// 要能绑别的网卡（`0.0.0.0` 暴露到局域网、或某块内网卡）；留空仍回退回环，
+    /// 而不是报「监听地址不能为空」—— 「没填」与「填了非法地址」是两件事。
     #[test]
-    fn the_form_pins_loopback_and_never_asks_for_a_listen_host() {
+    fn the_form_defaults_the_listen_host_to_loopback_but_lets_it_be_edited() {
         let c = code();
         assert!(
-            c.contains("rule.listen_host = default_listen_host()"),
-            "保存时必须把监听地址钉回 127.0.0.1"
+            c.contains("default_listen_host()"),
+            "新建时给初值、留空时回退，都要走 `default_listen_host()`（127.0.0.1）"
+        );
+        // 钉**变量名**而不是调用链：rustfmt 会把 `draft.listen_host.read(cx)`
+        // 折成三行，钉整行下次格式化就假红（2026-11-19 已踩过一次）。
+        assert!(
+            c.contains("listen_host_raw"),
+            "保存时必须读监听地址框 —— 不读的话用户改的地址会被静默丢弃"
         );
         assert!(
-            !c.contains("listen_host.read"),
-            "表单不许提供监听地址输入框（产品口径：只绑回环）"
+            c.contains("\"本地监听 IP\""),
+            "表单必须有「本地监听 IP」这一格（用户点名要显示出来）"
+        );
+        assert!(
+            c.contains("\"服务器监听地址\""),
+            "远端转发的监听点在服务器上，标签要换成「服务器监听地址」"
+        );
+    }
+
+    /// 类型 = 一整行单选框，所属连接 = 可筛选下拉（2026-11-20 用户要求）。
+    ///
+    /// 两条都是替换掉原先那两枚「点一下换一个」的循环按钮 —— 顺手钉住
+    /// 「循环按钮不许回来」：它一旦回来，连接一多就要点十几次。
+    #[test]
+    fn the_form_uses_radio_kinds_and_a_searchable_connection_select() {
+        let c = code();
+        assert!(
+            c.contains("Radio::new(kind_radio_id("),
+            "转发类型必须渲染成单选框（逐个 `Radio`），而不是一枚循环按钮"
+        );
+        assert!(
+            !c.contains("forward_cycle_kind") && !c.contains("forward_cycle_profile"),
+            "循环按钮的动作又回来了 —— 类型改单选、连接改下拉之后它们应当已删除"
+        );
+        assert!(
+            c.contains("Select::new(&self.io.fwd_form.conn_select)"),
+            "所属连接必须走 `Select` 下拉"
+        );
+        assert!(
+            c.contains("selected_value()"),
+            "保存时必须以下拉的选中值为准，否则用户在表单里换了连接也不生效"
+        );
+        // 可筛选是 **state** 上的开关（`Select` 元素本身没有 `searchable`）
+        let mv = prod(include_str!("../main_view.rs"));
+        assert!(
+            mv.contains(".searchable(true)"),
+            "下拉必须在 `SelectState` 建的时候开 `searchable(true)`，否则点开没有筛选框"
         );
     }
 
