@@ -609,7 +609,14 @@ impl MainView {
             .child(field_label(rustshell_core::i18n::t("认证方式"), false, t))
             .child(
                 h_flex()
+                    // 量取钩子：用例靠它证明「分段控件与输入框同高」
+                    .debug_selector(|| "dlg-auth-segments".to_string())
                     .w_full()
+                    // 与 `.small()` 输入框**同高**：`h_6` = 1.5rem = 22.5px
+                    // （2026-11-20 用户反馈「认证方式的框和输入框高度不一致」——
+                    // 原先写死 28px，比同一列的输入框高出 5.5px）。
+                    .h_6()
+                    .items_stretch()
                     .gap(px(2.))
                     .p(px(2.))
                     .rounded(px(8.))
@@ -622,7 +629,6 @@ impl MainView {
                             // 一旦变了，element id 会跟着变，焦点与点击命中都会漂。
                             .id(SharedString::from(format!("dlg-auth-seg-{}", mode.key())))
                             .flex_1()
-                            .h(px(28.))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -3729,6 +3735,105 @@ pub(in crate::main_view) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// `Ctrl+N` 要能真的打开「新建连接」（2026-11-20 用户要求给它一个快捷键）。
+    ///
+    /// 走 `simulate_keystrokes` 而不是源码断言：这条路把**注册（`DEFAULT_BINDINGS`）
+    /// → 解析（`make_binding`）→ `on_action` 分支 → 打开对话框**整条链路都跑一遍。
+    /// 少任何一环（比如忘了给 `make_binding` 加分支），用户按下去就是没反应。
+    #[gpui::test]
+    fn ctrl_n_opens_the_connect_dialog(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::super::{AppShell, MainView};
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+            // 测试环境不会跑 `shell/src/app.rs` 的注册，这里按默认表手动绑一遍 ——
+            // 不绑的话 `simulate_keystrokes` 打的是一张空键位表，快捷键「没反应」
+            // 恒成立，用例就成了假绿/假红。
+            let bindings: Vec<gpui::KeyBinding> = rustshell_platform::keymap::DEFAULT_BINDINGS
+                .iter()
+                .filter_map(|(id, spec)| {
+                    crate::keybinds::make_binding(
+                        id,
+                        &rustshell_platform::keymap::resolve(spec),
+                        cx,
+                    )
+                })
+                .collect();
+            cx.bind_keys(bindings);
+        });
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_kit::component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+
+        // 键位里写的是 `mod-n`；测试环境按 Ctrl 解析（macOS 上才是 Cmd）
+        vcx.simulate_keystrokes("ctrl-n");
+        vcx.run_until_parked();
+
+        let b = vcx
+            .debug_bounds("dlg-connect-form")
+            .expect("Ctrl+N 没有打开「新建连接」对话框（键位没注册，或 on_action 没接）");
+        let h: f32 = b.size.height.into();
+        assert!(h > 50., "连接表单高度异常：{h}px");
+    }
+
+    /// 认证方式的分段控件必须与输入框**同高**（2026-11-20 用户反馈不一致）。
+    ///
+    /// 输入框走 `.small()` ⇒ `h_6` = 1.5rem = 22.5px；分段控件原先写死 28px。
+    /// 这里直接量渲染高度，而不是看源码里写没写 `h_6`。
+    #[gpui::test]
+    fn the_auth_segments_are_as_tall_as_an_input(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::super::{AppShell, MainView};
+
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
+        });
+        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
+        let (_, vcx) = {
+            let slot = slot.clone();
+            cx.add_window_view(move |window, cx| {
+                let main = cx.new(|cx| MainView::new(window, cx));
+                *slot.borrow_mut() = Some(main.clone());
+                let shell = cx.new(|_| AppShell::new(main));
+                gpui_kit::component::Root::new(shell, window, cx)
+            })
+        };
+        vcx.run_until_parked();
+        let main = slot.borrow().clone().expect("MainView 未创建");
+
+        let mut vcx_mut = vcx.clone();
+        main.update_in(&mut vcx_mut, |m, window, cx| {
+            m.open_connect_dialog(None, window, cx);
+        });
+        vcx.run_until_parked();
+
+        let seg = vcx
+            .debug_bounds("dlg-auth-segments")
+            .expect("找不到认证方式的分段控件");
+        let h: f32 = seg.size.height.into();
+        assert!(
+            (h - 22.5).abs() < 0.6,
+            "分段控件高度 {h}px，与 `.small()` 输入框的 22.5px 不一致"
+        );
+    }
 
     /// 连接表单的四个新口径（2026-11-20 用户要求）：
     /// 认证方式 = 分段控件、用户名默认 root、密码带眼睛、名称可空（回退主机）。

@@ -7,7 +7,8 @@ use rustshell_platform::keymap as km;
 use rustshell_platform::paths;
 
 use crate::main_view::{
-    CloseTab, CommandPalette, NewTab, OpenSettings, SplitDown, SplitRight, TabNext, TabPrev,
+    CloseTab, CommandPalette, NewConnection, NewTab, OpenSettings, SplitDown, SplitRight, TabNext,
+    TabPrev,
 };
 
 /// 键位表格行快照（设置面板渲染用）
@@ -61,7 +62,8 @@ pub fn snapshot_rows() -> Vec<KeymapRow> {
 /// 选材标准：此刻窗格里**没有任何会话**，所以只列「怎么把会话弄出来」和
 /// 「其余能力的入口在哪」。终端相关动作（终端内搜索 / 拆分 / 切标签）刻意不列 ——
 /// 现在按下它们一点效果都没有，列出来只会让人以为坏了。
-pub const EMPTY_STATE_ACTIONS: &[&str] = &["NewTab", "CommandPalette", "OpenSettings"];
+pub const EMPTY_STATE_ACTIONS: &[&str] =
+    &["NewConnection", "NewTab", "CommandPalette", "OpenSettings"];
 
 /// 生成空窗格提示行：`(显示名, 键位展示串)`，与 [`EMPTY_STATE_ACTIONS`] 一一对应。
 ///
@@ -159,6 +161,7 @@ pub fn display_spec(spec: &str) -> String {
 pub fn make_binding(action_id: &str, keys: &str, cx: &App) -> Option<KeyBinding> {
     use crate::main_view::{SearchInTerminal, SwitchTab, TermShiftTab, TermTab};
     let action: Box<dyn gpui::Action> = match action_id {
+        "NewConnection" => Box::new(NewConnection),
         "NewTab" => Box::new(NewTab),
         "CloseTab" => Box::new(CloseTab),
         "TabNext" => Box::new(TabNext),
@@ -180,6 +183,7 @@ pub fn make_binding(action_id: &str, keys: &str, cx: &App) -> Option<KeyBinding>
 
 fn action_type_id(action_id: &str) -> Option<TypeId> {
     Some(match action_id {
+        "NewConnection" => TypeId::of::<NewConnection>(),
         "NewTab" => TypeId::of::<NewTab>(),
         "CloseTab" => TypeId::of::<CloseTab>(),
         "TabNext" => TypeId::of::<TabNext>(),
@@ -296,9 +300,11 @@ mod tests {
     fn empty_state_hints_fall_back_to_defaults() {
         let hints = empty_state_hints(&[]);
         assert_eq!(hints.len(), EMPTY_STATE_ACTIONS.len());
-        let (label, keys) = &hints[0];
-        assert_eq!(label, "新建本地终端");
-        assert_eq!(keys, &display_spec("mod-t"));
+        // 2026-11-20：空态第一行是「新增连接」（Ctrl+N），第二行才是新建本地终端
+        assert_eq!(hints[0].0, "新增连接");
+        assert_eq!(hints[0].1, display_spec("mod-n"));
+        assert_eq!(hints[1].0, "新建本地终端");
+        assert_eq!(hints[1].1, display_spec("mod-t"));
         assert!(hints.iter().all(|(_, keys)| !keys.is_empty()));
     }
 
@@ -312,12 +318,12 @@ mod tests {
             overridden: true,
         }];
         let hints = empty_state_hints(&rows);
-        // 被覆盖的那一行用快照的值……
-        let (label, keys) = &hints[1];
+        // 被覆盖的那一行用快照的值……（`CommandPalette` 现在排第三，前面多了「新增连接」）
+        let (label, keys) = &hints[2];
         assert_eq!(label, "命令面板");
         assert_eq!(keys, &display_spec("mod-shift-k"));
         // ……没被覆盖的那些行仍然回退到默认表，一行都不缺。
-        assert_eq!(hints[0].1, display_spec("mod-t"));
+        assert_eq!(hints[0].1, display_spec("mod-n"));
         assert_eq!(hints.len(), EMPTY_STATE_ACTIONS.len());
     }
 }

@@ -36,6 +36,9 @@ use std::path::Path;
 
 /// 默认键位表（action id 到 键位描述，"mod" 为平台修饰键占位）
 pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
+    // 2026-11-20 用户要求「新增连接增加个快捷键 Ctrl+N」。放在最前：空窗格提示表
+    // 按这张表的次序铺，而「建一条连接」是新窗口里最常做的第一件事。
+    ("NewConnection", "mod-n"),
     ("NewTab", "mod-t"),
     ("CloseTab", "mod-w"),
     ("TabNext", "mod-tab"),

@@ -903,18 +903,9 @@ impl MainView {
             .debug_selector(|| "empty-hints".to_string())
             .w_full()
             .gap(px(2.));
-        // 2026-11-20 用户要求「新建本地终端上方增加新增连接」。
-        //
-        // 它**没有默认键位**（命令面板里那一项也不带快捷键），所以不进
-        // `EMPTY_STATE_ACTIONS` —— 那张表的每一项都必须有键位可显示
-        // （`empty_state_hints` 的用例断言 `keys` 全非空），硬塞一个假键位
-        // 只会教用户去按一个没绑定的键。这里单独插一行，右侧留白。
-        hint_list = hint_list.child(no_session_hint_row(
-            "NewConnection",
-            rustshell_core::i18n::t("新增连接").to_string(),
-            String::new(),
-            cx,
-        ));
+        // 2026-11-20 用户要求「（空窗格）新建本地终端上方增加新增连接」：
+        // 它排在 `EMPTY_STATE_ACTIONS` 的**第一位**，并带 `Ctrl+N`（`mod-n`）——
+        // 有了键位就能走统一循环，不必再单独插一行。
         for (id, (label, keys)) in crate::keybinds::EMPTY_STATE_ACTIONS.iter().zip(hints) {
             hint_list = hint_list.child(no_session_hint_row(id, label, keys, cx));
         }
@@ -934,16 +925,21 @@ impl MainView {
         div()
             .size_full()
             .min_w_0()
-            // 2026-11-06 用户要求「红圈内容还是居中好一点」：水平居中，垂直仍贴顶
-            // （`pt`）—— 上一条「快速连接靠近上面」的诉求没撤销。
-            //
-            // 居中走**块级父 + `mx_auto`**：只依赖「列表自身宽度」与「父的内容盒
-            // 宽度」。之前几种写法看着都无效，真因不在对齐方式，而在主区面板没声明
-            // `.flex_1().min_w_0()`（见 `main_view.rs` 的 resizable_panel）：面板宽度
-            // 退化成按内容撑，整个容器比窗口还宽，任何居中都会落在窗口右缘之外。
             .pt(px(20.))
             .bg(crate::theme::surface(1.0, tok.bg_base))
-            .child(list.mx_auto())
+            // 2026-11-20 用户要求「这个调整位置：在界面左边三分之一」：
+            // 用 1 : 2 两块空白把 400px 的内容推到左 1/3 处（此前是 `mx_auto` 居中）。
+            //
+            // 用 `flex_1` / `flex_2` 而不是固定像素：窗口一宽就按比例走，
+            // 而写死 `ml(px(..))` 在大屏上会停在靠左的一小段。
+            .child(
+                h_flex()
+                    .size_full()
+                    .items_start()
+                    .child(div().flex_grow(1.).min_w_0())
+                    .child(list.flex_none())
+                    .child(div().flex_grow(2.).min_w_0()),
+            )
             .into_any_element()
     }
 }
@@ -1270,32 +1266,34 @@ fn pane_context_menu(menu: PopupMenu, in_split: bool) -> PopupMenu {
 mod tests {
     use crate::test_support::prod;
 
-    /// 2026-11-20 用户要求「（空窗格）新建本地终端上方增加新增连接」。
+    /// 2026-11-20 用户要求「（空窗格）新建本地终端上方增加新增连接」，并给了 `Ctrl+N`。
     ///
-    /// 顺序靠**插入顺序**保证（`v_flex` 按 child 的先后排），所以钉源码位置：
-    /// 那次 `no_session_hint_row("NewConnection", ..)` 必须排在快捷键表的 for 之前。
-    /// 另外它没有默认键位，必须走「不画键帽」的分支 —— 空键帽（20×20 的空框）
-    /// 看起来像「这里本该有个键，只是没显示出来」。
+    /// 位置由 `EMPTY_STATE_ACTIONS` 的**次序**决定（渲染就是按它铺的），键帽由
+    /// `DEFAULT_BINDINGS` 里的 `mod-n` 决定 —— 两处都要钉，否则「排上去了但没键位」
+    /// 会画出一行光秃秃的提示。
     #[test]
     fn the_empty_state_lists_new_connection_above_new_local_terminal() {
-        let code = prod(include_str!("split_actions.rs"));
-        let conn = code
-            .find("\"NewConnection\"")
-            .expect("空窗格的提示表里没有「新增连接」");
-        let loop_at = code
-            .find("EMPTY_STATE_ACTIONS.iter().zip(hints)")
-            .expect("找不到快捷键表的渲染循环");
-        assert!(
-            conn < loop_at,
-            "「新增连接」必须插在快捷键表**之前**（渲染顺序 = child 顺序）"
+        assert_eq!(
+            crate::keybinds::EMPTY_STATE_ACTIONS[0],
+            "NewConnection",
+            "空窗格第一行必须是「新增连接」（用户 2026-11-20 要求它排在新建终端上面）"
         );
+        assert_eq!(
+            crate::keybinds::EMPTY_STATE_ACTIONS[1],
+            "NewTab",
+            "第二行是「新建本地终端」—— 它是被让位的那一行，顺序别动"
+        );
+        let spec = rustshell_platform::keymap::DEFAULT_BINDINGS
+            .iter()
+            .find(|(id, _)| *id == "NewConnection")
+            .map(|(_, spec)| *spec);
+        assert_eq!(spec, Some("mod-n"), "新增连接的默认键位必须是 Ctrl+N");
+
+        // 它必须有键位可画：`empty_state_hints` 取不到 spec 时会画成一枚空键帽
+        let code = prod(include_str!("split_actions.rs"));
         assert!(
             code.contains("keys.is_empty()"),
-            "没有键位的行必须跳过键帽绘制，否则会画出一个空键帽"
-        );
-        assert!(
-            code.contains("open_connect_dialog(None"),
-            "点「新增连接」必须真的打开连接对话框"
+            "无键位的行必须跳过键帽绘制（空键位串会画出一枚 20x20 的空框）"
         );
     }
 
