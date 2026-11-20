@@ -105,17 +105,19 @@ fn translate(zh: &'static str) -> &'static str {
         "新建连接" => "New Connection",
         "编辑连接" => "Edit Connection",
         "端口需为 1–65535 的数字" => "Port must be a number 1–65535",
-        "名称、主机、用户名为必填项" => "Name, host and username are required",
         // ---- 连接对话框：连接测试与私钥（2026-09-22）----
         "连接测试" => "Test connection",
         "测试中…" => "Testing…",
         "主机与用户名为必填项" => "Host and username are required",
+        // 认证方式分段控件（2026-11-20）：三格的文案
+        "使用凭据" => "Use a key",
+        "无密码" => "No password",
+        // 名称框的 placeholder：名称留空时用主机地址顶上
+        "留空则使用主机地址" => "Defaults to the host address",
         "请先填写密码或私钥" => "Enter a password or a private key first",
         "测试线程异常结束" => "The connection test ended unexpectedly",
         // 认证方式（2026-10-21：改为单选框，密码与私钥不再同时占位）
         "认证方式" => "Authentication",
-        "密码认证" => "Password",
-        "私钥认证" => "Private key",
         "私钥文件" => "Private key file",
         "请选择私钥文件" => "Select a private key file first",
         "选择私钥文件" => "Select a private key file",

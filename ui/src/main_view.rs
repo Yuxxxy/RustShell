@@ -1188,10 +1188,16 @@ impl MainView {
         // 2026-10-21 用户要求「移除字段的 placeholder」：连接表单这几只框一律不带
         // 占位符 —— 每只框上方已经有标签（名称 / 主机 / 端口 / 用户名……），
         // 再垫一句灰色示例字只是重复，还把「已经填了值」和「只显示示例」的对比搞弱。
-        let dlg_name = cx.new(|cx| InputState::new(window, cx));
+        // 名称：唯一带 placeholder 的连接字段（2026-11-20 用户要求「名称的
+        // placeholder 并适配功能：可选默认用主机地址」）。其余字段 2026-10-21
+        // 已按用户要求撤掉 placeholder，别顺手加回去。
+        let dlg_name = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(rustshell_core::i18n::t("留空则使用主机地址"))
+        });
         let dlg_host = cx.new(|cx| InputState::new(window, cx));
         let dlg_port = cx.new(|cx| InputState::new(window, cx));
-        let dlg_user = cx.new(|cx| InputState::new(window, cx));
+        // 用户名默认 `root`（与 `open_connect_dialog` 的清空表同源）。
+        let dlg_user = cx.new(|cx| InputState::new(window, cx).default_value("root"));
         // 口令输入：**掩码显示**（2026-09-18 运行反馈「连接-编辑，密码需要 *** 展示」）。
         // `masked(true)` 只影响绘制，`value()` 仍回真实文本（见 gpui-base
         // `InputBaseState::value`：直接返回 `self.text`），所以「编辑时回填原口令、

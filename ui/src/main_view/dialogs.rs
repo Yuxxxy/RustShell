@@ -598,41 +598,57 @@ impl MainView {
         let auth = self.io.dlg_auth;
         let key_now = self.io.dlg_key_path.read(cx).value().to_string();
 
-        // 认证方式的两个选项：裸 `Radio`（圆圈）+ 整行可点。
-        // 不用 `RadioGroup`：它是受控组，要额外维护下标状态；而这里只有两支，
-        // 选中值就是 `dlg_auth` 本身（本文件既有的 `radio_row` 也是这个理由）。
-        let auth_radio = |id: &'static str, label: &'static str, mode: AuthMode| {
-            gpui_kit::component::radio::Radio::new(id)
-                .xsmall()
-                .label(rustshell_core::i18n::t(label))
-                .checked(auth == mode)
-                .on_click(cx.listener(move |m, _checked, _w, cx| {
-                    if m.io.dlg_auth != mode {
-                        m.io.dlg_auth = mode;
-                        // 切换方式**不清输入框**：用户可能只是想切过去看一眼再切回来，
-                        // 清掉等于让他重敲一遍。各自的框只在保存时按选中侧取舍。
-                        cx.notify();
-                    }
-                }))
-        };
+        // 认证方式：**分段控件**（2026-11-20 用户给的样式）—— 一个圆角外框里三格，
+        // 选中格带浅底 + 1px 描边，未选中格只有文字。
+        //
+        // 不用 `Radio`（圆圈 + 文字）：这三项是互斥的「模式选择」，圆圈占一行、
+        // 三项再各占一行，420px 宽的模态里要吃掉三行；分段控件一眼看得出「在哪一格」。
         let auth_row = v_flex()
             .gap_1()
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(hex(t.fg_secondary))
-                    .child(rustshell_core::i18n::t("认证方式")),
-            )
+            .w_full()
+            .child(field_label(rustshell_core::i18n::t("认证方式"), false, t))
             .child(
                 h_flex()
-                    .gap_4()
-                    .child(auth_radio(
-                        "dlg-auth-password",
-                        "密码认证",
-                        AuthMode::Password,
-                    ))
-                    .child(auth_radio("dlg-auth-key", "私钥认证", AuthMode::Key)),
+                    .w_full()
+                    .gap(px(2.))
+                    .p(px(2.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(hex(t.border_subtle))
+                    .children(AuthMode::ALL.map(|mode| {
+                        let selected = auth == mode;
+                        div()
+                            // id 用**稳定键**（`password` / `key` / `none`）：i18n 文案
+                            // 一旦变了，element id 会跟着变，焦点与点击命中都会漂。
+                            .id(SharedString::from(format!("dlg-auth-seg-{}", mode.key())))
+                            .flex_1()
+                            .h(px(28.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .text_size(px(12.))
+                            .text_color(hex(if selected {
+                                t.fg_primary
+                            } else {
+                                t.fg_secondary
+                            }))
+                            .when(selected, |d| {
+                                d.bg(hex(t.bg_elevated))
+                                    .border_1()
+                                    .border_color(hex(t.border_subtle))
+                            })
+                            .cursor_pointer()
+                            // 切换方式**不清输入框**：用户可能只是想切过去看一眼再切回来，
+                            // 清掉等于让他重敲一遍。各自的框只在保存时按选中侧取舍。
+                            .on_click(cx.listener(move |m, _e, _w, cx| {
+                                if m.io.dlg_auth != mode {
+                                    m.io.dlg_auth = mode;
+                                    cx.notify();
+                                }
+                            }))
+                            .child(mode.label())
+                    })),
             );
 
         // 私钥路径那一行：输入框 + [选择…]（+ 有值时 [清除]）。只在私钥认证下渲染。
@@ -717,11 +733,20 @@ impl MainView {
                         .debug_selector(|| "dlg-pass-row".to_string())
                         // 口令一律记住，「密码已加密保存」那句灰字按用户要求撤掉了
                         // （2026-10-21），保存行为本身不变。
-                        .child(field(
-                            rustshell_core::i18n::t("密码"),
-                            &self.io.dlg_pass,
-                            false,
-                        )),
+                        // 密码框带**眼睛**（`mask_toggle`）：点一下在明文 / 密文之间切。
+                        // 用组件库内置的那枚按钮而不是自己拼 `suffix` —— 它跟着
+                        // `InputState` 的 masked 状态走，与「编辑时回填明文」这条既有
+                        // 语义天然一致（回填的是 value，显示与否只看 masked）。
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .flex_1()
+                                .min_w_0()
+                                .child(field_label(rustshell_core::i18n::t("密码"), false, t))
+                                .child(
+                                    Input::new(&self.io.dlg_pass).small().mask_toggle().w_full(),
+                                ),
+                        ),
                 )
             })
             .when(auth == AuthMode::Key, |d| d.child(key_row));
@@ -1040,7 +1065,7 @@ impl MainView {
     }
 
     fn dialog_save(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        let name = self.io.dlg_name.read(cx).value().trim().to_string();
+        let typed_name = self.io.dlg_name.read(cx).value().trim().to_string();
         let host = self.io.dlg_host.read(cx).value().trim().to_string();
         let user = self.io.dlg_user.read(cx).value().trim().to_string();
         let pass = self.io.dlg_pass.read(cx).value().to_string();
@@ -1063,12 +1088,18 @@ impl MainView {
                 return;
             }
         };
-        if name.is_empty() || host.is_empty() || user.is_empty() {
-            self.io.dlg_error =
-                Some(rustshell_core::i18n::t("名称、主机、用户名为必填项").to_string());
+        if host.is_empty() || user.is_empty() {
+            self.io.dlg_error = Some(rustshell_core::i18n::t("主机与用户名为必填项").to_string());
             cx.notify();
             return;
         }
+        // 名称留空 ⇒ 用主机地址（2026-11-20 用户要求「可选默认用主机地址」）。
+        // 回退放在必填校验**之后**：host 为空时连回退值都没有，那种情况已被上面拦住。
+        let name = if typed_name.is_empty() {
+            host.clone()
+        } else {
+            typed_name
+        };
         // 认证方式（2026-10-21）：选了私钥就**必须**有路径 —— 否则落库一条
         // 「两种凭据都没有」的连接，用户要到点连接时才被 `connect_only` 拒绝。
         let auth = self.io.dlg_auth;
@@ -1384,13 +1415,16 @@ impl MainView {
                 String::new(),
             ),
             AuthMode::Key => (None, key_path),
+            // 无密码：两侧都空 —— 测试与真实连接走同一条 `authenticate_none` 路径
+            AuthMode::None => (None, String::new()),
         };
         if self.io.dlg_auth == AuthMode::Key && key_path.is_empty() {
             self.io.dlg_test = Some((false, rustshell_core::i18n::t("请选择私钥文件").to_string()));
             cx.notify();
             return;
         }
-        if password.is_none() && key_path.is_empty() {
+        // 「无密码」本来就是两侧都空，不该在这里被拦下（它要测的正是「免密能不能连」）
+        if self.io.dlg_auth != AuthMode::None && password.is_none() && key_path.is_empty() {
             self.io.dlg_test = Some((
                 false,
                 rustshell_core::i18n::t("请先填写密码或私钥").to_string(),
@@ -3544,6 +3578,8 @@ fn credential_sides(
     match auth {
         AuthMode::Password => ((!pass.is_empty()).then(|| pass.to_string()), None),
         AuthMode::Key => (None, (!key_path.is_empty()).then(|| key_path.to_string())),
+        // 「无密码」：两侧都清空 —— 留着一侧就等于用户以为自己在免密，实际在用旧凭据。
+        AuthMode::None => (None, None),
     }
 }
 
@@ -3693,6 +3729,58 @@ pub(in crate::main_view) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// 连接表单的四个新口径（2026-11-20 用户要求）：
+    /// 认证方式 = 分段控件、用户名默认 root、密码带眼睛、名称可空（回退主机）。
+    #[test]
+    fn connect_form_matches_the_requested_auth_layout() {
+        let code = crate::test_support::prod(include_str!("dialogs.rs"));
+
+        // ① 认证方式：三格分段控件，由 `AuthMode::ALL` 铺开（别手写三份）
+        assert!(
+            code.contains("dlg-auth-seg-"),
+            "认证方式必须是分段控件（三格），元素的 id 前缀是 `dlg-auth-seg-`"
+        );
+        assert!(
+            code.contains("AuthMode::ALL.map("),
+            "三格必须从 `AuthMode::ALL` 铺开 —— 手写三份迟早漏掉一格"
+        );
+        assert!(
+            !code.contains("auth_radio("),
+            "旧的圆圈单选（`auth_radio`）又回来了：用户要的是分段控件"
+        );
+
+        // ② 密码框带眼睛（明文 / 密文切换）
+        assert!(
+            code.contains("mask_toggle()"),
+            "密码框必须带组件库那枚眼睛按钮（`mask_toggle`），否则「加密不加密显示」无从切换"
+        );
+
+        // ③ 名称可空 ⇒ 回退到主机地址（placeholder 写在 `main_view.rs` 的 InputState 上）
+        assert!(
+            code.contains("let name = if typed_name.is_empty()"),
+            "名称留空时必须回退到主机地址，否则用户被一句「名称必填」挡在保存之外"
+        );
+        assert!(
+            !code.contains("名称、主机、用户名为必填项"),
+            "名称已改为可空，这条校验文案不该再出现"
+        );
+        let mv = crate::test_support::prod(include_str!("../main_view.rs"));
+        assert!(
+            mv.contains("留空则使用主机地址"),
+            "名称框必须有 placeholder 说明「不填会用什么」"
+        );
+    }
+
+    /// 新建连接的默认值：用户名 `root`（2026-11-20 用户要求）。
+    #[test]
+    fn new_connection_defaults_the_username_to_root() {
+        let code = crate::test_support::prod(include_str!("connections.rs"));
+        assert!(
+            code.contains("(&self.io.dlg_user, \"root\")"),
+            "新建连接的用户名必须默认 root —— 清空表里那一行是唯一落点"
+        );
+    }
 
     /// 必填项的星号必须是**红色**（`danger`），且四张表单的必填字段都要带上。
     ///
@@ -4087,6 +4175,11 @@ pub(in crate::main_view) mod tests {
             (None, None),
             "空口令就是空口令，不要凭空捏一个 Some(\"\")"
         );
+        assert_eq!(
+            credential_sides(AuthMode::None, "pw", "/k"),
+            (None, None),
+            "「无密码」必须把两侧都清掉 —— 留一侧等于用户以为在免密、其实用着旧凭据"
+        );
     }
 
     /// 编辑既有连接时的认证方式反推：有私钥且没有口令 = 私钥认证。
@@ -4095,16 +4188,18 @@ pub(in crate::main_view) mod tests {
     #[test]
     fn auth_mode_is_recovered_from_the_stored_credentials() {
         let mut p = ConnectionProfile::new("k", "h", "u");
+        // 2026-11-20 起有三态：两侧都没有 = 「无密码」（此前会被显示成密码认证，
+        // 用户一保存就落进一条「要密码」的连接，而框里是空的）。
         assert_eq!(
             AuthMode::of_profile(&p),
-            AuthMode::Password,
-            "什么都没有时是默认的密码认证"
+            AuthMode::None,
+            "两侧都没有凭据 = 无密码（分段控件的第三格）"
         );
         p.key_path = Some("/k".into());
         assert_eq!(
             AuthMode::of_profile(&p),
             AuthMode::Key,
-            "只有私钥 = 私钥认证（否则一编辑一保存就把钥匙丢了）"
+            "只有私钥 = 凭据认证（否则一编辑一保存就把钥匙丢了）"
         );
         p.password = Some("pw".into());
         assert_eq!(

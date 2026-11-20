@@ -509,20 +509,49 @@ pub struct AiUiState {
 pub enum AuthMode {
     /// 密码认证（默认）
     Password,
-    /// 私钥认证
+    /// 凭据认证（私钥文件）
     Key,
+    /// 无密码：两种凭据都不带，交给服务端的 `none` 认证（或直接失败）。
+    ///
+    /// 2026-11-20 用户要求把认证方式做成分段控件，第三格是「无密码」。它对应
+    /// `sshd` 上 `PermitEmptyPasswords` / `AuthenticationMethods none` 这类配置，
+    /// 也用于「先存连接、凭据以后再补」的场景 —— 保存不再被「必须填点什么」挡住。
+    None,
 }
 
 impl AuthMode {
-    /// 从已落盘的连接反推：**有私钥且没有密码** = 私钥认证，其余 = 密码认证。
+    /// 竖向固定次序（分段控件从左到右）。
+    pub const ALL: [AuthMode; 3] = [Self::Password, Self::Key, Self::None];
+
+    /// 分段控件上的文案。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Password => rustshell_core::i18n::t("密码"),
+            Self::Key => rustshell_core::i18n::t("使用凭据"),
+            Self::None => rustshell_core::i18n::t("无密码"),
+        }
+    }
+
+    /// 稳定 ASCII 键（元素 id / 测试用，别拿 i18n 文案当 id）。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Key => "key",
+            Self::None => "none",
+        }
+    }
+
+    /// 从已落盘的连接反推。
     ///
     /// 两者都有的老数据按 core 的判定顺序显示成「密码认证」（密码确实会先被试），
     /// 保存时会把那条不被使用的私钥路径清掉 —— 界面上看到的就是最终落盘的。
     pub fn of_profile(p: &rustshell_core::connections::ConnectionProfile) -> Self {
-        if p.key_path.is_some() && p.password.is_none() {
+        if p.password.is_some() {
+            Self::Password
+        } else if p.key_path.is_some() {
             Self::Key
         } else {
-            Self::Password
+            Self::None
         }
     }
 }

@@ -807,7 +807,15 @@ pub async fn connect_only(
         );
         authenticate_with_key(&mut handle, &profile.username, key, step_timeout).await?
     } else {
-        return Err("未提供密码或私钥".into());
+        // 无凭据：试 `none` 认证（`sshd` 里 `PermitEmptyPasswords` /
+        // `AuthenticationMethods none` 这类配置）。2026-11-20 起连接对话框有
+        // 「无密码」这一格 —— 它要能真的去连一次，而不是被这里的
+        // 「未提供密码或私钥」当场挡回（那句会让用户以为是表单没填全）。
+        match tokio::time::timeout(step_timeout, handle.authenticate_none(&profile.username)).await
+        {
+            Ok(r) => r.map_err(|e| format!("认证错误: {e}"))?.success(),
+            Err(_) => return Err(auth_timeout_msg(step_timeout)),
+        }
     };
     if !authed {
         return Err(auth_failure_msg(profile));
@@ -919,6 +927,14 @@ fn load_key_error(path: &str, err: &str) -> String {
 /// 后半句补上可执行的排查方向 —— 只剩一句「认证失败」时，用户无法区分
 /// 「用户名填错」「公钥没进 authorized_keys」和「签名算法被服务端拒」。
 fn auth_failure_msg(profile: &ConnectionProfile) -> String {
+    // 「无密码」那条路径的失败原因与「凭据不对」完全不同：用户压根没填凭据，
+    // 报「请确认凭据有效」只会让他去检查一个空输入框。
+    if profile.password.is_none() && profile.key_path.is_none() {
+        return format!(
+            "{}@{} 认证失败：该服务器不接受免密登录（需要密码或公钥凭据）",
+            profile.username, profile.host
+        );
+    }
     format!(
         "{}@{} 认证失败：请确认用户名正确、且凭据有效（私钥认证时，公钥需已写入服务器 ~/.ssh/authorized_keys）",
         profile.username, profile.host
@@ -1898,6 +1914,26 @@ pub struct ProcSnapshot {
 mod tests {
     use super::*;
 
+    /// 「无密码」失败时不能报「凭据无效」—— 用户根本没填凭据。
+    ///
+    /// 2026-11-20 连接对话框加了「无密码」这一格，它对应 `sshd` 的
+    /// `PermitEmptyPasswords` / `AuthenticationMethods none`；被服务器拒绝时必须说
+    /// 「服务器不接受免密登录」，否则用户会去检查一个空输入框。
+    #[test]
+    fn a_passwordless_profile_gets_a_passwordless_failure_hint() {
+        let mut p = crate::connections::ConnectionProfile::new("n", "h", "root");
+        let msg = auth_failure_msg(&p);
+        assert!(
+            msg.contains("不接受免密登录"),
+            "无凭据失败必须点明「服务器不接受免密」，实际：{msg}"
+        );
+        p.password = Some("x".into());
+        assert!(
+            !auth_failure_msg(&p).contains("免密"),
+            "有口令时不该再提免密"
+        );
+    }
+
     /// C-1 回归（2026-09-28）：SSH 运行时**不得**再退回 2 条 worker。
     ///
     /// 这条断言是纯函数级的，所以不受 `OnceLock` 影响 —— 一旦有人把
@@ -2592,7 +2628,11 @@ mod tests {
         assert!(plain.contains("Could not read key"));
         assert!(!plain.contains("带口令"), "{plain}");
 
-        let p = ConnectionProfile::new("tc", "118.25.81.212", "ubuntu");
+        // 必须**带一个凭据**：2026-11-20 起两侧都空的连接走「服务器不接受免密登录」
+        // 那条文案（见 `a_passwordless_profile_gets_a_passwordless_failure_hint`），
+        // 而这里要验的是「凭据不对」那条。
+        let mut p = ConnectionProfile::new("tc", "118.25.81.212", "ubuntu");
+        p.password = Some("pw".into());
         let msg = auth_failure_msg(&p);
         assert!(
             msg.contains("ubuntu@118.25.81.212 认证失败"),
