@@ -854,11 +854,15 @@ impl MainView {
         let connects = rustshell_core::command::quick_connect(&self.conn_store);
 
         let mut list = v_flex().w(px(400.)).gap(px(1.)).child(
+            // 区块标题：2026-11-20 用户要求「快速连接字体大点加粗」。
+            // 11px muted 是「分组标签」的规格，和下面每行 12.5px 的正文压在同一层，
+            // 读不出「这是一块的标题」；改成 13px 半粗、颜色抬到 fg_secondary。
             div()
                 .px(px(10.))
-                .pb(px(4.))
-                .text_size(px(11.))
-                .text_color(hex(tok.fg_muted))
+                .pb(px(6.))
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(hex(tok.fg_secondary))
                 .child(rustshell_core::i18n::t("快速连接")),
         );
 
@@ -969,7 +973,10 @@ fn no_session_connect_row(
         .px(px(10.))
         .py(px(5.))
         .rounded(px(6.))
-        .hover(|s| s.bg(hex(tok.bg_overlay)))
+        // 悬停底色取 `bg_elevated` 而不是 `bg_overlay`（2026-11-20 用户要求「增加 hover
+        // 效果」）：浅色主题里 `bg_overlay` 与 `bg_base` 同为白，鼠标划过去毫无变化 ——
+        // 与键帽那条注释是同一个坑。
+        .hover(|s| s.bg(hex(tok.bg_elevated)))
         .on_click(cx.listener(move |m, _: &ClickEvent, w, cx| m.connect_profile(&id, w, cx)))
         .child(
             Icon::new(IconName::Globe)
@@ -1026,7 +1033,7 @@ fn no_session_hint_row(
         .px(px(10.))
         .py(px(5.))
         .rounded(px(6.))
-        .hover(|s| s.bg(hex(tok.bg_overlay)))
+        .hover(|s| s.bg(hex(tok.bg_elevated)))
         .child(
             div()
                 .text_size(px(12.5))
@@ -1265,6 +1272,37 @@ fn pane_context_menu(menu: PopupMenu, in_split: bool) -> PopupMenu {
 #[cfg(test)]
 mod tests {
     use crate::test_support::prod;
+
+    /// 2026-11-20 用户要求：快速连接列表要**看得见**的悬停效果，「快速连接」标题放大加粗。
+    ///
+    /// 悬停这条特别钉死底色取值：原先用 `bg_overlay`，而浅色主题里它与 `bg_base`
+    /// 同为白 —— 鼠标划过去毫无变化，等于没有 hover（与键帽那条注释同一个坑）。
+    #[test]
+    fn the_quick_connect_list_has_a_visible_hover_and_a_bolder_heading() {
+        let code = prod(include_str!("split_actions.rs"));
+        assert!(
+            !code.contains("hover(|s| s.bg(hex(tok.bg_overlay)))"),
+            "悬停底色不能用 `bg_overlay`：浅色主题里它与底纸同白，看不出 hover"
+        );
+        assert_eq!(
+            code.matches("hover(|s| s.bg(hex(tok.bg_elevated)))")
+                .count(),
+            2,
+            "连接行与下面的快捷键行都要有 hover（两处同一版式）"
+        );
+
+        let at = code.find("\"快速连接\")").expect("找不到「快速连接」标题");
+        let tail = &code[..at];
+        let head = &tail[tail.len().saturating_sub(400)..];
+        assert!(
+            head.contains("FontWeight::SEMIBOLD"),
+            "「快速连接」要加粗（11px muted 与正文同层，读不出是标题）"
+        );
+        assert!(
+            head.contains("text_size(px(13.))"),
+            "「快速连接」要放大到 13px"
+        );
+    }
 
     /// 2026-11-20 用户要求「（空窗格）新建本地终端上方增加新增连接」，并给了 `Ctrl+N`。
     ///
