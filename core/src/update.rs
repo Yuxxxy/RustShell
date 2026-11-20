@@ -479,12 +479,42 @@ fn spawn_update_waiter(installer: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 清空一个目录里的所有条目（文件与子目录都删）；目录不存在时返回 0。
+///
+/// 只删**内容**、保留目录本身：下载目录会被反复使用，留着省一次 `create_dir_all`。
+/// 删不掉（被占用）的条目静默跳过 —— 这是清理路径，不该因为一个锁住的文件
+/// 让启动带错。
+fn purge_dir(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ok = if path.is_dir() {
+            std::fs::remove_dir_all(&path).is_ok()
+        } else {
+            std::fs::remove_file(&path).is_ok()
+        };
+        if ok {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// 启动时清掉历史更新留下的残留；删不掉（还被占用）就忽略，下次再试。
 ///
 /// - `<exe>.old`：老版本 `replace_running_exe` 留下的旧主程序。
 /// - `<stem>.installer.old`：NSIS 模板「让位」时挪开的旧文件（见模板 Section Install）。
 /// - `<临时目录>/<stem>-setup.exe`：安装器「自己顶着主程序名字运行」时复制出来的
 ///   那份副本（见模板 .onInit 的自愈 A）。
+/// - `<临时目录>/rustshell-update/` **整个下载目录**：安装包本身。
+///   文件名带版本号（`RustShell-0.1.15-windows-x64.exe`），每更新一次多一份、
+///   从不会互相覆盖 ⇒ 不删就是每个版本十几 MB 常驻临时目录（2026-11-20 补）。
+///
+/// 为什么在**启动时**删而不是安装完删：Windows 上安装包在安装器手里锁着，
+/// 而安装完那一刻新版本还没起来；新版本一起来，这些东西就都已完成使命。
 pub fn cleanup_stale_backup() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -510,6 +540,9 @@ pub fn cleanup_stale_backup() {
         let _ = std::fs::remove_file(download_dir().join(format!("{stem}-setup.exe")));
         let _ = std::fs::remove_file(std::env::temp_dir().join(format!("{stem}-setup.exe")));
     }
+    // 下载目录里的**产物本身**（上面那两条只删了同名的 `-setup.exe` 副本）：
+    // 它们谁也删不掉，只能由下个版本的启动来收尾。
+    purge_dir(&download_dir());
 }
 
 /// 下载目录：`<系统临时目录>/rustshell-update/`。
@@ -520,6 +553,39 @@ pub fn download_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 下载目录里的安装包必须能被**全部**清掉（2026-11-20 补的清理）。
+    ///
+    /// 文件名带版本号 ⇒ 每更新一版就多一份、互不覆盖；只删 `-setup.exe` 副本
+    /// （旧实现）等于让每个版本都留下十几 MB。
+    #[test]
+    fn purge_dir_empties_the_download_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "rs-update-purge-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        std::fs::write(dir.join("RustShell-0.1.14-windows-x64.exe"), b"old").unwrap();
+        std::fs::write(dir.join("RustShell-0.1.15-windows-x64.exe"), b"new").unwrap();
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+
+        assert_eq!(purge_dir(&dir), 3, "两个安装包加一个子目录都要删掉");
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("目录应还在").count(),
+            0,
+            "目录本身留着，但里面必须清空"
+        );
+
+        // 目录不存在：返回 0，不许 panic（首次启动就是这个状态）
+        assert_eq!(purge_dir(&dir.join("does-not-exist")), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn compares_numeric_versions_not_strings() {
