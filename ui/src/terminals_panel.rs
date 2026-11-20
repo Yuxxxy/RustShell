@@ -208,69 +208,22 @@ pub fn render(m: &mut MainView, cx: &mut Context<MainView>) -> impl IntoElement 
         );
     }
 
-    // 底部动作（2026-11-20 用户要求「新建终端上面加个新建连接」）：
-    // 两枚竖排，「新建连接」在上、「本地 Shell」在下 —— 与空白主区里
-    // 「还没有保存的连接 → 新建连接」那条引导是同一件事，只是入口在侧栏。
-    // 都给 `w_full`：两枚按钮宽度不同会显得参差，而这组动作应当读成一个整体。
+    // 底部动作
     root.child(
-        v_flex()
-            .px_3()
-            .py_2()
-            .mt_auto()
-            .gap(px(6.))
-            .child(
-                Button::new("term-new-conn")
-                    // 几何用例靠这两枚钩子量「谁在上面」（release 下 no-op）
-                    .debug_selector(|| "term-new-conn".to_string())
-                    .small()
-                    .outline()
-                    .w_full()
-                    .icon(IconName::Plus)
-                    .label(rustshell_core::i18n::t("新建连接"))
-                    .on_click(
-                        cx.listener(|m, _e: &ClickEvent, w, cx| m.open_connect_dialog(None, w, cx)),
-                    ),
-            )
-            .child(
-                Button::new("term-new-local")
-                    .debug_selector(|| "term-new-local".to_string())
-                    .small()
-                    .outline()
-                    .w_full()
-                    .icon(IconName::Plus)
-                    .label(rustshell_core::i18n::t("本地 Shell"))
-                    .on_click(cx.listener(|m, _e, _w, cx| m.open_local_shell(cx))),
-            ),
+        div().px_3().py_2().mt_auto().child(
+            Button::new("term-new-local")
+                .small()
+                .outline()
+                .icon(IconName::Plus)
+                .label(rustshell_core::i18n::t("本地 Shell"))
+                .on_click(cx.listener(|m, _e, _w, cx| m.open_local_shell(cx))),
+        ),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use crate::test_support::prod;
-
-    /// 2026-11-20 用户要求「主页新建终端上面加个新建连接」。
-    ///
-    /// 底部那组动作是**竖排两枚**：`新建连接` 在上、`本地 Shell`（用户口中的
-    /// 「新建终端」）在下。顺序用源码位置钉 —— 换个顺序就等于把新入口埋到
-    /// 老入口底下，用户还是会先看到老那个。
-    #[test]
-    fn the_footer_puts_new_connection_above_the_local_shell() {
-        let code = prod(include_str!("terminals_panel.rs"));
-        let conn = code
-            .find("term-new-conn")
-            .expect("终端面板底部缺少「新建连接」按钮");
-        let local = code
-            .find("term-new-local")
-            .expect("终端面板底部的「本地 Shell」按钮不见了");
-        assert!(
-            conn < local,
-            "「新建连接」必须排在「本地 Shell」**上面**（用户 2026-11-20 要求）"
-        );
-        assert!(
-            code.contains("open_connect_dialog(None"),
-            "「新建连接」必须真的打开连接对话框，不能只画个按钮"
-        );
-    }
 
     /// 2026-10-26 用户要求「终端侧边栏标题行增加线，类似于其他栏，不统计数量」。
     ///

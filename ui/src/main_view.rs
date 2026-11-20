@@ -3675,60 +3675,6 @@ mod tests {
         vcx.run_until_parked();
     }
 
-    /// 终端面板底部：`新建连接` 真的画在 `本地 Shell` 上面（2026-11-20 用户要求）。
-    ///
-    /// 源码顺序（`terminals_panel` 的用例）只说「写的先后」，这里量的是**渲染出来的
-    /// 纵坐标** —— 竖排容器里顺序由布局决定，两者不一致时用户看到的仍是老的排法。
-    #[gpui::test]
-    fn the_terminals_footer_stacks_new_connection_above_local_shell(cx: &mut gpui::TestAppContext) {
-        use gpui::AppContext as _;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        use super::{AppShell, MainView, PanelKind};
-
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::theme::apply_theme_mode(cx, rustshell_core::theme::ThemeMode::Dark);
-        });
-        let slot: Rc<RefCell<Option<gpui::Entity<MainView>>>> = Rc::new(RefCell::new(None));
-        let (_, vcx) = {
-            let slot = slot.clone();
-            cx.add_window_view(move |window, cx| {
-                let main = cx.new(|cx| MainView::new(window, cx));
-                *slot.borrow_mut() = Some(main.clone());
-                let shell = cx.new(|_| AppShell::new(main));
-                gpui_kit::component::Root::new(shell, window, cx)
-            })
-        };
-        vcx.run_until_parked();
-        let main = slot.borrow().clone().expect("MainView 未创建");
-
-        vcx.update(|_w, cx| {
-            main.update(cx, |m, cx| {
-                m.panel_ui.sidebar_collapsed = false;
-                m.panel_ui.panel = PanelKind::Terminals;
-                cx.notify();
-            })
-        });
-        vcx.run_until_parked();
-
-        let conn = vcx
-            .debug_bounds("term-new-conn")
-            .expect("终端面板底部没有「新建连接」按钮");
-        let local = vcx
-            .debug_bounds("term-new-local")
-            .expect("终端面板底部没有「本地 Shell」按钮");
-        let conn_bottom: f32 = (conn.origin.y + conn.size.height).into();
-        let local_top: f32 = local.origin.y.into();
-        assert!(
-            conn_bottom <= local_top + 0.5,
-            "「新建连接」没排在「本地 Shell」上面：前者底边 {conn_bottom}，后者顶边 {local_top}"
-        );
-        let h: f32 = conn.size.height.into();
-        assert!(h > 0., "「新建连接」按钮高度为 0（没画出来）");
-    }
-
     /// 端口转发面板必须能**从图标栏切出来并真的画出内容**。
     ///
     /// 为什么要有这条几何用例：新面板最容易出的错不是逻辑错，而是「图标加了、
